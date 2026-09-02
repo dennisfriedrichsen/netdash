@@ -14,13 +14,17 @@ Network throughput is deliberately not collected.
 ```
 server/       central service + dashboard UI
 collectors/   per-OS collector scripts
-  linux/      /proc/stat, /proc/meminfo, /proc/mounts, df
-  bsd/        sysctl, zfs list, df
-  macos/      top, vm_stat, sysctl, df, mount
+  linux/      /proc/stat, /proc/meminfo, /proc/mounts, df   + apt/dnf/pacman/zypper/apk
+  bsd/        sysctl, zfs list, df                          + pkg audit/syspatch/pkg_admin
+  macos/      top, vm_stat, sysctl, df, mount               + com.apple.SoftwareUpdate
   install.sh  installer for Linux + BSD hosts
   probe.sh    read-only dump of what a new OS reports, for adding support
 homebrew/     sample config packaged by the Homebrew formula
 ```
+
+Each platform directory holds two scripts: `netdash-collector.sh`, which runs
+every 30–60s, and `netdash-patchcheck.sh`, which runs daily. See
+[PATCH-CHECKS.md](PATCH-CHECKS.md) for why they are separate.
 
 ## Server
 
@@ -44,6 +48,7 @@ instructions.
 | `ingest_token` | shared secret; collectors send it as `X-Netdash-Token` |
 | `retention_hours` | rolling window; older samples are pruned every 10 min |
 | `stale_after_seconds` | a host with no sample for this long shows as **Stale** |
+| `patch_stale_hours` | a patch check older than this shows as **unknown**, not OK |
 | `thresholds` | warn/crit percentages per metric |
 | `truenas` | API polling for the NAS (see below) |
 
@@ -75,8 +80,13 @@ Payload shape:
 ```json
 { "host": "example-host", "os": "Ubuntu 24.04 (x86_64)", "cpu_pct": 12.4,
   "mem_used_bytes": 1234, "mem_total_bytes": 5678, "uptime_seconds": 99,
-  "disks": [ { "mount": "/", "used_bytes": 1, "total_bytes": 2 } ] }
+  "disks": [ { "mount": "/", "used_bytes": 1, "total_bytes": 2 } ],
+  "patches": { "security": 3, "other": 41, "checked_at": 1788300000,
+               "source": "apt", "detail": "" } }
 ```
+
+`patches` is optional: a host whose patch check has never run omits it, or sends
+`null`, and reads as **unknown**.
 
 ## Supported platforms
 
@@ -153,6 +163,10 @@ it schedules anything, so a broken host fails immediately rather than silently.
   started, since it does not run by default on a minimal install and scheduling
   would otherwise silently do nothing
 - **FreeBSD / OpenBSD / NetBSD** → root crontab, every 60s
+
+It also installs `netdash-patchcheck` on a **daily** schedule
+(`netdash-patchcheck.timer`, or a root crontab entry at 03:xx) and runs it once
+so the card shows something before tomorrow.
 
 The installer refuses to proceed if the host has no `curl`, `wget` or `fetch`,
 and names the right command for that package manager (`apk`, `dnf`, `pacman`,
@@ -232,6 +246,52 @@ Homebrew never auto-starts a service on install, so `brew services start` is a
 one-time extra step. After that, `brew upgrade netdash-collector` is enough —
 it restarts the job for you.
 
+## Patch status
+
+Each card carries a **Patches** badge: security updates pending, plain updates
+pending, up to date, or unknown. The full per-platform research — including
+which commands are wrong in ways that fail silently — is in
+[PATCH-CHECKS.md](PATCH-CHECKS.md). The short version:
+
+| platform | what is actually checked | classifies security? |
+|---|---|---|
+| Debian / Ubuntu / Raspbian | `apt-get --just-print dist-upgrade`, origin annotation | yes |
+| Fedora | `dnf5 check-update --security` | yes |
+| Arch | `checkupdates` + `arch-audit` (neither in base) | only with `arch-audit` |
+| openSUSE Leap | `zypper patch-check` | yes |
+| openSUSE Tumbleweed | `zypper list-updates` | **no — rolling, ships no patch metadata** |
+| Alpine | `apk list --upgradable` | **no — nothing on the host consumes secdb** |
+| FreeBSD | `pkg audit` + `freebsd-update updatesready` | yes, and base separately |
+| OpenBSD | `syspatch -c` (base only; packages need `PKG_PATH`) | yes, for base |
+| NetBSD | `pkg_admin audit` | yes for packages; **base has no patch mechanism** |
+| macOS | cached `com.apple.SoftwareUpdate` scan | "recommended" |
+| TrueNAS CORE | `update.check_available` | no, OS image only |
+
+Two rules hold everywhere:
+
+**The check is daily, never per-sample.** Every mechanism above either hits the
+network or parses the whole package database — `apt-get --just-print
+dist-upgrade` alone takes ~3s on an idle Debian box. So `netdash-patchcheck`
+runs once a day and writes `/var/lib/netdash/patches.json`
+(`/var/db/netdash` on the BSDs); the collector only reads that file back.
+
+**An old check is never green.** A count of zero from metadata last refreshed
+in March is indistinguishable from a genuinely patched host, so a check older
+than `patch_stale_hours` (default 48) renders as **unknown**, as does a host
+that has never been checked. `security` is likewise `null` rather than `0` on
+platforms that cannot classify — zero would claim someone looked.
+
+The daily job refreshes package metadata (`apt-get update` and its equivalents),
+because on a host without unattended-upgrades the counts are otherwise as old as
+the last manual update. Set `NETDASH_PATCH_REFRESH="no"` in `collector.conf` to
+forbid that; the badge then reports the age of the existing metadata and ages
+into **unknown** on its own rather than pretending to be current.
+
+Patch status is deliberately **not** part of a host's overall status. Resource
+pressure is live and self-clearing; pending patches sit amber for a week and
+train you to ignore amber. The "needs attention" count in the header stays a
+statement about CPU, memory and disk.
+
 ## TrueNAS
 
 Nothing is installed on the NAS. The server polls its REST API on a schedule.
@@ -257,7 +317,7 @@ sh tests/run.sh              # everything
 sh tests/run.sh openbsd      # just the cases matching a name
 ```
 
-27 cases, no network, no root, nothing installed — `sh`, `awk` and `python3`.
+43 cases, no network, no root, nothing installed — `sh`, `awk` and `python3`.
 The BSD and macOS cases run the real collector end to end against mocked
 `sysctl`/`df`/`mount`/`vmstat`; the Linux cases drive its awk programs directly,
 since `/proc` reads cannot be intercepted through `PATH`.
@@ -274,6 +334,8 @@ systemctl status netdash                      # server
 journalctl -u netdash -n 50                   # server log
 systemctl list-timers netdash-collector.timer # collector schedule (Linux)
 netdash-collector --print                     # what this host would send
+netdash-patchcheck --print                    # patch check, without writing state
+systemctl list-timers netdash-patchcheck.timer
 curl -s https://netdash.example/api/overview | python3 -m json.tool
 ```
 

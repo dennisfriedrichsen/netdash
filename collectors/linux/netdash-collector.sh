@@ -115,8 +115,21 @@ for f in /proc/device-tree/model /sys/firmware/devicetree/base/model; do
 done
 [ -n "$MODEL" ] && OS="$OS - $MODEL"
 
-JSON=$(printf '{"host":"%s","os":"%s (%s)","cpu_pct":%s,"mem_used_bytes":%s,"mem_total_bytes":%s,"uptime_seconds":%d,"disks":[%s]}' \
-  "$HOST" "$OS" "$ARCH" "$CPU" "$MEM_USED" "$MEM_TOTAL" "$UPTIME" "$DISKS")
+# ---- Patch status ----
+# Read back from whatever netdash-patchcheck last wrote on its own daily
+# schedule. This stays a file read on purpose: every mechanism that can answer
+# "are there security updates" costs seconds and usually a network round trip,
+# which is untenable at a 30s cadence. An absent, unreadable or truncated file
+# reports null, and the server renders that as "unknown" -- never as up to date.
+PATCHES=null
+for f in ${NETDASH_PATCH_STATE:-} /var/lib/netdash/patches.json /var/db/netdash/patches.json; do
+  [ -r "$f" ] || continue
+  P=$(tr -d '\n' < "$f" 2>/dev/null || true)
+  case "$P" in '{'*'}') PATCHES="$P"; break ;; esac
+done
+
+JSON=$(printf '{"host":"%s","os":"%s (%s)","cpu_pct":%s,"mem_used_bytes":%s,"mem_total_bytes":%s,"uptime_seconds":%d,"disks":[%s],"patches":%s}' \
+  "$HOST" "$OS" "$ARCH" "$CPU" "$MEM_USED" "$MEM_TOTAL" "$UPTIME" "$DISKS" "$PATCHES")
 
 if [ "$MODE" = "--print" ]; then printf '%s\n' "$JSON"; exit 0; fi
 

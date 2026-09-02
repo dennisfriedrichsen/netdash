@@ -27,9 +27,24 @@ CFG = {}
 CONN = None
 
 
+# Defaults for keys added after the first release. deploy.sh never overwrites an
+# existing /etc/netdash/server.json -- that is the point of it -- so an upgraded
+# server reads a config written before these keys existed, and a bare
+# CFG["patch_stale_hours"] would KeyError on every request.
+DEFAULTS = {
+    # How old a patch check may be before the dashboard stops believing it.
+    # Two days: the checks run daily, so this tolerates one missed run before
+    # the badge drops to "unknown".
+    "patch_stale_hours": 48,
+}
+
+
 def load_config(path):
     with open(path) as f:
-        return json.load(f)
+        cfg = json.load(f)
+    for k, v in DEFAULTS.items():
+        cfg.setdefault(k, v)
+    return cfg
 
 
 # ---------- status logic ----------
@@ -45,6 +60,47 @@ def _level(pct, t):
 
 
 _RANK = {"unknown": 0, "ok": 1, "warning": 2, "critical": 3, "stale": 4}
+
+
+def patch_summary(sample, now):
+    """Patch status for one sample.
+
+    Derived here rather than in the collector because staleness is judged
+    against patch_stale_hours, which is server configuration -- a collector
+    cannot know the threshold it will be measured by.
+
+    The one rule that matters: an old or missing check is "unknown", never
+    "ok". "0 pending" from metadata last refreshed months ago is
+    indistinguishable from a patched host, and quietly showing it green is the
+    worst thing a security indicator can do. Anything uncertain reads as a
+    dash. See PATCH-CHECKS.md.
+    """
+    sec = sample.get("patch_security")
+    oth = sample.get("patch_other")
+    checked = sample.get("patch_checked_at")
+    age = int(now - checked) if checked else None
+
+    if checked is None or age is None or age > CFG["patch_stale_hours"] * 3600:
+        status = "unknown"
+    elif sec:
+        status = "security"
+    elif oth:
+        status = "updates"
+    elif sec is None and oth is None:
+        # The check ran but the platform could classify nothing at all.
+        status = "unknown"
+    else:
+        status = "ok"
+
+    return {
+        "status": status,
+        "security": sec,
+        "other": oth,
+        "checked_at": checked,
+        "age_seconds": age,
+        "source": sample.get("patch_source"),
+        "detail": sample.get("patch_detail"),
+    }
 
 
 def summarize(sample, now=None):
@@ -83,6 +139,10 @@ def summarize(sample, now=None):
     disk_status = _level(worst_disk_pct, th["disk"])
 
     stale = age > CFG["stale_after_seconds"]
+    # Patch status is deliberately NOT part of this rollup. Resource pressure is
+    # live and self-clearing; pending patches sit amber for a week and train you
+    # to ignore amber. It gets its own badge, and "needs attention" in the header
+    # stays a statement about CPU, memory and disk.
     overall = "stale" if stale else max(
         (cpu_status, mem_status, disk_status), key=lambda s: _RANK[s]
     )
@@ -103,6 +163,7 @@ def summarize(sample, now=None):
             "status": mem_status,
         },
         "disk": {"worst_pct": worst_disk_pct, "status": disk_status, "mounts": disks},
+        "patches": patch_summary(sample, now),
         "status": overall,
     }
 

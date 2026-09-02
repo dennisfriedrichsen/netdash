@@ -115,6 +115,23 @@ button.link:hover { color: var(--text-1); }
 
 .sub { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 
+/* ---------- patch badge ----------
+   Its own row below the meters, divided off, because it answers a different
+   question from CPU/memory/disk and moves on a different clock. Deliberately
+   not a meter: there is no percentage here, and a full-width bar would give a
+   once-a-day fact the same visual weight as a live one. */
+.patch {
+  display: flex; align-items: center; gap: 7px;
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border);
+  font-size: 13px; color: var(--text-2);
+}
+.patch .pdot {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: var(--st, var(--st-none)); flex: none;
+}
+.patch .pglyph { margin-left: auto; color: var(--st, var(--st-none)); font-size: 12px; line-height: 1; }
+.patch .pval { color: var(--text-1); font-weight: 600; font-variant-numeric: tabular-nums; }
+
 /* ---------- detail ---------- */
 .panels { padding: 8px 22px 30px; display: grid; gap: 14px;
           grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); }
@@ -147,6 +164,7 @@ button.link:hover { color: var(--text-1); }
   .osicon { width: 22px; height: 22px; }
   .meter .lbl { font-size: 14px; }
   .meter .track { height: 10px; }
+  .patch { font-size: 14px; }
 }
 @media (max-width: 480px) {
   .grid, .panels { padding-left: 13px; padding-right: 13px; }

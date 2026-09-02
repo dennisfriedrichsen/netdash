@@ -27,6 +27,29 @@ HOSTS = {
 # one host deliberately unhealthy so the warning/critical styling is exercised
 STRESSED = {"pi-armv7": ("disk", 0.93), "linux-small": ("cpu", 88)}
 
+# Patch state per host, covering every badge the UI can draw. hours_ago is how
+# long since the check ran, so "stale" exercises the rule that an old check
+# reads as unknown rather than as up to date -- the one failure mode the whole
+# design exists to prevent. A host missing from here has never been checked.
+PATCHES = {
+    "linux-server": dict(security=3, other=41, source="apt", hours_ago=2,
+                         detail=""),
+    "linux-small":  dict(security=0, other=0, source="apt", hours_ago=5,
+                         detail=""),
+    "pi-armv7":     dict(security=0, other=12, source="apt", hours_ago=9,
+                         detail=""),
+    "bsd-server":   dict(security=1, other=7, source="pkg-audit+freebsd-update",
+                         hours_ago=14,
+                         detail="includes 1 staged base system update (freebsd-update)"),
+    "mac-desktop":  dict(security=2, other=1, source="softwareupdate", hours_ago=4,
+                         detail=""),
+    "mac-laptop":   dict(security=0, other=0, source="softwareupdate", hours_ago=96,
+                         detail=""),                      # stale -> unknown
+    "truenas":      dict(security=None, other=1, source="truenas-update",
+                         hours_ago=1, detail="13.0-U6.9 available"),
+    # pi-arm64 is absent on purpose: a host whose patch check has never run.
+}
+
 
 def main():
     cfg_path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
@@ -65,6 +88,13 @@ def main():
                 "uptime_seconds": 3600 * 24 * 11 + i * step,
                 "disks": [],
             }
+            pat = PATCHES.get(host)
+            if pat:
+                payload["patches"] = {
+                    "security": pat["security"], "other": pat["other"],
+                    "checked_at": ts - int(pat["hours_ago"] * 3600),
+                    "source": pat["source"], "detail": pat["detail"],
+                }
             for mount, size_gb, full in mounts:
                 if stress and stress[0] == "disk" and mount == "/":
                     full = stress[1]

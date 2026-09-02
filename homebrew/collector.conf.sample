@@ -3,3 +3,9 @@
 NETDASH_URL="https://netdash.example/api/ingest"
 NETDASH_TOKEN=""
 # NETDASH_HOSTNAME="override-if-needed"
+
+# Patch check (netdash-patchcheck, daily). On macOS this only reads the software
+# update scan the system already runs every six hours, so it costs nothing and
+# needs no root. Set to "no" to stop it from running `softwareupdate -l` on a Mac
+# that has automatic update checks switched off.
+# NETDASH_PATCH_REFRESH="yes"

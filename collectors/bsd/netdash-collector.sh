@@ -158,8 +158,21 @@ if [ -n "$BOOT" ]; then UPTIME=$(( $(date +%s) - BOOT )); else UPTIME=0; fi
 OS="$(uname -sr)"
 ARCH=$(uname -m)
 
-JSON=$(printf '{"host":"%s","os":"%s (%s)","cpu_pct":%s,"mem_used_bytes":%s,"mem_total_bytes":%s,"uptime_seconds":%d,"disks":[%s]}' \
-  "$HOST" "$OS" "$ARCH" "$CPU" "$MEM_USED" "$MEM_TOTAL" "$UPTIME" "$DISKS")
+# ---- Patch status ----
+# Read back from whatever netdash-patchcheck last wrote on its own daily
+# schedule. This stays a file read on purpose: syspatch -c fetches from the
+# mirror on every run, and pkg audit parses the whole vulnerability database.
+# An absent, unreadable or truncated file reports null, which the server
+# renders as "unknown" -- never as up to date.
+PATCHES=null
+for f in ${NETDASH_PATCH_STATE:-} /var/db/netdash/patches.json /var/lib/netdash/patches.json; do
+  [ -r "$f" ] || continue
+  P=$(tr -d '\n' < "$f" 2>/dev/null || true)
+  case "$P" in '{'*'}') PATCHES="$P"; break ;; esac
+done
+
+JSON=$(printf '{"host":"%s","os":"%s (%s)","cpu_pct":%s,"mem_used_bytes":%s,"mem_total_bytes":%s,"uptime_seconds":%d,"disks":[%s],"patches":%s}' \
+  "$HOST" "$OS" "$ARCH" "$CPU" "$MEM_USED" "$MEM_TOTAL" "$UPTIME" "$DISKS" "$PATCHES")
 
 if [ "$MODE" = "--print" ]; then printf '%s\n' "$JSON"; exit 0; fi
 

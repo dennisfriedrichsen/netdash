@@ -1,0 +1,173 @@
+#!/bin/sh
+# netdash patch check -- FreeBSD, OpenBSD and NetBSD.
+#
+# Runs DAILY, not at collector cadence. Writes a small JSON file that
+# netdash-collector reads back and inlines. See PATCH-CHECKS.md.
+#
+#   netdash-patchcheck.sh            # check, write the state file
+#   netdash-patchcheck.sh --print    # check, print, write nothing
+#
+# The three BSDs answer three different questions, and two of them cannot
+# answer at all for part of the system:
+#   FreeBSD  packages (pkg audit, CVE-based) AND base (freebsd-update)
+#   OpenBSD  base only (syspatch); packages carry no security classification
+#   NetBSD   packages only (pkg_admin audit); base has no patch mechanism
+set -eu
+
+MODE="${1:-}"
+
+PATH="$PATH:/usr/local/sbin:/usr/local/bin:/usr/pkg/sbin:/usr/pkg/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
+export LC_ALL=C
+
+CONF="${NETDASH_CONF:-}"
+if [ -z "$CONF" ]; then
+  for c in /usr/local/etc/netdash/collector.conf /etc/netdash/collector.conf \
+           /usr/pkg/etc/netdash/collector.conf; do
+    [ -f "$c" ] && { CONF="$c"; break; }
+  done
+  CONF="${CONF:-/usr/local/etc/netdash/collector.conf}"
+fi
+[ -f "$CONF" ] && . "$CONF"
+
+STATE="${NETDASH_PATCH_STATE:-/var/db/netdash/patches.json}"
+REFRESH="${NETDASH_PATCH_REFRESH:-yes}"
+
+OSNAME=$(uname -s)
+NOW=$(date +%s)
+SEC=null
+OTH=null
+SRC=unknown
+DET=""
+CHECKED=""
+
+run() { "$@" 2>/dev/null || true; }
+
+# BSD stat(1), not GNU: -f %m, not -c %Y.
+mtime() { [ -e "$1" ] && stat -f %m "$1" 2>/dev/null || true; }
+
+case "$OSNAME" in
+FreeBSD)
+  SRC=pkg-audit
+  # pkg audit reads /var/db/pkg/vuln.xml and touches the network only with -F.
+  # The base system already refreshes it daily through
+  # /usr/local/etc/periodic/security/410.pkg-audit when
+  # daily_status_security_pkgaudit_enable="YES"; -F here covers hosts where
+  # that is switched off.
+  #
+  # Its exit status is NOT a refresh signal: pkg audit exits 1 both when the
+  # fetch failed and when it succeeded and found vulnerable packages. The
+  # honest freshness signal is vuln.xml's own mtime, which a failed fetch
+  # leaves untouched -- so a host that loses network ages into "unknown"
+  # rather than reporting a stale count as current.
+  [ "$REFRESH" = yes ] && run pkg audit -F -q >/dev/null
+  [ "$REFRESH" = yes ] && run pkg update -q >/dev/null
+
+  # One "<pkg> is vulnerable:" header per affected package. Counting that
+  # marker rather than lines: each entry also prints its CVE and WWW lines.
+  SEC=$(run pkg audit | grep -c 'is vulnerable' || true)
+
+  # Out-of-date packages, a different question from "vulnerable" -- a package
+  # can be behind with no advisory against it.
+  OTH=$(run pkg version -vRL= | grep -c . || true)
+
+  CHECKED=$(mtime /var/db/pkg/vuln.xml)
+
+  # Base system, entirely separate from packages. updatesready needs no network
+  # and exits 2 when nothing is staged, 0 when fetched updates are ready.
+  if command -v freebsd-update >/dev/null 2>&1; then
+    if [ "$REFRESH" = yes ]; then
+      # What `freebsd-update cron` does, minus its random 1-3600s sleep, which
+      # exists to spread a fleet across the hour and is wrong for a job that is
+      # already on its own timer.
+      run freebsd-update --not-running-from-cron fetch >/dev/null
+    fi
+    if freebsd-update updatesready >/dev/null 2>&1; then
+      # Counted as one pending security item. The count is packages plus this,
+      # so the detail line says where the extra one came from.
+      SEC=$((SEC + 1))
+      DET="includes 1 staged base system update (freebsd-update)"
+      SRC="pkg-audit+freebsd-update"
+    fi
+  fi
+  ;;
+
+OpenBSD)
+  SRC=syspatch
+  # syspatch ships only security and reliability errata, so every patch it
+  # lists counts as security. It REQUIRES root -- the source permits only -l
+  # and usage unprivileged -- and fetches the patch index from the mirror on
+  # every run. There is no local cache to read and /etc/daily does not run it,
+  # so this daily job is the only thing that ever will, and the check time is
+  # therefore genuinely now.
+  if [ "$(id -u)" != 0 ]; then
+    echo "netdash-patchcheck: syspatch -c needs root" >&2
+    exit 1
+  fi
+  if ! OUT=$(syspatch -c 2>/dev/null); then
+    echo "netdash-patchcheck: syspatch -c failed; keeping the previous result" >&2
+    exit 1
+  fi
+  SEC=$(printf '%s' "$OUT" | grep -c . || true)
+  CHECKED=$NOW
+
+  # Packages are unclassified and need PKG_PATH pointing at a package set --
+  # on -release that must be the -stable build, or security fixes never appear
+  # at all. Skipped unless the admin has set PKG_PATH, because pkg_add -un
+  # against an unset or wrong PKG_PATH is a slow way to learn nothing.
+  if [ -n "${PKG_PATH:-}" ]; then
+    OTH=$(run pkg_add -un | grep -c . || true)
+  else
+    DET="packages not checked (PKG_PATH unset)"
+  fi
+  ;;
+
+NetBSD)
+  SRC=pkg_admin-audit
+  [ "$REFRESH" = yes ] && run pkg_admin fetch-pkg-vulnerabilities >/dev/null
+
+  # Audits installed packages against the local pkg-vulnerabilities file; no
+  # network. /etc/daily fetches that file when fetch_pkg_vulnerabilities=YES
+  # is set in /etc/daily.conf. As on FreeBSD, the file's mtime is the freshness
+  # signal, so a failed fetch ages out instead of reporting stale as current.
+  SEC=$(run pkg_admin audit | grep -c 'vulnerability' || true)
+  for f in /usr/pkg/pkgdb/pkg-vulnerabilities /var/db/pkg/pkg-vulnerabilities; do
+    CHECKED=$(mtime "$f"); [ -n "$CHECKED" ] && break
+  done
+
+  # NetBSD has no syspatch or freebsd-update equivalent: base security fixes
+  # mean rebuilding from source or installing new sets. Saying so beats a
+  # silent zero that reads as "base is clean".
+  DET="base system not checked (NetBSD ships no binary patch mechanism)"
+
+  # pkgin is optional and its summary wording varies between versions, so an
+  # unmatched line leaves the count null rather than guessing at zero.
+  if command -v pkgin >/dev/null 2>&1; then
+    N=$(run pkgin -n upgrade | sed -n 's/^\([0-9][0-9]*\) packages* to upgrade.*/\1/p' | head -1)
+    [ -n "$N" ] && OTH=$N
+  fi
+  ;;
+esac
+
+if [ "$SRC" = unknown ]; then
+  echo "netdash-patchcheck: unsupported BSD: $OSNAME" >&2
+  exit 1
+fi
+
+# Never write a reading that cannot be honestly dated: leaving the previous
+# state file in place lets it age into "unknown" on the dashboard, which is the
+# truthful outcome. Writing `now` over it would claim a stale count is current.
+if [ -z "$CHECKED" ]; then
+  echo "netdash-patchcheck: no vulnerability database found; keeping the previous result" >&2
+  exit 1
+fi
+
+JSON=$(printf '{"security":%s,"other":%s,"checked_at":%d,"source":"%s","detail":"%s"}' \
+  "$SEC" "$OTH" "$CHECKED" "$SRC" "$DET")
+
+if [ "$MODE" = "--print" ]; then printf '%s\n' "$JSON"; exit 0; fi
+
+mkdir -p "$(dirname "$STATE")"
+printf '%s\n' "$JSON" > "$STATE.tmp"
+mv "$STATE.tmp" "$STATE"
+chmod 644 "$STATE"

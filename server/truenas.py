@@ -9,6 +9,9 @@ Endpoints (verified live against TrueNAS CORE 13.0-U6.8):
   POST /reporting/get_data -> cpu / memory / arcsize series
   GET  /pool/dataset       -> per-pool used+available (root datasets only)
 
+Not yet verified against the live box:
+  POST /update/check_available -> {"status": "AVAILABLE"|"UNAVAILABLE", "version": ...}
+
 Quirks this module works around, all confirmed on the live box:
   * `reporting_query.unit` accepts only HOUR/DAY/WEEK/MONTH/YEAR -- not MINUTE.
   * A data row has NO leading timestamp: row[i] pairs with legend[i].
@@ -146,6 +149,50 @@ def _pools(cfg):
     return out
 
 
+# update.check_available contacts iXsystems' update server, so it is polled on
+# its own slow interval rather than at the metric rate. The last good answer is
+# kept across metric polls; when the call fails it is returned unchanged and
+# ages out into "unknown" on the dashboard rather than flipping to a wrong value.
+_PATCH_CACHE = {"ts": 0.0, "value": None}
+
+
+def _patches(cfg):
+    """OS-image update status, in the shape the collectors' patch check sends.
+
+    CORE reports one image update, with no per-package security classification
+    -- so `security` is null rather than 0, which would claim the box had been
+    checked for CVEs and found clean. See PATCH-CHECKS.md.
+
+    Note for later: `update.check_available` was removed in TrueNAS 25.x in
+    favour of `update.status`. This call is why the poller is CORE-specific.
+    """
+    now = time.time()
+    interval = int(cfg.get("patch_poll_seconds") or 3600)
+    if _PATCH_CACHE["value"] and now - _PATCH_CACHE["ts"] < interval:
+        return _PATCH_CACHE["value"]
+
+    try:
+        r = _request(cfg, "/update/check_available", "POST", {}) or {}
+    except TrueNASError:
+        return _PATCH_CACHE["value"]
+
+    status = str(r.get("status") or "").upper()
+    if status not in ("AVAILABLE", "UNAVAILABLE"):
+        return _PATCH_CACHE["value"]
+
+    version = r.get("version") or ""
+    value = {
+        "security": None,
+        "other": 1 if status == "AVAILABLE" else 0,
+        "checked_at": int(now),
+        "source": "truenas-update",
+        "detail": ("%s available" % version).strip() if status == "AVAILABLE"
+                  else "no per-package security classification on CORE",
+    }
+    _PATCH_CACHE.update(ts=now, value=value)
+    return value
+
+
 def collect(cfg):
     """Return a payload in the same shape the host collectors POST."""
     if not cfg.get("api_key"):
@@ -174,6 +221,7 @@ def collect(cfg):
         "mem_total_bytes": physmem,
         "uptime_seconds": int(info["uptime_seconds"]) if info.get("uptime_seconds") else None,
         "disks": _pools(cfg),
+        "patches": _patches(cfg),
     }
 
 

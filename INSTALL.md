@@ -63,6 +63,18 @@ schedules anything. It installs the following schedule:
 - Alpine/OpenRC: root crontab, every 60 seconds; `crond` is enabled and started
 - FreeBSD, OpenBSD, and NetBSD: root crontab, every 60 seconds
 
+It also installs `netdash-patchcheck` and schedules it **daily** — as
+`netdash-patchcheck.timer` under systemd, otherwise a root crontab entry at
+03:xx — then runs it once so the patch badge is populated immediately. A
+failure there is not fatal: the host still reports CPU, memory, and disk, and
+its patch badge reads "not checked" until the check succeeds.
+
+The daily job refreshes package metadata (`apt-get update`, `dnf5 makecache`,
+`zypper refresh`, `apk update`, `pkg audit -F`, `syspatch -c`,
+`pkg_admin fetch-pkg-vulnerabilities`). To forbid that, add
+`NETDASH_PATCH_REFRESH="no"` to `collector.conf`; the badge then reports the
+age of the metadata already on disk. See [PATCH-CHECKS.md](PATCH-CHECKS.md).
+
 Configuration is stored with mode 600 at `/etc/netdash/collector.conf` on
 Linux, OpenBSD, and NetBSD, or `/usr/local/etc/netdash/collector.conf` on
 FreeBSD.
@@ -105,6 +117,24 @@ Homebrew does not start the service during installation. After the one-time
 `brew services start`, `brew upgrade netdash-collector` upgrades the collector
 and restarts its launchd job.
 
+### Patch check on macOS
+
+`collectors/macos/netdash-patchcheck.sh` reads the software-update scan macOS
+already performs every six hours, so it is fast and needs no root. **The tap
+formula does not install or schedule it yet** — until it does, a Mac shows
+"not checked". To wire it up by hand:
+
+```sh
+sudo cp collectors/macos/netdash-patchcheck.sh \
+        "$(brew --prefix)/bin/netdash-patchcheck"
+netdash-patchcheck --print          # confirm it reads the cached scan
+(crontab -l 2>/dev/null; echo "17 3 * * * $(brew --prefix)/bin/netdash-patchcheck >/dev/null 2>&1") | crontab -
+```
+
+If `AutomaticCheckEnabled` is off on that Mac, the cached counts never advance;
+the check reports the age of the last scan and the badge ages into "unknown"
+rather than showing a stale zero as up to date.
+
 ## TrueNAS
 
 Nothing is installed on the NAS. Create an API key in the TrueNAS UI, then add
@@ -130,7 +160,9 @@ sudo systemctl restart netdash
 
 ```sh
 netdash-collector --print                         # payload without posting
+netdash-patchcheck --print                        # patch check, writing nothing
 systemctl list-timers netdash-collector.timer     # Linux schedule
+systemctl list-timers netdash-patchcheck.timer    # daily patch check
 crontab -l | grep netdash                         # BSD/Alpine schedule
 journalctl -u netdash -n 50                       # server log
 curl https://netdash.example/api/overview         # received hosts

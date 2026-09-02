@@ -26,6 +26,15 @@ numbers are untouched.
 | `freebsd/df-k-T-l.txt` | FreeBSD 15.1 | `-T` is accepted here and nowhere else |
 | `freebsd/zfs-list.txt`, `netbsd/zfs-list.txt` | — | `zfs list -Hp -d 0` pool roots |
 | `freebsd/cp_time.txt` | FreeBSD 15.1 | five fields, space-separated |
+| `linux/apt-dist-upgrade.txt` | Debian 13 | the security origin sits *inside* the parentheses |
+
+`apt-dist-upgrade.txt` is real `apt-get --just-print` output, captured with
+`-o Dir::State::status=/dev/null` because the host had nothing pending — that
+makes apt resolve every dependency as a fresh install, so the `Inst` lines and
+their origin annotations are exactly what a real pending upgrade produces. It
+deliberately includes `debian-security-support`, a genuine package whose *name*
+contains `-security` but which ships from the plain archive: a naive whole-line
+match counts 4 security updates where there are 3.
 
 `cp_time.txt` holds two lines: two successive reads, so the mock can return a
 delta rather than a single sample.

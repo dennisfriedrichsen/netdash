@@ -204,6 +204,115 @@ PY
   fi
 fi
 
+# ---------------------------------------------------------------- patches ----
+# The patch badge's job is to be believable, so these pin the two ways it could
+# lie: counting the wrong packages as security, and showing a stale or absent
+# check as "up to date". See PATCH-CHECKS.md.
+
+if want patches-apt; then
+  echo "patches-apt (security origin lives inside the parentheses, not in the name)"
+  J=$(python3 - "$ROOT" <<'PY'
+import re,subprocess,sys,json
+root=sys.argv[1]
+src=open(f"{root}/collectors/linux/netdash-patchcheck.sh").read()
+prog=re.search(r"dist-upgrade \| awk '(.*?)'\)", src, re.S).group(1)
+fixture=open(f"{root}/tests/fixtures/linux/apt-dist-upgrade.txt").read()
+out=subprocess.run(["awk",prog],input=fixture,capture_output=True,text=True)
+sec,oth=out.stdout.split()
+# What a naive whole-line match would have counted, for the contrast below.
+naive=sum(1 for l in fixture.splitlines() if l.startswith("Inst ") and "-security" in l)
+print(json.dumps({"security":int(sec),"other":int(oth),"naive":naive}))
+PY
+)
+  check "3 security updates found among 36 pending" \
+        "assert d['security']==3, d" "$J"
+  check "the other 33 counted as non-security" \
+        "assert d['other']==33, d" "$J"
+  # debian-security-support is a real package whose NAME contains -security but
+  # which ships from the plain archive. Matching the whole Inst line counts it,
+  # and the fixture exists to keep that mistake from coming back.
+  check "a package NAMED *-security is not miscounted as a security update" \
+        "assert d['naive']==4 and d['security']==3, d" "$J"
+fi
+
+if want patches-stale; then
+  echo "patches-stale (an old or missing check must read unknown, never ok)"
+  J=$(python3 - "$ROOT" <<'PY'
+import sys,json,time
+root=sys.argv[1]; sys.path.insert(0,f"{root}/server")
+import app
+app.CFG={"patch_stale_hours":48}
+now=time.time(); H=3600
+def s(**kw):
+    row={"patch_security":None,"patch_other":None,"patch_checked_at":None,
+         "patch_source":None,"patch_detail":None}
+    row.update(kw)
+    return app.patch_summary(row,now)["status"]
+print(json.dumps({
+  "never":     s(),
+  "fresh_ok":  s(patch_security=0,patch_other=0,patch_checked_at=now-2*H),
+  "stale_ok":  s(patch_security=0,patch_other=0,patch_checked_at=now-72*H),
+  "stale_sec": s(patch_security=9,patch_other=0,patch_checked_at=now-72*H),
+  "security":  s(patch_security=3,patch_other=41,patch_checked_at=now-2*H),
+  "updates":   s(patch_security=0,patch_other=12,patch_checked_at=now-2*H),
+  "noclass":   s(patch_security=None,patch_other=7,patch_checked_at=now-2*H),
+  "noclass0":  s(patch_security=None,patch_other=0,patch_checked_at=now-2*H),
+}))
+PY
+)
+  check "a host that has never been checked is unknown, not ok" \
+        "assert d['never']=='unknown', d" "$J"
+  # The whole point of the design: 0 pending from a check three days old is
+  # indistinguishable from a patched host, so it must not render green.
+  check "a 72h-old all-clear is unknown, not ok" \
+        "assert d['stale_ok']=='unknown', d" "$J"
+  check "a 72h-old check is unknown even when it found security updates" \
+        "assert d['stale_sec']=='unknown', d" "$J"
+  check "a fresh all-clear is ok" \
+        "assert d['fresh_ok']=='ok', d" "$J"
+  check "security outranks plain updates" \
+        "assert d['security']=='security' and d['updates']=='updates', d" "$J"
+  # Alpine, Arch without arch-audit and Tumbleweed cannot classify at all, so
+  # they send null rather than 0 -- 0 would claim a CVE check found nothing.
+  check "unclassifiable platform with updates pending reads as updates" \
+        "assert d['noclass']=='updates', d" "$J"
+  check "unclassifiable platform with nothing pending is still ok" \
+        "assert d['noclass0']=='ok', d" "$J"
+fi
+
+if want patches-statefile; then
+  echo "patches-statefile (a truncated state file must not become a bad reading)"
+  TMPD=$(mktemp -d)
+  printf '{"security":3,"other":41,"checked_at":1788300000,"source":"apt","detail":""}\n' > "$TMPD/good"
+  printf '{"security":3,"other":41'                                                       > "$TMPD/truncated"
+  printf 'not json at all\n'                                                              > "$TMPD/garbage"
+  : > "$TMPD/empty"
+  # All three collectors carry the same read-back block. Extracting and running
+  # it keeps this honest on any OS: the suite must not need a Linux /proc, a
+  # FreeBSD sysctl or a Mac to check shared logic.
+  for FAM in linux bsd macos; do
+    J=$(python3 - "$ROOT" "$FAM" "$TMPD" <<'PY'
+import re,subprocess,sys,json
+root,fam,tmpd=sys.argv[1],sys.argv[2],sys.argv[3]
+src=open(f"{root}/collectors/{fam}/netdash-collector.sh").read()
+block=re.search(r"(PATCHES=null\nfor f in .*?\ndone)", src, re.S).group(1)
+out={}
+for name in ("good","truncated","garbage","empty","/nonexistent/nope"):
+    path=name if name.startswith("/") else f"{tmpd}/{name}"
+    r=subprocess.run(["sh","-c",f'NETDASH_PATCH_STATE="{path}"\n'+block+'\nprintf "%s" "$PATCHES"'],
+                     capture_output=True,text=True)
+    out[name.strip("/").split("/")[-1] if name.startswith("/") else name]=r.stdout
+print(json.dumps(out))
+PY
+)
+    check "[$FAM] a well-formed state file is passed through" \
+          "assert d['good'].startswith('{') and 'apt' in d['good'], d" "$J"
+    check "[$FAM] truncated, garbage, empty and absent all report null" \
+          "assert all(d[k]=='null' for k in ('truncated','garbage','empty','nope')), d" "$J"
+  done
+  rm -rf "$TMPD"
+fi
+
 echo
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]

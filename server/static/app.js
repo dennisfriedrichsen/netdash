@@ -18,6 +18,58 @@ var STATUS = {
 };
 function st(k) { return STATUS[k] || STATUS.unknown; }
 
+/* Patch status is its own axis, never folded into the host status above:
+   resource pressure is live and self-clearing, pending patches sit amber for a
+   week. Same rule about colour though -- the word carries the meaning, and the
+   four words are all different, so the palette is decoration. */
+var PATCH = {
+  security: { css: 'var(--st-crit)', glyph: '✕' },
+  updates:  { css: 'var(--st-warn)', glyph: '▲' },
+  ok:       { css: 'var(--st-ok)',   glyph: '✓' },
+  unknown:  { css: 'var(--st-none)', glyph: '–' }
+};
+
+function patchText(p) {
+  if (!p) return 'not checked';
+  if (p.status === 'security') return p.security + ' security';
+  if (p.status === 'updates') {
+    var n = p.other || 0;
+    return n + ' update' + (n === 1 ? '' : 's');
+  }
+  if (p.status === 'ok') return 'up to date';
+  /* Two very different unknowns, and the difference is the whole point: one
+     host has never been checked, the other was checked so long ago that the
+     answer is no longer worth believing. Neither is "up to date". */
+  return p.checked_at ? 'check stale' : 'not checked';
+}
+
+function patchTitle(p) {
+  if (!p || !p.checked_at) {
+    return 'No patch check has run on this host yet — run netdash-patchcheck.';
+  }
+  var bits = [];
+  bits.push(p.security === null || p.security === undefined
+    ? 'no security classification available on this platform'
+    : p.security + ' security');
+  if (p.other !== null && p.other !== undefined) bits.push(p.other + ' other');
+  bits.push('checked ' + fmtAge(p.age_seconds));
+  if (p.source) bits.push('via ' + p.source);
+  if (p.detail) bits.push(p.detail);
+  return bits.join(' · ');
+}
+
+function patchRow(p) {
+  var s = PATCH[(p && p.status) || 'unknown'] || PATCH.unknown;
+  var row = el('div', 'patch');
+  row.style.setProperty('--st', s.css);
+  row.appendChild(el('span', 'pdot'));
+  row.appendChild(el('span', null, 'Patches'));
+  row.appendChild(el('span', 'pglyph', s.glyph));
+  row.appendChild(el('span', 'pval', patchText(p)));
+  row.title = patchTitle(p);
+  return row;
+}
+
 function fmtBytes(b) {
   if (b === null || b === undefined) return '–';
   var u = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'], i = 0, v = b;
@@ -209,6 +261,8 @@ function renderOverview(data) {
       worst ? fmtBytes(worst.used_bytes) + ' of ' + fmtBytes(worst.total_bytes) +
               (h.disk.mounts.length > 1 ? '  (+' + (h.disk.mounts.length - 1) + ' more)' : '') : ''));
 
+    a.appendChild(patchRow(h.patches));
+
     a.appendChild(el('div', 'sub', (h.stale ? 'last seen ' : 'updated ') + fmtAge(h.age_seconds) +
       (h.source === 'truenas' ? ' · via API' : '')));
     grid.appendChild(a);
@@ -387,6 +441,33 @@ function renderDetail(host, data) {
   if (!c.disk.mounts.length) mounts.appendChild(el('div', 'sub', 'no mounts reported'));
   p3.appendChild(mounts);
   panels.appendChild(p3);
+
+  /* Patches -- no sparkline: this moves once a day, and a flat line for 23 of
+     every 24 hours would say nothing a number does not. */
+  var pp = c.patches || {};
+  var ps = PATCH[pp.status || 'unknown'] || PATCH.unknown;
+  var p4 = el('div', 'panel');
+  p4.appendChild(el('h2', null, 'Patch status'));
+  var b4 = el('div', 'big');
+  b4.appendChild(document.createTextNode(patchText(pp)));
+  b4.style.color = ps.css;
+  p4.appendChild(b4);
+
+  if (pp.checked_at) {
+    if (pp.security === null || pp.security === undefined) {
+      p4.appendChild(el('div', 'sub',
+        'no security classification available on this platform'));
+    } else if (pp.other !== null && pp.other !== undefined) {
+      p4.appendChild(el('div', 'sub', pp.security + ' security · ' + pp.other + ' other'));
+    }
+    p4.appendChild(el('div', 'sub',
+      (pp.source || 'unknown source') + ' · checked ' + fmtAge(pp.age_seconds)));
+    if (pp.detail) p4.appendChild(el('div', 'sub', pp.detail));
+  } else {
+    p4.appendChild(el('div', 'sub',
+      'No patch check has run on this host yet — run netdash-patchcheck.'));
+  }
+  panels.appendChild(p4);
 
   frag.appendChild(panels);
   root.replaceChildren(frag);

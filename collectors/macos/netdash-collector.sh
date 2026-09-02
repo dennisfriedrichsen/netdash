@@ -111,8 +111,22 @@ UPTIME=$(( $(date +%s) - ${BOOT:-0} ))
 OS="$(sw_vers -productName 2>/dev/null || echo macOS) $(sw_vers -productVersion 2>/dev/null || echo '')"
 ARCH=$(uname -m)
 
-JSON=$(printf '{"host":"%s","os":"%s (%s)","cpu_pct":%s,"mem_used_bytes":%s,"mem_total_bytes":%s,"uptime_seconds":%d,"disks":[%s]}' \
-  "$HOST" "$OS" "$ARCH" "$CPU" "$MEM_USED" "$MEM_TOTAL" "$UPTIME" "$DISKS")
+# ---- Patch status ----
+# Read back from whatever netdash-patchcheck last wrote on its own daily
+# schedule. This stays a file read on purpose: `softwareupdate -l` triggers a
+# network scan taking tens of seconds, so at a 60s cadence the scans would
+# overlap. An absent, unreadable or truncated file reports null, which the
+# server renders as "unknown" -- never as up to date.
+PATCHES=null
+for f in ${NETDASH_PATCH_STATE:-} /usr/local/var/netdash/patches.json \
+         /opt/homebrew/var/netdash/patches.json; do
+  [ -r "$f" ] || continue
+  P=$(tr -d '\n' < "$f" 2>/dev/null || true)
+  case "$P" in '{'*'}') PATCHES="$P"; break ;; esac
+done
+
+JSON=$(printf '{"host":"%s","os":"%s (%s)","cpu_pct":%s,"mem_used_bytes":%s,"mem_total_bytes":%s,"uptime_seconds":%d,"disks":[%s],"patches":%s}' \
+  "$HOST" "$OS" "$ARCH" "$CPU" "$MEM_USED" "$MEM_TOTAL" "$UPTIME" "$DISKS" "$PATCHES")
 
 if [ "$MODE" = "--print" ]; then printf '%s\n' "$JSON"; exit 0; fi
 

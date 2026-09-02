@@ -27,10 +27,13 @@ SRC_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 OS=$(uname -s)
 
 case "$OS" in
-  Linux)   SRC="$SRC_DIR/linux/netdash-collector.sh"; CONF_DIR=/etc/netdash ;;
-  FreeBSD) SRC="$SRC_DIR/bsd/netdash-collector.sh";   CONF_DIR=/usr/local/etc/netdash ;;
+  Linux)   SRC="$SRC_DIR/linux/netdash-collector.sh"; CONF_DIR=/etc/netdash
+           PSRC="$SRC_DIR/linux/netdash-patchcheck.sh" ;;
+  FreeBSD) SRC="$SRC_DIR/bsd/netdash-collector.sh";   CONF_DIR=/usr/local/etc/netdash
+           PSRC="$SRC_DIR/bsd/netdash-patchcheck.sh" ;;
   OpenBSD|NetBSD)
-           SRC="$SRC_DIR/bsd/netdash-collector.sh";   CONF_DIR=/etc/netdash ;;
+           SRC="$SRC_DIR/bsd/netdash-collector.sh";   CONF_DIR=/etc/netdash
+           PSRC="$SRC_DIR/bsd/netdash-patchcheck.sh" ;;
   Darwin)  echo "macOS: use the Homebrew formula (brew install dennisfriedrichsen/tap/netdash-collector)" >&2; exit 1 ;;
   *)       echo "unsupported OS: $OS" >&2; exit 1 ;;
 esac
@@ -66,6 +69,11 @@ cp "$SRC" "$BIN"
 chmod 755 "$BIN"
 echo "installed $BIN"
 
+PBIN=/usr/local/bin/netdash-patchcheck
+cp "$PSRC" "$PBIN"
+chmod 755 "$PBIN"
+echo "installed $PBIN"
+
 if [ -f "$CONF" ] && [ -z "$URL" ]; then
   echo "kept existing $CONF"
 else
@@ -88,15 +96,24 @@ echo "--- test post ---"
 "$BIN" && echo "post OK" || { echo "post failed; check URL/token/firewall" >&2; exit 1; }
 
 # ---- schedule ----
+# A minute past a random hour-of-the-early-morning slot, so a fleet installed
+# from the same terminal does not all hit the same mirror at 03:00.
+PMIN=$(( $$ % 60 ))
+
 schedule_cron() {
   # One-minute granularity is the floor, which is inside the 30-60s target.
   CRON_LINE="* * * * * $BIN >/dev/null 2>&1"
+  # The patch check is daily, not per-minute: it refreshes package metadata and
+  # on OpenBSD fetches the syspatch index from the mirror. Its output is a file
+  # the collector reads, so nothing is lost by running it rarely.
+  PCRON_LINE="$PMIN 3 * * * $PBIN >/dev/null 2>&1"
   TMP=$(mktemp 2>/dev/null || echo /tmp/netdash.cron.$$)
-  crontab -l 2>/dev/null | grep -v 'netdash-collector' > "$TMP" || true
+  crontab -l 2>/dev/null | grep -v 'netdash-collector' | grep -v 'netdash-patchcheck' > "$TMP" || true
   echo "$CRON_LINE" >> "$TMP"
+  echo "$PCRON_LINE" >> "$TMP"
   crontab "$TMP"
   rm -f "$TMP"
-  echo "scheduled: root crontab, every 60s"
+  echo "scheduled: root crontab, collector every 60s, patch check daily at 03:$PMIN"
 }
 
 if [ "$OS" = "Linux" ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
@@ -123,10 +140,37 @@ Unit=netdash-collector.service
 [Install]
 WantedBy=timers.target
 EOF
+  cat > /etc/systemd/system/netdash-patchcheck.service <<EOF
+[Unit]
+Description=netdash patch check
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$PBIN
+EOF
+  # Daily, because this refreshes package metadata and can take seconds --
+  # unlike the collector, which must stay cheap. Persistent so a machine that
+  # was asleep at 03:00 runs the check on wake rather than skipping the day,
+  # and randomised so a fleet does not hit the mirrors in lockstep.
+  cat > /etc/systemd/system/netdash-patchcheck.timer <<EOF
+[Unit]
+Description=Run the netdash patch check daily
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+Unit=netdash-patchcheck.service
+
+[Install]
+WantedBy=timers.target
+EOF
   systemctl daemon-reload
   systemctl enable --now netdash-collector.timer
-  echo "scheduled: systemd timer every ${SEC}s"
-  systemctl list-timers netdash-collector.timer --no-pager 2>/dev/null | head -3 || true
+  systemctl enable --now netdash-patchcheck.timer
+  echo "scheduled: systemd timer every ${SEC}s, patch check daily"
+  systemctl list-timers netdash-collector.timer netdash-patchcheck.timer --no-pager 2>/dev/null | head -4 || true
 
 elif command -v rc-update >/dev/null 2>&1; then
   # Alpine and other OpenRC systems: cron works, but crond is not running by
@@ -144,6 +188,18 @@ else
   if [ "$OS" = "FreeBSD" ] || [ "$OS" = "NetBSD" ] || [ "$OS" = "OpenBSD" ]; then
     command -v service >/dev/null 2>&1 && service cron status >/dev/null 2>&1 || true
   fi
+fi
+
+# ---- first patch check, so the card shows something before tomorrow ----
+# Not fatal if it fails: a host with no network, or one where the package
+# manager needs attention, still reports CPU/memory/disk perfectly well. The
+# dashboard shows its patch badge as "not checked" until this succeeds, which
+# is the honest reading rather than a green one.
+echo "--- first patch check (refreshes package metadata; may take a moment) ---"
+if "$PBIN"; then
+  echo "patch check OK"
+else
+  echo "patch check failed; the host will show 'not checked' until it succeeds" >&2
 fi
 
 echo "done."
