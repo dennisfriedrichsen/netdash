@@ -1,0 +1,1 @@
+pkg_admin: Cannot open /usr/pkg/pkgdb/pkg-vulnerabilities: No such file or directory

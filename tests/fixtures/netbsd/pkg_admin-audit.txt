@@ -1,0 +1,1 @@
+Package perl-5.42.3 has a symlink-attack vulnerability, see https://nvd.nist.gov/vuln/detail/CVE-2011-4116

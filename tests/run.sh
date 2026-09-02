@@ -273,6 +273,39 @@ PY
         "assert d['patch_total']=='0' and d['patch_sec']=='0', d" "$J"
 fi
 
+if want patches-netbsd; then
+  echo "patches-netbsd (a missing vulnerability database must not read as clean)"
+  J=$(python3 - "$ROOT" <<'PY'
+import re,subprocess,sys,json
+root=sys.argv[1]
+src=open(f"{root}/collectors/bsd/netdash-patchcheck.sh").read()
+pat=re.search(r"pkg_admin audit \| grep -c '([^']*)'", src).group(1)
+def count(p,f):
+    out=subprocess.run(["grep","-c",p,f],capture_output=True,text=True).stdout.strip()
+    return int(out or 0)
+found=f"{root}/tests/fixtures/netbsd/pkg_admin-audit.txt"
+nodb=f"{root}/tests/fixtures/netbsd/pkg_admin-audit-nodb.txt"
+print(json.dumps({
+  "pattern": pat,
+  "found":   count(pat, found),
+  "nodb":    count(pat, nodb),
+  # A prefix match -- the obvious "be lenient about singular/plural" instinct --
+  # matches the path in the error message instead.
+  "naive_nodb": count("vulnerabilit", nodb),
+}))
+PY
+)
+  check "one vulnerable package is counted once" \
+        "assert d['found']==1, d" "$J"
+  # 'Cannot open /usr/pkg/pkgdb/pkg-vulnerabilities' must count as zero, and
+  # the surrounding script bails on the absent database before this ever runs.
+  # If it did count, a host with no database would report a clean bill of health.
+  check "the 'Cannot open pkg-vulnerabilities' error counts zero" \
+        "assert d['nodb']==0, d" "$J"
+  check "a lenient 'vulnerabilit' prefix would match the error path instead" \
+        "assert d['naive_nodb']==1 and d['nodb']==0, d" "$J"
+fi
+
 if want patches-stale; then
   echo "patches-stale (an old or missing check must read unknown, never ok)"
   J=$(python3 - "$ROOT" <<'PY'

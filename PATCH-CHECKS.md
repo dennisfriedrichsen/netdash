@@ -207,7 +207,7 @@ documented dry run, it needs `PKG_PATH` set, and on `-release` it only sees
 security fixes if `PKG_PATH` points at the `-stable` package build. The
 syspatch count is the signal worth reporting; packages are best-effort.
 
-### NetBSD — partly **verified** on NetBSD 11.0
+### NetBSD — **verified** end to end on NetBSD 11.0
 
 `pkg_admin audit` checks installed packages against the local
 `pkg-vulnerabilities` file in pkgdb — cheap, no network. The fetch is
@@ -235,15 +235,41 @@ The error string cannot be miscounted, incidentally: the grep looks for
 `vulnerability` and the path is `pkg-vulnerabilities`, which does not contain
 it.
 
-Still unverified: what `pkg_admin audit` prints when it *does* find something.
-The parse counts lines containing `vulnerability`, and no host in the fleet has
-had a populated database to check it against.
+Once the database was fetched, the audit produced one line per finding:
+
+```
+$ pkg_admin audit
+Package perl-5.42.3 has a symlink-attack vulnerability, see https://nvd.nist.gov/vuln/detail/CVE-2011-4116
+```
+
+and the whole check, run as root on that host:
+
+```json
+{"security":1,"other":null,"checked_at":1788368590,"source":"pkg_admin-audit",
+ "detail":"base system not checked (NetBSD ships no binary patch mechanism)"}
+```
+
+The format is `Package <pkg> has a <type> vulnerability, see <url>`, one line
+per *finding* — so a package carrying three advisories contributes three. The
+badge counts issues, not packages, which is the right reading for a security
+indicator.
+
+Match on `vulnerability` exactly. The tempting leniency — `vulnerabilit`, to
+cover a possible plural — matches `pkg-vulnerabilities` in the missing-database
+error instead, turning a host with no data into a host with one finding.
+`tests/run.sh patches-netbsd` pins both directions against the real captures.
 
 Pending package *updates* need `pkgin` (`pkgin -n upgrade`, root only —
 unprivileged it answers *"You don't have enough rights for this operation"*);
-with plain `pkg_add` there is nothing built in. That count comes from pkgin's
-own database, whose age is not reflected in `checked_at`, so treat `other` on
-NetBSD as softer than `security`. Base system: nothing, as above.
+with plain `pkg_add` there is nothing built in. **The pkgin parse is still
+unconfirmed**: on the test host, which has pkgin installed, the run above
+returned `other: null`, meaning the `N packages to upgrade` sed matched
+nothing. That is the designed degradation rather than a wrong number, but it
+means NetBSD currently reports security findings and no update count.
+
+That count would come from pkgin's own database, whose age is not reflected in
+`checked_at`, so `other` on NetBSD is a softer number than `security` even once
+it works. Base system: nothing, as above.
 
 ### macOS
 

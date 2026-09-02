@@ -29,6 +29,8 @@ numbers are untouched.
 | `linux/apt-dist-upgrade.txt` | Debian 13 | the security origin sits *inside* the parentheses |
 | `linux/zypper-list-updates-tumbleweed.txt` | openSUSE Tumbleweed | 23 real pending updates; header and `---+---` separator must not count |
 | `linux/zypper-patch-check-tumbleweed.txt` | openSUSE Tumbleweed | the same host answering *"0 patches needed"* |
+| `netbsd/pkg_admin-audit.txt` | NetBSD 11.0 | `Package X has a Y vulnerability, see URL` — one line per finding |
+| `netbsd/pkg_admin-audit-nodb.txt` | NetBSD 11.0 | the same command with no database: must count zero, not one |
 
 `apt-dist-upgrade.txt` is real `apt-get --just-print` output, captured with
 `-o Dir::State::status=/dev/null` because the host had nothing pending — that
