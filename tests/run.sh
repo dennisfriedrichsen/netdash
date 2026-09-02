@@ -306,6 +306,40 @@ PY
         "assert d['naive_nodb']==1 and d['nodb']==0, d" "$J"
 fi
 
+if want patches-macos; then
+  echo "patches-macos (nothing pending must be told apart from nothing parsed)"
+  J=$(python3 - "$ROOT" <<'PY'
+import re,subprocess,sys,json
+root=sys.argv[1]
+src=open(f"{root}/collectors/macos/netdash-patchcheck.sh").read()
+clear=re.search(r"grep -q '([^']*No new software[^']*)'", src).group(1)
+entry=re.search(r"grep -c '(\^\[\[:space:\]\]\*[^']*)'", src).group(1)
+rec=re.search(r"grep -c '(Recommended:[^']*)'", src).group(1)
+
+def probe(text):
+    def g(flag,pat):
+        r=subprocess.run(["grep",flag,pat],input=text,capture_output=True,text=True)
+        return r.returncode==0 if flag=="-q" else int(r.stdout.strip() or 0)
+    return {"allclear": g("-q",clear), "entries": g("-c",entry), "recommended": g("-c",rec)}
+
+none=open(f"{root}/tests/fixtures/macos/softwareupdate-none.txt").read()
+print(json.dumps({"none": probe(none), "empty": probe(""),
+                  "counters_referenced": bool(re.search(r"^\s*(REC|ALL)=\$\(sud ", src, re.M))}))
+PY
+)
+  check "a Mac with nothing pending reports the all-clear string" \
+        "assert d['none']['allclear'] and d['none']['entries']==0, d" "$J"
+  # Both cases count zero entries, so the entry count alone cannot tell them
+  # apart. Only the explicit all-clear string makes 'nothing pending' safe to
+  # report as ok; empty output falls through to the guard and reads unknown.
+  check "empty output has no all-clear string, so it cannot be read as ok" \
+        "assert not d['empty']['allclear'] and d['empty']['entries']==0, d" "$J"
+  # LastRecommendedUpdatesAvailable read 1 on a macOS 26 host that softwareupdate
+  # said was fully up to date, even after a forced fresh scan. Nothing resets it.
+  check "the unreliable plist counters are not used for the counts" \
+        "assert not d['counters_referenced'], d" "$J"
+fi
+
 if want patches-stale; then
   echo "patches-stale (an old or missing check must read unknown, never ok)"
   J=$(python3 - "$ROOT" <<'PY'

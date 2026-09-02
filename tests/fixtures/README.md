@@ -31,6 +31,7 @@ numbers are untouched.
 | `linux/zypper-patch-check-tumbleweed.txt` | openSUSE Tumbleweed | the same host answering *"0 patches needed"* |
 | `netbsd/pkg_admin-audit.txt` | NetBSD 11.0 | `Package X has a Y vulnerability, see URL` — one line per finding |
 | `netbsd/pkg_admin-audit-nodb.txt` | NetBSD 11.0 | the same command with no database: must count zero, not one |
+| `macos/softwareupdate-none.txt` | macOS 26.6.2 | the all-clear string, which is what makes a zero count safe to report |
 
 `apt-dist-upgrade.txt` is real `apt-get --just-print` output, captured with
 `-o Dir::State::status=/dev/null` because the host had nothing pending — that

@@ -46,14 +46,29 @@ sud() { defaults read "$SUPLIST" "$1" 2>/dev/null || true; }
 # hours old, and it stops advancing the moment scanning stops -- which is what
 # ages a neglected Mac into "unknown" on the dashboard.
 read_su() {
-  ALL=$(sud LastUpdatesAvailable)
-  REC=$(sud LastRecommendedUpdatesAvailable)
   DATE=$(sud LastSuccessfulDate)
   CHECKED=""
   # `defaults` prints "2026-09-02 17:04:55 +0000"; BSD date parses it back.
   [ -n "$DATE" ] && CHECKED=$(date -j -f "%Y-%m-%d %H:%M:%S %z" "$DATE" +%s 2>/dev/null || true)
 }
 read_su
+
+# The counts come from softwareupdate itself, NOT from the plist's
+# LastUpdatesAvailable / LastRecommendedUpdatesAvailable integers.
+#
+# Those integers are unreliable. On the macOS 26 test host
+# LastRecommendedUpdatesAvailable read 1 while:
+#   * RecommendedUpdates was an empty array
+#   * softwareupdate --list --no-scan said "No new software available"
+#   * softwareupdate --list, a forced fresh scan, said the same
+#   * and the integer STILL read 1 afterwards
+# Nothing resets it. Trusting it pinned a fully patched Mac at "1 security"
+# indefinitely, and a badge that cries wolf is a badge that gets ignored --
+# which costs the real alert later.
+#
+# --no-scan reads the cache the system already refreshed, so this is cheap;
+# the forced scan below is the only thing here that touches the network.
+su_list() { softwareupdate --list --no-scan 2>/dev/null || true; }
 
 # Whether to force a scan. `softwareupdate -l` costs tens of seconds and a
 # network round trip, so it runs only when there is no usable cached answer.
@@ -80,11 +95,31 @@ if [ -z "$CHECKED" ]; then
   exit 1
 fi
 
-# "Recommended" is the closest thing macOS has to a security classification;
-# Rapid Security Responses appear in the same list. Homebrew packages are a
-# separate question and deliberately not reported.
-SEC=${REC:-0}
-OTH=$(( ${ALL:-0} - SEC )); [ "$OTH" -ge 0 ] || OTH=0
+# "Recommended: YES" is the closest thing macOS has to a security
+# classification; Rapid Security Responses appear in the same list. Homebrew
+# packages are a separate question and deliberately not reported, as are
+# --include-config-data items (XProtect and friends), which macOS installs
+# silently and never shows in the Software Update pane -- reporting something
+# the user cannot act on would be noise.
+LIST=$(su_list)
+if printf '%s' "$LIST" | grep -q 'No new software available'; then
+  SEC=0
+  OTH=0
+else
+  # Each entry begins with "* Label: ...", and carries "Recommended: YES" when
+  # Apple considers it important.
+  TOT=$(printf '%s\n' "$LIST" | grep -c '^[[:space:]]*\*' || true)
+  SEC=$(printf '%s\n' "$LIST" | grep -c 'Recommended:[[:space:]]*YES' || true)
+  # Neither the all-clear string nor a single parseable entry: the output is
+  # something this does not understand. Report nothing rather than zero --
+  # zero here would paint an unexamined Mac green.
+  if [ "$TOT" -eq 0 ]; then
+    echo "netdash-patchcheck: could not parse softwareupdate output:" >&2
+    printf '%s\n' "$LIST" | sed 's/^/  /' >&2
+    exit 1
+  fi
+  OTH=$(( TOT - SEC )); [ "$OTH" -ge 0 ] || OTH=0
+fi
 
 DET=""
 [ "$AUTO" = "0" ] && DET="automatic update checks are disabled on this Mac"

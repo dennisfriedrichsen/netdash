@@ -264,7 +264,7 @@ which commands are wrong in ways that fail silently — is in
 | FreeBSD | `pkg audit` + `freebsd-update updatesready` | yes, and base separately |
 | OpenBSD | `syspatch -c` (base only; packages need `PKG_PATH`) | yes, for base |
 | NetBSD | `pkg_admin audit` | yes for packages; **base has no patch mechanism** |
-| macOS | cached `com.apple.SoftwareUpdate` scan | "recommended" |
+| macOS | `softwareupdate --list --no-scan` | `Recommended: YES` |
 | TrueNAS CORE | `update.check_available` | no, OS image only |
 
 Two rules hold everywhere:
@@ -317,7 +317,7 @@ sh tests/run.sh              # everything
 sh tests/run.sh openbsd      # just the cases matching a name
 ```
 
-49 cases, no network, no root, nothing installed — `sh`, `awk` and `python3`.
+52 cases, no network, no root, nothing installed — `sh`, `awk` and `python3`.
 The BSD and macOS cases run the real collector end to end against mocked
 `sysctl`/`df`/`mount`/`vmstat`; the Linux cases drive its awk programs directly,
 since `/proc` reads cannot be intercepted through `PATH`.

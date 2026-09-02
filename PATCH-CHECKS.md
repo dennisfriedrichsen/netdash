@@ -282,11 +282,38 @@ launchd job running as your user rather than root. The keys that matter:
 
 | key | use |
 |---|---|
-| `LastRecommendedUpdatesAvailable` | count of pending recommended updates |
-| `LastUpdatesAvailable` | count of all pending updates |
-| `RecommendedUpdates` | array, for the detail string |
 | `LastSuccessfulDate` | freshness — this is `checked_at` |
-| `AutomaticCheckEnabled` | advisory only — see below |
+| `AutomaticCheckEnabled` | advisory only — absent on macOS 26 |
+| `LastRecommendedUpdatesAvailable` | **do not use** — see below |
+| `LastUpdatesAvailable` | **do not use** |
+
+The counts come from `softwareupdate --list --no-scan`, which reads the cache
+the system already refreshed and so costs nothing.
+
+**The plist's integer counters are unreliable.** On the macOS 26 test host,
+`LastRecommendedUpdatesAvailable` read `1` while every other source said the
+machine was fully patched:
+
+```
+$ defaults read /Library/Preferences/com.apple.SoftwareUpdate RecommendedUpdates
+(
+)
+$ softwareupdate --list --no-scan
+No new software available.
+$ softwareupdate --list            # forced fresh scan
+No new software available.
+$ defaults read /Library/Preferences/com.apple.SoftwareUpdate LastRecommendedUpdatesAvailable
+1
+```
+
+Note the last two lines: a forced fresh scan did not reset it. Nothing does.
+An earlier version of this check trusted that integer and pinned a fully
+patched Mac at "1 security" indefinitely.
+
+That is a false *positive*, which is the safer direction to fail — it nags
+about a patched machine rather than blessing an unpatched one. It is still
+wrong, and a badge that cries wolf is one that gets ignored, which costs the
+real alert later.
 
 macOS scans on its own every six hours, so the cache is normally fresher than
 a daily job would manage. On the test host `LastSuccessfulDate` was four
@@ -308,9 +335,19 @@ A neglected Mac is therefore caught twice over: the forced rescan tries to fix
 it, and if that fails `checked_at` stops advancing and the badge ages into
 *unknown* rather than reporting a confident zero.
 
-Apple's "recommended" is the closest thing to a security classification;
-Rapid Security Responses appear in the same list. Homebrew packages
-(`brew outdated`) are a separate question and deliberately not reported.
+`Recommended: YES` on an entry is the closest thing to a security
+classification; Rapid Security Responses appear in the same list. Entries are
+counted from lines beginning `* Label:`.
+
+Output that is neither the all-clear string nor a single parseable entry is
+reported as *unknown*, not zero: both cases count zero entries, so the count
+alone cannot tell "nothing pending" from "nothing understood", and only the
+explicit `No new software available` string makes zero safe to report.
+
+Homebrew packages (`brew outdated`) are a separate question and deliberately
+not reported, as are `--include-config-data` items (XProtect and friends),
+which macOS installs silently and never shows in the Software Update pane —
+reporting something the user cannot act on is noise.
 
 ### TrueNAS CORE
 
