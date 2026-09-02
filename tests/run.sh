@@ -615,6 +615,73 @@ PY
         "assert d['ignores_unversioned']=='0.3.1', d" "$J"
 fi
 
+if want eol; then
+  echo "eol (real fleet OS strings map to real release cycles)"
+  J=$(python3 - "$ROOT" <<'PY'
+import sys,json; sys.path.insert(0,f"{sys.argv[1]}/server")
+import eol
+from datetime import date
+# Cycle data captured from endoflife.date, not fetched: the suite runs with no
+# network. Only the shapes the matcher depends on are kept.
+eol._CACHE.update({
+ "debian":  {"ts":9e9,"releases":[{"name":"13","isEol":False,"eolFrom":"2028-08-09"},
+                                  {"name":"12","isEol":False,"eolFrom":"2026-07-11"},
+                                  {"name":"11","isEol":True,"eolFrom":"2024-08-14"}]},
+ "ubuntu":  {"ts":9e9,"releases":[{"name":"24.04","isEol":False,"eolFrom":"2029-05-31"},
+                                  {"name":"22.04","isEol":False,"eolFrom":"2027-06-01"}]},
+ "netbsd":  {"ts":9e9,"releases":[{"name":"11","isEol":False,"eolFrom":None}]},
+ "macos":   {"ts":9e9,"releases":[{"name":"26","isEol":False,"eolFrom":None}]},
+ "freebsd": {"ts":9e9,"releases":[{"name":"15.1","isEol":False,"eolFrom":"2027-03-31"},
+                                  {"name":"15","isEol":False,"eolFrom":"2028-12-31"}]},
+})
+cfg={"warn_days":90,"overrides":{"TrueNAS CORE":"2025-03-31"}}
+T=date(2026,9,2)
+def q(s): return eol.lookup(s,cfg,today=T)
+print(json.dumps({
+ "ubuntu_trims":  q("Ubuntu 24.04.4 LTS (x86_64)")["cycle"],
+ "netbsd_trims":  q("NetBSD 11.0 (amd64)")["cycle"],
+ "macos_trims":   q("macOS 26.6.2 (arm64)")["cycle"],
+ "freebsd_exact": q("FreeBSD 15.1-RELEASE-p3 (amd64)")["cycle"],
+ "raspbian":      q("Raspbian GNU/Linux 13 (trixie) - Raspberry Pi 3 Model B Plus (armv7l)")["cycle"],
+ "arch":          q("Arch Linux (x86_64)")["status"],
+ "tumbleweed":    q("openSUSE Tumbleweed (x86_64)")["status"],
+ "truenas":       q("TrueNAS CORE 13.0 U6.8")["status"],
+ "truenas_src":   q("TrueNAS CORE 13.0 U6.8")["source"],
+ "old_debian":    q("Debian GNU/Linux 11 (bullseye) (x86_64)")["status"],
+ "soon":          q("Debian GNU/Linux 12 (bookworm) (x86_64)")["status"],
+ "no_eol_date":   q("macOS 26.6.2 (arm64)")["status"],
+ "unmatched":     q("Plan 9 from Bell Labs")["status"],
+ "uncached":      eol.lookup("Fedora Linux 43 (Server Edition)",cfg,today=T)["status"],
+}))
+PY
+)
+  # Every platform spells its version differently from its release cycle.
+  check "versions are trimmed to the cycle the platform actually uses" \
+        "assert (d['ubuntu_trims'],d['netbsd_trims'],d['macos_trims'])==('24.04','11','26'), d" "$J"
+  # FreeBSD publishes both "15.1" and "15"; the exact one must win.
+  check "the most specific matching cycle wins over a shorter one" \
+        "assert d['freebsd_exact']=='15.1', d" "$J"
+  check "Raspbian resolves as Debian" \
+        "assert d['raspbian']=='13', d" "$J"
+  # Rolling releases have no cycle to expire; "unknown" would be a permanent
+  # unanswerable question on the card, "rolling" is the real answer.
+  check "rolling releases report rolling, not unknown" \
+        "assert d['arch']=='rolling' and d['tumbleweed']=='rolling', d" "$J"
+  # endoflife.date's truenas product covers SCALE only, so CORE 13 has no cycle.
+  # The config override is the only way to answer for it.
+  check "a config override answers where endoflife.date has no product" \
+        "assert d['truenas']=='eol' and d['truenas_src']=='config', d" "$J"
+  check "a past-EOL release reads eol, and one within warn_days reads eol_soon" \
+        "assert d['old_debian']=='eol' and d['soon']=='eol_soon', d" "$J"
+  # macOS and NetBSD announce no end date at all; that is supported, not eol.
+  check "a cycle with no announced end date is supported, not eol" \
+        "assert d['no_eol_date']=='supported', d" "$J"
+  # Both must be unknown rather than an optimistic "supported": one is an OS
+  # nothing recognises, the other a product the cache has not fetched.
+  check "an unrecognised OS and an uncached product both read unknown" \
+        "assert d['unmatched']=='unknown' and d['uncached']=='unknown', d" "$J"
+fi
+
 echo
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]

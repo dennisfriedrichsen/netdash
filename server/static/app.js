@@ -215,6 +215,28 @@ function osIcon(os) {
   return svg;
 }
 
+/* End-of-life is shown ONLY when it is bad news. A badge on every card reading
+   "supported" is noise at fleet scale; the whole value is spotting the one box
+   nobody ships fixes for any more. */
+var EOL = {
+  eol:      { label: 'EOL', css: 'var(--st-crit)' },
+  eol_soon: { label: 'EOL soon', css: 'var(--st-warn)' }
+};
+
+function eolBadge(e) {
+  if (!e || !EOL[e.status]) return null;
+  var spec = EOL[e.status];
+  var b = el('span', 'eolbadge', spec.label);
+  b.style.color = spec.css;
+  b.style.borderColor = spec.css;
+  b.title = e.status === 'eol'
+    ? ('This release is past end of life' + (e.eol_date ? ' (' + e.eol_date + ')' : '') +
+       ' \u2014 upstream ships no further fixes' +
+       (e.source === 'config' ? ', per server.json' : ', per endoflife.date') + '.')
+    : ('End of life in ' + e.days_left + ' days, on ' + e.eol_date + ' (endoflife.date).');
+  return b;
+}
+
 /* ---------- overview ---------- */
 
 function renderOverview(data) {
@@ -231,8 +253,12 @@ function renderOverview(data) {
     return h.status === 'critical' || h.status === 'warning' || h.status === 'stale';
   }).length;
   var behind = data.hosts.filter(function (h) { return h.collector_outdated; }).length;
+  var eolCount = data.hosts.filter(function (h) {
+    return h.eol && h.eol.status === 'eol';
+  }).length;
   metaEl.textContent = data.hosts.length + ' hosts · ' +
     (bad ? bad + ' need attention' : 'all clear') +
+    (eolCount ? ' · ' + eolCount + ' past EOL' : '') +
     (behind ? ' · ' + behind + ' on an old collector' : '') + ' · ' +
     new Date(data.now * 1000).toLocaleTimeString();
 
@@ -246,6 +272,8 @@ function renderOverview(data) {
     var row = el('div', 'row1');
     row.appendChild(osIcon(h.os));
     row.appendChild(el('span', 'name', h.host));
+    var eb = eolBadge(h.eol);
+    if (eb) row.appendChild(eb);
     var chip = el('span', 'chip');
     var dot = el('span', 'dot'); chip.appendChild(dot);
     chip.appendChild(el('span', 'glyph', s.glyph));
@@ -402,7 +430,9 @@ function renderDetail(host, data) {
   titleEl.textContent = host;
   metaEl.textContent = (c.os || 'unknown os') + ' · ' + fmtUptime(c.uptime_seconds) +
     ' · ' + (c.stale ? 'last seen ' : 'updated ') + fmtAge(c.age_seconds) +
-    (c.collector_version ? ' · collector v' + c.collector_version : '');
+    (c.collector_version ? ' · collector v' + c.collector_version : '') +
+    (c.eol && c.eol.status === 'eol' ? ' · PAST EOL'
+      : c.eol && c.eol.status === 'eol_soon' ? ' · EOL ' + c.eol.eol_date : '');
 
   var frag = document.createDocumentFragment();
 

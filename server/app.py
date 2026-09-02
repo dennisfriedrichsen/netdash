@@ -18,6 +18,7 @@ from urllib.parse import urlparse, parse_qs
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db  # noqa: E402
+import eol  # noqa: E402
 import truenas  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -32,6 +33,10 @@ CONN = None
 # server reads a config written before these keys existed, and a bare
 # CFG["patch_stale_hours"] would KeyError on every request.
 DEFAULTS = {
+    # Whether a host's OS is still supported upstream, from endoflife.date.
+    # Sends nothing about the fleet: it fetches public product files and matches
+    # locally. Set "enabled": false to make no outbound request at all.
+    "eol": {"enabled": True, "refresh_hours": 24, "warn_days": 90, "overrides": {}},
     # How old a patch check may be before the dashboard stops believing it.
     # Two days: the checks run daily, so this tolerates one missed run before
     # the badge drops to "unknown".
@@ -205,6 +210,11 @@ def summarize(sample, now=None):
         },
         "disk": {"worst_pct": worst_disk_pct, "status": disk_status, "mounts": disks},
         "patches": patch_summary(sample, now),
+        # Derived from the OS string against a cached lookup, so it is computed
+        # per request rather than stored per sample -- the answer changes with
+        # the calendar, not with anything the host reports.
+        "eol": (eol.lookup(sample.get("os"), CFG["eol"])
+                if CFG["eol"].get("enabled") else eol._unknown()),
         "collector_version": sample.get("collector_version"),
         "status": overall,
     }
@@ -371,6 +381,25 @@ class Server(ThreadingHTTPServer):
 
 # ---------- background workers ----------
 
+def eol_refresher():
+    """Keep the endoflife.date cache warm, off the request path.
+
+    Release dates move on the scale of months, so this is deliberately lazy:
+    once at startup and then on a long timer. A failure keeps the previous
+    cache rather than clearing it -- yesterday's copy of Debian's EOL date is
+    still correct today.
+    """
+    cfg = CFG["eol"]
+    interval = max(3600, int(cfg.get("refresh_hours") or 24) * 3600)
+    while True:
+        try:
+            os_strings = [s.get("os") for s in db.latest_per_host(CONN)]
+            eol.refresh(os_strings, cfg)
+        except Exception as e:
+            sys.stderr.write("eol refresh error: %s\n" % e)
+        time.sleep(interval)
+
+
 def pruner():
     while True:
         time.sleep(600)
@@ -403,6 +432,9 @@ def main():
     db.prune(CONN, CFG["retention_hours"])
 
     threading.Thread(target=pruner, daemon=True).start()
+    if CFG["eol"].get("enabled"):
+        threading.Thread(target=eol_refresher, daemon=True).start()
+        sys.stderr.write("eol lookups enabled (endoflife.date)\n")
     if (CFG.get("truenas") or {}).get("enabled"):
         threading.Thread(target=truenas_poller, daemon=True).start()
         sys.stderr.write("truenas poller started\n")

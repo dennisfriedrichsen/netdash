@@ -49,6 +49,7 @@ instructions.
 | `retention_hours` | rolling window; older samples are pruned every 10 min |
 | `stale_after_seconds` | a host with no sample for this long shows as **Stale** |
 | `patch_stale_hours` | a patch check older than this shows as **unknown**, not OK |
+| `eol` | end-of-life lookups via endoflife.date (see below) |
 | `thresholds` | warn/crit percentages per metric |
 | `truenas` | API polling for the NAS (see below) |
 
@@ -246,6 +247,46 @@ brew services start netdash-collector                 # launchd, every 60s
 Homebrew never auto-starts a service on install, so `brew services start` is a
 one-time extra step. After that, `brew upgrade netdash-collector` is enough —
 it restarts the job for you.
+
+## End of life
+
+A host can be perfectly patched and still be running something nobody ships
+fixes for. That is a different question from the patch badge, and one the
+machine cannot answer about itself — TrueNAS CORE will never report a pending
+update again, because there will never be another one.
+
+The server matches each host's reported OS string against
+[endoflife.date](https://endoflife.date) and marks a card **EOL** when its
+release is past end of life, or **EOL soon** within `warn_days`. The header
+counts how many are past EOL. Nothing is shown for a healthy host: a badge on
+every card reading "supported" is noise, and the value is spotting the one box
+that is not.
+
+**Nothing about the fleet leaves the network.** The server fetches public
+product files (`/api/v1/products/debian`) on a slow timer and matches OS strings
+locally; it never tells endoflife.date what you run. Set `"enabled": false` to
+make no outbound request at all.
+
+```json
+"eol": { "enabled": true, "refresh_hours": 24, "warn_days": 90,
+         "overrides": { "TrueNAS CORE": true } }
+```
+
+`overrides` is matched as a prefix of the OS string, longest match winning, and
+takes precedence over the API. It exists because endoflife.date does not cover
+everything: its `truenas` product tracks SCALE only (23.10 onward), so CORE 13
+has no cycle to match and would read *unknown* forever — on the very box whose
+abandonment makes the feature worth having. The value is either a date
+(`"2025-03-31"`) or `true` to say "EOL, date unstated".
+
+Rolling releases report `rolling`, not unknown: Arch and Tumbleweed have no
+cycle that can expire. Anything unrecognised, or any product not yet fetched,
+reports **unknown** rather than an optimistic "supported".
+
+The lookup runs on a background thread and the request path only reads its
+cache, so a slow or unreachable endoflife.date can never delay the dashboard —
+it just leaves the badge unknown. A failed refresh keeps the previous cache;
+release dates move on the scale of months, so yesterday's copy is still right.
 
 ## Collector versions
 

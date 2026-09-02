@@ -7,9 +7,18 @@
   "stale_after_seconds": 180,
   "patch_stale_hours": 48,
   "thresholds": {
-    "cpu":  { "warn": 80, "crit": 95 },
-    "mem":  { "warn": 85, "crit": 95 },
-    "disk": { "warn": 85, "crit": 95 }
+    "cpu": {
+      "warn": 80,
+      "crit": 95
+    },
+    "mem": {
+      "warn": 85,
+      "crit": 95
+    },
+    "disk": {
+      "warn": 85,
+      "crit": 95
+    }
   },
   "truenas": {
     "enabled": false,
@@ -20,5 +29,11 @@
     "api_key": "",
     "poll_seconds": 60,
     "patch_poll_seconds": 3600
+  },
+  "eol": {
+    "enabled": true,
+    "refresh_hours": 24,
+    "warn_days": 90,
+    "overrides": {}
   }
 }
