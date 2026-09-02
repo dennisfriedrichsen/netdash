@@ -483,7 +483,7 @@ app.CFG={"patch_stale_hours":48}
 now=time.time(); H=3600
 def s(**kw):
     row={"patch_security":None,"patch_other":None,"patch_checked_at":None,
-         "patch_source":None,"patch_detail":None}
+         "patch_source":None,"patch_detail":None,"patch_reboot":None}
     row.update(kw)
     return app.patch_summary(row,now)["status"]
 print(json.dumps({
@@ -495,6 +495,13 @@ print(json.dumps({
   "updates":   s(patch_security=0,patch_other=12,patch_checked_at=now-2*H),
   "noclass":   s(patch_security=None,patch_other=7,patch_checked_at=now-2*H),
   "noclass0":  s(patch_security=None,patch_other=0,patch_checked_at=now-2*H),
+  # Installed but not running: the package database is clean and the host is
+  # still on the old code.
+  "reboot":       s(patch_security=0,patch_other=0,patch_reboot=1,patch_checked_at=now-2*H),
+  "reboot_stale": s(patch_security=0,patch_other=0,patch_reboot=1,patch_checked_at=now-72*H),
+  "reboot_and_sec": s(patch_security=2,patch_other=0,patch_reboot=1,patch_checked_at=now-2*H),
+  "reboot_and_oth": s(patch_security=0,patch_other=9,patch_reboot=1,patch_checked_at=now-2*H),
+  "reboot_null":  s(patch_security=0,patch_other=0,patch_reboot=None,patch_checked_at=now-2*H),
 }))
 PY
 )
@@ -516,6 +523,19 @@ PY
         "assert d['noclass']=='updates', d" "$J"
   check "unclassifiable platform with nothing pending is still ok" \
         "assert d['noclass0']=='ok', d" "$J"
+  # A Fedora host finished `dnf update` with a clean database while still
+  # booted on the old kernel and old libbluez, both of which had been on its
+  # security list. Nothing pending plus a pending reboot is not "up to date".
+  check "a clean database with a pending reboot is not ok" \
+        "assert d['reboot']=='reboot', d" "$J"
+  check "a pending reboot outranks plain updates but not security" \
+        "assert d['reboot_and_oth']=='reboot' and d['reboot_and_sec']=='security', d" "$J"
+  # Staleness still wins: an old reading is unknown whatever it claimed.
+  check "a stale reading is unknown even when it reported a reboot" \
+        "assert d['reboot_stale']=='unknown', d" "$J"
+  # Most platforms have no way to answer. null must not read as "no reboot".
+  check "no reboot mechanism (null) leaves an otherwise-clean host ok" \
+        "assert d['reboot_null']=='ok', d" "$J"
 fi
 
 if want patches-statefile; then

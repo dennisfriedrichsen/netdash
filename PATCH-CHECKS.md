@@ -470,6 +470,47 @@ Worth knowing for later: `update.check_available` was **removed in TrueNAS 25.x*
 in favour of `update.status`. CORE 13 is unaffected, but this call is the reason
 the poller is CORE-specific.
 
+## Reboot required
+
+The one false green the package database cannot see. A Fedora host here
+finished `dnf update` with a completely clean database while still running the
+old kernel and the old `libbluez` — **both of which had been on its security
+list minutes earlier**:
+
+```
+$ dnf needs-restarting -r
+Core libraries or services have been updated since boot-up:
+  * bluez  * bluez-libs  * kernel  * kernel-core  * kernel-modules ...
+Reboot is required to fully utilize these updates.
+exit=1
+```
+
+So `patches` carries `reboot_required`, and the server has a distinct `reboot`
+state that ranks below `security` (where there is still work to do) and above
+`updates` (where the work is done and only a reboot is outstanding).
+
+| platform | signal | status |
+|---|---|---|
+| Fedora / RHEL | `dnf needs-restarting -r`, exit 1 | **verified** |
+| Debian / Ubuntu / Raspbian | `/run/reboot-required` exists | gated, see below |
+| openSUSE | `zypper needs-restarting -r`, exit 1 | unverified |
+| FreeBSD | `freebsd-version -k` ≠ `uname -r` | unverified |
+| Arch, Alpine, OpenBSD, NetBSD, macOS | none | always `null` |
+
+`null` means *"this host has no way to answer"* and never *"no reboot needed"*.
+Two gates matter:
+
+- On Debian, `/run/reboot-required` is written by **`update-notifier-common`,
+  not by apt**. Its absence on a host without that package says nothing, so
+  `false` is reported only once the package is confirmed installed. The Debian
+  test host does not have it, and correctly reports `null`.
+- `zypper needs-restarting` ships in a **separate package**, and an unknown
+  zypper subcommand also exits non-zero — which would read as "reboot required"
+  on every host lacking it. The subcommand's presence is checked first.
+
+macOS is genuinely not applicable: it installs updates during a reboot rather
+than leaving a booted system running stale code.
+
 ## Payload
 
 Collectors add one optional `patches` object; hosts that have never run a check
@@ -477,9 +518,10 @@ simply omit it and read as *unknown*.
 
 ```json
 "patches": {
-  "status":     "ok | security | updates | unknown",
+  "status":     "ok | security | reboot | updates | unknown",
   "security":   3,
   "other":      41,
+  "reboot_required": false,
   "checked_at": 1788300000,
   "source":     "apt",
   "detail":     ""

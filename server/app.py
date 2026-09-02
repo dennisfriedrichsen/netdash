@@ -77,6 +77,8 @@ def patch_summary(sample, now):
     """
     sec = sample.get("patch_security")
     oth = sample.get("patch_other")
+    reboot = sample.get("patch_reboot")
+    reboot = None if reboot is None else bool(reboot)
     checked = sample.get("patch_checked_at")
     age = int(now - checked) if checked else None
 
@@ -84,6 +86,12 @@ def patch_summary(sample, now):
         status = "unknown"
     elif sec:
         status = "security"
+    elif reboot:
+        # Nothing left to install, but what was installed is not running yet.
+        # A Fedora host reached exactly this state: a clean package database
+        # while still booted on the old kernel and the old libbluez, both of
+        # which had been on its security list. Green here would be a lie.
+        status = "reboot"
     elif oth:
         status = "updates"
     elif sec is None and oth is None:
@@ -96,6 +104,7 @@ def patch_summary(sample, now):
         "status": status,
         "security": sec,
         "other": oth,
+        "reboot_required": reboot,
         "checked_at": checked,
         "age_seconds": age,
         "source": sample.get("patch_source"),

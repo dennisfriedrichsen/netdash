@@ -146,7 +146,10 @@ DET=""
 [ "$AUTO" = "0" ] && DET="automatic update checks are disabled on this Mac"
 [ $(( NOW - CHECKED )) -gt 86400 ] && DET="${DET:+$DET; }last successful scan was over a day ago"
 
-JSON=$(printf '{"security":%s,"other":%s,"checked_at":%d,"source":"%s","detail":"%s"}' \
+# macOS installs its updates at reboot rather than leaving a booted system
+# running stale code, so there is no equivalent state to report. Emitted as
+# null for a consistent payload shape.
+JSON=$(printf '{"security":%s,"other":%s,"reboot_required":null,"checked_at":%d,"source":"%s","detail":"%s"}' \
   "$SEC" "$OTH" "$CHECKED" "softwareupdate" "$DET")
 
 if [ "$MODE" = "--print" ]; then printf '%s\n' "$JSON"; exit 0; fi

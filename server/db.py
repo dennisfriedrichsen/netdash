@@ -23,7 +23,9 @@ CREATE TABLE IF NOT EXISTS samples (
     patch_other        INTEGER,
     patch_checked_at   INTEGER,
     patch_source       TEXT,
-    patch_detail       TEXT
+    patch_detail       TEXT,
+    -- 1 / 0 / NULL. NULL means the host has no way to answer, not "no".
+    patch_reboot       INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_samples_host_ts ON samples(host, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples(ts);
@@ -48,6 +50,7 @@ _ADDED_COLUMNS = {
         ("patch_checked_at", "INTEGER"),
         ("patch_source", "TEXT"),
         ("patch_detail", "TEXT"),
+        ("patch_reboot", "INTEGER"),
     ],
 }
 
@@ -87,8 +90,9 @@ def insert_sample(conn, payload, source="push"):
     cur = conn.execute(
         """INSERT INTO samples
              (host, ts, os, source, cpu_pct, mem_used_bytes, mem_total_bytes, uptime_seconds,
-              patch_security, patch_other, patch_checked_at, patch_source, patch_detail)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+              patch_security, patch_other, patch_checked_at, patch_source, patch_detail,
+              patch_reboot)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             payload["host"],
             ts,
@@ -103,6 +107,7 @@ def insert_sample(conn, payload, source="push"):
             p.get("checked_at"),
             p.get("source"),
             p.get("detail") or None,
+            None if p.get("reboot_required") is None else int(bool(p["reboot_required"])),
         ),
     )
     sid = cur.lastrowid

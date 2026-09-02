@@ -104,14 +104,28 @@ elif command -v dnf5 >/dev/null 2>&1 || command -v dnf >/dev/null 2>&1; then
 # ------------------------------------------------------------- pacman ----
 elif command -v pacman >/dev/null 2>&1; then
   SRC=pacman
-  # Arch publishes no security classification in the repositories, so this
-  # needs two tools and neither is in base. checkupdates syncs to a temporary
-  # database rather than /var/lib/pacman/sync, so it cannot leave a partial
-  # -Sy behind for a later -Su to turn into a broken upgrade.
-  # checkupdates does its own sync into a temporary database, so it is the
-  # refresh as well as the query. It exits 2 when there is simply nothing to
-  # upgrade, which is success, not failure.
-  if command -v checkupdates >/dev/null 2>&1; then
+  # Arch publishes no security classification in the repositories and ships
+  # NEITHER tool in base, so with both missing there is nothing to report and
+  # no amount of retrying will change that. Say which package to install
+  # rather than reporting a generic refresh failure.
+  HAVE_CU=0; HAVE_AA=0
+  command -v checkupdates >/dev/null 2>&1 && HAVE_CU=1
+  command -v arch-audit   >/dev/null 2>&1 && HAVE_AA=1
+  if [ "$HAVE_CU" -eq 0 ] && [ "$HAVE_AA" -eq 0 ]; then
+    echo "netdash-patchcheck: Arch ships no update-checking tool in base, and" >&2
+    echo "  neither checkupdates nor arch-audit is installed. Add at least one:" >&2
+    echo "    pacman -S pacman-contrib   # checkupdates: how many updates are pending" >&2
+    echo "    pacman -S arch-audit       # which installed packages carry advisories" >&2
+    echo "  This host reads as 'not checked' until then, which is the honest" >&2
+    echo "  answer: nothing here has looked." >&2
+    exit 1
+  fi
+
+  # checkupdates syncs into a temporary database rather than /var/lib/pacman/sync,
+  # so it cannot leave a partial -Sy behind for a later -Su to turn into a broken
+  # partial upgrade. It is therefore the refresh as well as the query, and exits
+  # 2 when there is simply nothing to upgrade -- success, not failure.
+  if [ "$HAVE_CU" -eq 1 ]; then
     CU=""; rc=0
     CU=$(checkupdates 2>/dev/null) || rc=$?
     case "$rc" in
@@ -121,12 +135,24 @@ elif command -v pacman >/dev/null 2>&1; then
   else
     DET="install pacman-contrib for update counts"
   fi
+
   # arch-audit reports installed packages carrying Arch Security Team
   # advisories. Absent, SEC stays null -- "nobody classified this" -- rather
   # than 0, which would claim the host had been checked and found clean.
-  if command -v arch-audit >/dev/null 2>&1; then
-    SEC=$(run arch-audit -uq | grep -c . || true)
-    SRC="pacman+arch-audit"
+  # -u restricts to advisories with a fix available, which is the actionable
+  # set; unfixed advisories are not counted.
+  if [ "$HAVE_AA" -eq 1 ]; then
+    AA=""; rc=0
+    AA=$(arch-audit -uq 2>/dev/null) || rc=$?
+    # Some builds exit non-zero when they find something, so output counts as
+    # success too.
+    if [ "$rc" -eq 0 ] || [ -n "$AA" ]; then
+      SEC=$(printf '%s' "$AA" | grep -c . || true)
+      REFRESHED=1
+      SRC="pacman+arch-audit"
+    else
+      REFRESH_FAILED=1
+    fi
   elif [ -z "$DET" ]; then
     DET="install arch-audit to classify security updates"
   fi
@@ -185,6 +211,44 @@ if [ "$SRC" = unknown ]; then
   exit 1
 fi
 
+# ---- Reboot required ----
+# The one false green the package database cannot see: security updates that
+# are installed but not yet running. A Fedora host here finished `dnf update`
+# with a clean database while still running the old kernel and the old
+# libbluez, both of which were on its security list.
+#
+# null means "this host has no mechanism to ask", never "no reboot needed".
+REBOOT=null
+case "$SRC" in
+apt)
+  # /run/reboot-required is created by update-notifier-common, NOT by apt, so
+  # its absence on a host without that package says nothing at all. Report
+  # false only once the mechanism is known to be installed.
+  if [ -e /run/reboot-required ] || [ -e /var/run/reboot-required ]; then
+    REBOOT=true
+  elif dpkg-query -W -f='${Status}' update-notifier-common 2>/dev/null \
+       | grep -q 'ok installed'; then
+    REBOOT=false
+  fi
+  ;;
+dnf5|dnf)
+  # Verified on Fedora 43: exit 1 with "Reboot is required to fully utilize
+  # these updates", 0 when none is needed. It loads repository metadata first,
+  # which is why this belongs in the daily job and nowhere near the collector.
+  rc=0; $DNF -q needs-restarting -r >/dev/null 2>&1 || rc=$?
+  case "$rc" in 0) REBOOT=false ;; 1) REBOOT=true ;; esac
+  ;;
+zypper-*)
+  # Same 0/1 convention, but the subcommand ships in a separate package. Gate
+  # on it being present: an unknown zypper subcommand also exits non-zero, and
+  # would otherwise read as "reboot required" on every host lacking it.
+  if zypper needs-restarting --help >/dev/null 2>&1; then
+    rc=0; zypper --non-interactive needs-restarting -r >/dev/null 2>&1 || rc=$?
+    case "$rc" in 0) REBOOT=false ;; 1) REBOOT=true ;; esac
+  fi
+  ;;
+esac
+
 # checked_at means "when was this answer last known current".
 #
 # A successful refresh settles that: it is now, whether or not anything on disk
@@ -209,8 +273,8 @@ else
 fi
 [ "$REFRESH_FAILED" -eq 1 ] && DET="${DET:+$DET; }metadata refresh failed"
 
-JSON=$(printf '{"security":%s,"other":%s,"checked_at":%d,"source":"%s","detail":"%s"}' \
-  "$SEC" "$OTH" "$CHECKED" "$SRC" "$DET")
+JSON=$(printf '{"security":%s,"other":%s,"reboot_required":%s,"checked_at":%d,"source":"%s","detail":"%s"}' \
+  "$SEC" "$OTH" "$REBOOT" "$CHECKED" "$SRC" "$DET")
 
 if [ "$MODE" = "--print" ]; then printf '%s\n' "$JSON"; exit 0; fi
 

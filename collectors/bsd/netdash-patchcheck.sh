@@ -199,6 +199,22 @@ if [ "$SRC" = unknown ]; then
   exit 1
 fi
 
+# ---- Reboot required ----
+# null means "no mechanism to ask", never "no reboot needed".
+# FreeBSD: freebsd-version -k reports the INSTALLED kernel, uname -r the
+# RUNNING one, so a difference means a kernel was updated and not yet booted --
+# which is the whole point on a pkgbase host, where the kernel arrives as an
+# ordinary package upgrade with nothing to announce it.
+# OpenBSD and NetBSD have no equivalent, so they stay null.
+REBOOT=null
+if [ "$OSNAME" = FreeBSD ] && command -v freebsd-version >/dev/null 2>&1; then
+  KINST=$(freebsd-version -k 2>/dev/null || true)
+  KRUN=$(uname -r)
+  if [ -n "$KINST" ]; then
+    if [ "$KINST" = "$KRUN" ]; then REBOOT=false; else REBOOT=true; fi
+  fi
+fi
+
 # Never write a reading that cannot be honestly dated: leaving the previous
 # state file in place lets it age into "unknown" on the dashboard, which is the
 # truthful outcome. Writing `now` over it would claim a stale count is current.
@@ -207,8 +223,8 @@ if [ -z "$CHECKED" ]; then
   exit 1
 fi
 
-JSON=$(printf '{"security":%s,"other":%s,"checked_at":%d,"source":"%s","detail":"%s"}' \
-  "$SEC" "$OTH" "$CHECKED" "$SRC" "$DET")
+JSON=$(printf '{"security":%s,"other":%s,"reboot_required":%s,"checked_at":%d,"source":"%s","detail":"%s"}' \
+  "$SEC" "$OTH" "$REBOOT" "$CHECKED" "$SRC" "$DET")
 
 if [ "$MODE" = "--print" ]; then printf '%s\n' "$JSON"; exit 0; fi
 

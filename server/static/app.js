@@ -24,6 +24,10 @@ function st(k) { return STATUS[k] || STATUS.unknown; }
    four words are all different, so the palette is decoration. */
 var PATCH = {
   security: { css: 'var(--st-crit)', glyph: '✕' },
+  /* Installed but not running yet. Distinct from 'updates' because the work is
+     done and only a reboot is outstanding, and emphatically distinct from
+     'ok' -- the package database is clean while the old code still runs. */
+  reboot:   { css: 'var(--st-crit)', glyph: '⭮' },
   updates:  { css: 'var(--st-warn)', glyph: '▲' },
   ok:       { css: 'var(--st-ok)',   glyph: '✓' },
   unknown:  { css: 'var(--st-none)', glyph: '–' }
@@ -32,6 +36,7 @@ var PATCH = {
 function patchText(p) {
   if (!p) return 'not checked';
   if (p.status === 'security') return p.security + ' security';
+  if (p.status === 'reboot') return 'reboot required';
   if (p.status === 'updates') {
     var n = p.other || 0;
     return n + ' update' + (n === 1 ? '' : 's');
@@ -52,6 +57,9 @@ function patchTitle(p) {
     ? 'no security classification available on this platform'
     : p.security + ' security');
   if (p.other !== null && p.other !== undefined) bits.push(p.other + ' other');
+  /* Worth saying even when something else is already pending: updates that are
+     installed but not running are invisible to the package database. */
+  if (p.reboot_required) bits.push('reboot required for installed updates');
   bits.push('checked ' + fmtAge(p.age_seconds));
   if (p.source) bits.push('via ' + p.source);
   if (p.detail) bits.push(p.detail);
@@ -462,6 +470,10 @@ function renderDetail(host, data) {
     }
     p4.appendChild(el('div', 'sub',
       (pp.source || 'unknown source') + ' · checked ' + fmtAge(pp.age_seconds)));
+    if (pp.reboot_required) {
+      p4.appendChild(el('div', 'sub',
+        'updates are installed but not running until this host reboots'));
+    }
     if (pp.detail) p4.appendChild(el('div', 'sub', pp.detail));
   } else {
     p4.appendChild(el('div', 'sub',

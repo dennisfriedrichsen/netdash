@@ -248,8 +248,8 @@ it restarts the job for you.
 
 ## Patch status
 
-Each card carries a **Patches** badge: security updates pending, plain updates
-pending, up to date, or unknown. The full per-platform research — including
+Each card carries a **Patches** badge: security updates pending, a reboot
+required, plain updates pending, up to date, or unknown. The full per-platform research — including
 which commands are wrong in ways that fail silently — is in
 [PATCH-CHECKS.md](PATCH-CHECKS.md). The short version:
 
@@ -276,6 +276,14 @@ runs once a day and writes `/var/lib/netdash-collector/patches.json`
 (`/var/db/netdash-collector` on the BSDs); the collector only reads that file
 back. That is deliberately not `/var/lib/netdash`, which belongs to the server
 on a host running both.
+
+**Installed is not the same as running.** A host that has applied its security
+updates but not rebooted has a clean package database and is still executing the
+old code — a Fedora box here reached exactly that state with the kernel and
+`libbluez`. Where the platform can answer (`dnf needs-restarting -r`,
+`/run/reboot-required`, `zypper needs-restarting`, a FreeBSD kernel version
+mismatch) that shows as **reboot required**; where it cannot, the field is null
+rather than a comforting "no".
 
 **An old check is never green.** A count of zero from metadata last refreshed
 in March is indistinguishable from a genuinely patched host, so a check older
@@ -319,7 +327,7 @@ sh tests/run.sh              # everything
 sh tests/run.sh openbsd      # just the cases matching a name
 ```
 
-65 cases, no network, no root, nothing installed — `sh`, `awk` and `python3`.
+69 cases, no network, no root, nothing installed — `sh`, `awk` and `python3`.
 The BSD and macOS cases run the real collector end to end against mocked
 `sysctl`/`df`/`mount`/`vmstat`; the Linux cases drive its awk programs directly,
 since `/proc` reads cannot be intercepted through `PATH`.
