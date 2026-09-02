@@ -37,7 +37,8 @@ OTH=null        # everything else pending
 SRC=unknown
 DET=""
 META=""         # when the package metadata was last known current, if knowable
-REFRESH_OK=1
+REFRESHED=0     # 1 once this run has brought the metadata up to date
+REFRESH_FAILED=0
 
 # Backends legitimately fail (no network, a repo down, a lock held by the
 # admin's own upgrade). Under `set -e` a bare failing command aborts the whole
@@ -52,7 +53,8 @@ if command -v apt-get >/dev/null 2>&1; then
   if [ "$REFRESH" = yes ]; then
     # NoLocking so a concurrent unattended-upgrades run cannot make this fail,
     # and -qq to keep a daily cron job silent.
-    apt-get -qq -o Debug::NoLocking=true update >/dev/null 2>&1 || REFRESH_OK=0
+    if apt-get -qq -o Debug::NoLocking=true update >/dev/null 2>&1
+      then REFRESHED=1; else REFRESH_FAILED=1; fi
   fi
   # update-success-stamp is written by unattended-upgrades, not by apt itself,
   # so it is often absent; the lists directory mtime is the universal fallback.
@@ -84,7 +86,8 @@ elif command -v dnf5 >/dev/null 2>&1 || command -v dnf >/dev/null 2>&1; then
   if [ "$REFRESH" = yes ]; then
     # dnf4 kept metadata fresh with dnf-makecache.timer; under dnf5 that timer
     # is not guaranteed to exist, so refresh rather than assume.
-    $DNF -q makecache >/dev/null 2>&1 || REFRESH_OK=0
+    if $DNF -q makecache >/dev/null 2>&1
+      then REFRESHED=1; else REFRESH_FAILED=1; fi
   fi
   # check-update exits 100 when updates are pending and 0 when none are, so the
   # exit status carries the answer and the output is only good for counting.
@@ -105,8 +108,16 @@ elif command -v pacman >/dev/null 2>&1; then
   # needs two tools and neither is in base. checkupdates syncs to a temporary
   # database rather than /var/lib/pacman/sync, so it cannot leave a partial
   # -Sy behind for a later -Su to turn into a broken upgrade.
+  # checkupdates does its own sync into a temporary database, so it is the
+  # refresh as well as the query. It exits 2 when there is simply nothing to
+  # upgrade, which is success, not failure.
   if command -v checkupdates >/dev/null 2>&1; then
-    OTH=$(run checkupdates | grep -c . || true)
+    CU=""; rc=0
+    CU=$(checkupdates 2>/dev/null) || rc=$?
+    case "$rc" in
+      0|2) OTH=$(printf '%s' "$CU" | grep -c . || true); REFRESHED=1 ;;
+      *)   REFRESH_FAILED=1 ;;
+    esac
   else
     DET="install pacman-contrib for update counts"
   fi
@@ -124,7 +135,8 @@ elif command -v pacman >/dev/null 2>&1; then
 elif command -v zypper >/dev/null 2>&1; then
   ID=$( . /etc/os-release 2>/dev/null; echo "${ID:-}" )
   if [ "$REFRESH" = yes ]; then
-    zypper --non-interactive --quiet refresh >/dev/null 2>&1 || REFRESH_OK=0
+    if zypper --non-interactive --quiet refresh >/dev/null 2>&1
+      then REFRESHED=1; else REFRESH_FAILED=1; fi
   fi
   case "$ID" in
     *tumbleweed*|*slowroll*)
@@ -152,7 +164,8 @@ elif command -v zypper >/dev/null 2>&1; then
 elif command -v apk >/dev/null 2>&1; then
   SRC=apk
   if [ "$REFRESH" = yes ]; then
-    apk update >/dev/null 2>&1 || REFRESH_OK=0
+    if apk update >/dev/null 2>&1
+      then REFRESHED=1; else REFRESH_FAILED=1; fi
   fi
   # Alpine publishes secdb JSON at secdb.alpinelinux.org, but nothing in the
   # base system consumes it, so there is no security classification on the host.
@@ -172,25 +185,29 @@ if [ "$SRC" = unknown ]; then
   exit 1
 fi
 
-# checked_at means "when was this answer last known current", which is a
-# property of the package metadata rather than of when this script happened to
-# run. So the metadata's own timestamp always wins where one exists: after a
-# successful refresh it is a second ago and nothing changes, but when the
-# refresh failed -- or was never attempted, because
-# NETDASH_PATCH_REFRESH="no" -- it is the truth, and the reading ages out into
-# "unknown" on the dashboard instead of posing as current.
-if [ -n "$META" ]; then
-  CHECKED=$META
-elif [ "$REFRESH_OK" -eq 1 ]; then
-  # No timestamp to read, but the refresh did just succeed, so now is honest.
+# checked_at means "when was this answer last known current".
+#
+# A successful refresh settles that: it is now, whether or not anything on disk
+# changed. Using the cache's own mtime instead was wrong for dnf, which leaves
+# /var/cache/libdnf5 untouched when the metadata it fetched turns out to be
+# unchanged -- a Fedora host checking hourly reported checked_at as 344 minutes
+# old, and at 48h would have started showing "unknown" while working perfectly.
+#
+# The metadata timestamp is the fallback for the cases where this run did NOT
+# bring anything up to date: NETDASH_PATCH_REFRESH="no", or a refresh that
+# failed. There the counts really are as old as the cache, and dating them to it
+# lets them age into "unknown" rather than posing as current.
+if [ "$REFRESHED" -eq 1 ]; then
   CHECKED=$NOW
+elif [ -n "$META" ]; then
+  CHECKED=$META
 else
-  # Neither a fresh refresh nor a datable database: leaving the previous state
-  # file in place lets it age out, which beats overwriting it with a lie.
+  # Neither a fresh refresh nor a datable cache: leaving the previous state file
+  # in place lets it age out, which beats overwriting it with a lie.
   echo "netdash-patchcheck: refresh failed; keeping the previous result" >&2
   exit 1
 fi
-[ "$REFRESH_OK" -eq 0 ] && DET="${DET:+$DET; }metadata refresh failed"
+[ "$REFRESH_FAILED" -eq 1 ] && DET="${DET:+$DET; }metadata refresh failed"
 
 JSON=$(printf '{"security":%s,"other":%s,"checked_at":%d,"source":"%s","detail":"%s"}' \
   "$SEC" "$OTH" "$CHECKED" "$SRC" "$DET")

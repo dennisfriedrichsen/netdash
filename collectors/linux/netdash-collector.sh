@@ -122,8 +122,15 @@ done
 # which is untenable at a 30s cadence. An absent, unreadable or truncated file
 # reports null, and the server renders that as "unknown" -- never as up to date.
 PATCHES=null
-for f in ${NETDASH_PATCH_STATE:-} /var/lib/netdash-collector/patches.json \
-         /var/db/netdash-collector/patches.json /var/lib/netdash/patches.json; do
+# An explicit NETDASH_PATCH_STATE is authoritative: if the admin names a file
+# and it is missing or malformed, that reports unknown rather than quietly
+# falling through to some other host-state file left in a default location.
+if [ -n "${NETDASH_PATCH_STATE:-}" ]; then
+  PATCH_FILES="$NETDASH_PATCH_STATE"
+else
+  PATCH_FILES="/var/lib/netdash-collector/patches.json /var/db/netdash-collector/patches.json /var/lib/netdash/patches.json"
+fi
+for f in $PATCH_FILES; do
   [ -r "$f" ] || continue
   P=$(tr -d '\n' < "$f" 2>/dev/null || true)
   case "$P" in '{'*'}') PATCHES="$P"; break ;; esac

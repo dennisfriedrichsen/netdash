@@ -111,18 +111,35 @@ otherwise from the mtime of `/var/lib/apt/lists`.
 Not used: `/usr/lib/update-notifier/apt-check`, which prints a tidy
 `updates;security` pair but is Ubuntu-only — **verified** absent on Debian 13.
 
-### Fedora
+### Fedora — **verified** on Fedora 43 (dnf5)
 
 `dnf5 check-update --security` exits 100 when security updates are pending, 0
 when none are, 1 on error — so the exit status is the signal and the output is
 only for the detail string. `dnf5 advisory list --available --security` gives
 the itemised view.
 
-dnf4 shipped `dnf-makecache.timer`, which kept metadata fresh roughly every
-three hours (hourly timer, gated by `metadata_timer_sync`). Under dnf5 that is
-no longer guaranteed to be present. Check `systemctl list-timers '*makecache*'`
-on the actual host before assuming the cache is fresh; where it is absent the
-daily job's `dnf5 makecache` is what keeps the reading honest.
+Verified on the Fedora 43 host: 11 pending rows, 6 of them security, so
+`other` is 5. The rows are three columns — `name.arch  version  repo` — which
+the `NF==3` filter handles. Notably the four `kernel*` rows appear in
+`check-update` but **not** in `--security` there, so a kernel update lands in
+`other`.
+
+`dnf-makecache.timer` **is** present on Fedora 43, contrary to what this file
+previously guessed, and had last run 2h27m before the check.
+
+Two traps in dating the result, both found on that host:
+
+- `/var/cache/dnf` still exists as an **empty dnf4 leftover** (mtime October
+  2025) beside the live `/var/cache/libdnf5`. The cache directories are probed
+  libdnf5-first for that reason; the other order dates every Fedora host to
+  whenever dnf4 was last used.
+- **dnf does not touch the cache directory's mtime when the metadata it fetched
+  is unchanged.** The host reported `checked_at` as 344 minutes old immediately
+  after a successful check. `checked_at` is therefore `now` whenever this run
+  refreshed successfully, and only falls back to the cache mtime when the
+  refresh was skipped or failed. The old rule — "the metadata timestamp always
+  wins" — was right for apt, whose lists directory mtime does advance on every
+  successful update, and wrong here.
 
 ### Arch
 

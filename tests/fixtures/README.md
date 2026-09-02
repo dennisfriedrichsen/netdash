@@ -30,6 +30,8 @@ numbers are untouched.
 | `linux/zypper-list-updates-tumbleweed.txt` | openSUSE Tumbleweed | 23 real pending updates; header and `---+---` separator must not count |
 | `linux/zypper-patch-check-tumbleweed.txt` | openSUSE Tumbleweed | the same host answering *"0 patches needed"* |
 | `netbsd/pkg_admin-audit.txt` | NetBSD 11.0 | `Package X has a Y vulnerability, see URL` — one line per finding |
+| `linux/dnf5-check-update.txt` | Fedora 43 | dnf5's three-column rows; 11 pending |
+| `linux/dnf5-check-update-security.txt` | Fedora 43 | the 6 of them that are security — kernel is *not* among them |
 | `freebsd/pkg-audit.txt` | FreeBSD 15.1 | `14 problem(s) in 9 package(s) found.` — the package count is the one to use |
 | `netbsd/pkg_admin-audit-nodb.txt` | NetBSD 11.0 | the same command with no database: must count zero, not one |
 | `macos/softwareupdate-none.txt` | macOS 26.6.2 | both streams combined: the all-clear string is what makes a zero safe to report |

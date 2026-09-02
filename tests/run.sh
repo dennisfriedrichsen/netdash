@@ -434,6 +434,45 @@ PY
         "assert d['requires_root'], d" "$J"
 fi
 
+if want patches-fedora; then
+  echo "patches-fedora (dnf5 three-column rows; a fresh refresh dates to now)"
+  J=$(python3 - "$ROOT" <<'PY'
+import re,subprocess,sys,json
+root=sys.argv[1]
+src=open(f"{root}/collectors/linux/netdash-patchcheck.sh").read()
+prog=re.search(r"count_dnf\(\) \{ run \$DNF -q check-update \"\$@\" \| awk '(.*?)'; \}", src).group(1)
+def count(f):
+    txt=open(f"{root}/tests/fixtures/linux/{f}").read()
+    return int(subprocess.run(["awk",prog],input=txt,capture_output=True,text=True).stdout.strip() or 0)
+allc, secc = count("dnf5-check-update.txt"), count("dnf5-check-update-security.txt")
+
+# The cache directories are probed in order; /var/cache/dnf is an empty dnf4
+# leftover on a dnf5 host and must not win over the live /var/cache/libdnf5.
+order=re.search(r"for d in ([^;]*); do\n\s*META=", src).group(1).split()
+# A successful refresh must define checked_at, before any cache-mtime fallback.
+refreshed_first = re.search(r'if \[ "\$REFRESHED" -eq 1 \]; then\n\s*CHECKED=\$NOW\nelif \[ -n "\$META" \]', src)
+print(json.dumps({"all": allc, "security": secc, "other": allc-secc,
+                  "cache_order": order,
+                  "refreshed_wins": bool(refreshed_first)}))
+PY
+)
+  check "11 pending rows, 6 of them security, 5 other" \
+        "assert (d['all'],d['security'],d['other'])==(11,6,5), d" "$J"
+  # The kernel rows appear in check-update but not in --security on that host,
+  # so they land in `other`. Which is why a green badge after `dnf update` is
+  # not the same as a patched running system -- see needs-restarting.
+  check "the dnf5 three-column layout parses at all (NF==3 was dnf4-shaped)" \
+        "assert d['all']==11, d" "$J"
+  check "the live libdnf5 cache is probed before the dnf4 leftover" \
+        "assert d['cache_order'][0].endswith('libdnf5'), d" "$J"
+  # dnf leaves /var/cache/libdnf5's mtime untouched when the metadata it
+  # fetched is unchanged: a Fedora host checking hourly reported checked_at as
+  # 344 minutes old, and at patch_stale_hours would have flipped to "unknown"
+  # while working perfectly.
+  check "a successful refresh sets checked_at to now, not the cache mtime" \
+        "assert d['refreshed_wins'], d" "$J"
+fi
+
 if want patches-stale; then
   echo "patches-stale (an old or missing check must read unknown, never ok)"
   J=$(python3 - "$ROOT" <<'PY'
@@ -494,7 +533,7 @@ if want patches-statefile; then
 import re,subprocess,sys,json
 root,fam,tmpd=sys.argv[1],sys.argv[2],sys.argv[3]
 src=open(f"{root}/collectors/{fam}/netdash-collector.sh").read()
-block=re.search(r"(PATCHES=null\nfor f in .*?\ndone)", src, re.S).group(1)
+block=re.search(r"(PATCHES=null\n.*?\ndone)", src, re.S).group(1)
 out={}
 for name in ("good","truncated","garbage","empty","/nonexistent/nope"):
     path=name if name.startswith("/") else f"{tmpd}/{name}"

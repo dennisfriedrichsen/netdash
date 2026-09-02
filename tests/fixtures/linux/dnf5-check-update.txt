@@ -1,0 +1,11 @@
+bind-libs.x86_64           32:9.18.50-2.fc43 updates
+bind-utils.x86_64          32:9.18.50-2.fc43 updates
+bluez.x86_64               5.87-6.fc43       updates
+bluez-libs.x86_64          5.87-6.fc43       updates
+cifs-utils.x86_64          7.7-1.fc43        updates
+curl.x86_64                8.15.0-9.fc43     updates
+kernel.x86_64              7.1.12-100.fc43   updates
+kernel-core.x86_64         7.1.12-100.fc43   updates
+kernel-modules.x86_64      7.1.12-100.fc43   updates
+kernel-modules-core.x86_64 7.1.12-100.fc43   updates
+libcurl.x86_64             8.15.0-9.fc43     updates
