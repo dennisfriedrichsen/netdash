@@ -4,13 +4,13 @@
 # Ships as: brew install dennisfriedrichsen/tap/netdash-collector
 #
 # Re-publishing a new version:
-#   git tag 0.1.8 && git push origin 0.1.8
-#   curl -sL https://github.com/dennisfriedrichsen/netdash/archive/refs/tags/0.1.8.tar.gz | shasum -a 256
+#   git tag 0.2.0 && git push origin 0.2.0
+#   curl -sL https://github.com/dennisfriedrichsen/netdash/archive/refs/tags/0.2.0.tar.gz | shasum -a 256
 class NetdashCollector < Formula
   desc "Pushes CPU, memory and disk metrics to a netdash server"
   homepage "https://github.com/dennisfriedrichsen/netdash"
-  url "https://github.com/dennisfriedrichsen/netdash/archive/refs/tags/0.1.8.tar.gz"
-  sha256 "731499e8a345e8ff373f9da6ee243f4421ad2e55d74fc9d8e953967eec44a21e"
+  url "https://github.com/dennisfriedrichsen/netdash/archive/refs/tags/0.2.0.tar.gz"
+  sha256 "dfd6054ca54e66225435ce5d8a1b996d15194b376012533257c6dafb9ffa532b"
   license "BSD-2-Clause"
 
   def install
