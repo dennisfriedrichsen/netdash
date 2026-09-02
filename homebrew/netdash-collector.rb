@@ -3,16 +3,14 @@
 # Tap:  https://github.com/dennisfriedrichsen/homebrew-tap
 # Ships as: brew install dennisfriedrichsen/tap/netdash-collector
 #
-# Publish flow (the sha256 below is the ONE value still to fill in -- it cannot
-# exist until the v0.1.0 tag is pushed, since it hashes that exact tarball):
-#   git tag v0.1.0 && git push origin v0.1.0
-#   curl -sL https://github.com/dennisfriedrichsen/netdash/archive/refs/tags/v0.1.0.tar.gz | shasum -a 256
-#   ...paste it below, then commit this file to the tap repo as Formula/netdash-collector.rb
+# Re-publishing a new version:
+#   git tag 0.1.0 && git push origin 0.1.0
+#   curl -sL https://github.com/dennisfriedrichsen/netdash/archive/refs/tags/0.1.0.tar.gz | shasum -a 256
 class NetdashCollector < Formula
   desc "Pushes CPU, memory and disk metrics to a netdash server"
   homepage "https://github.com/dennisfriedrichsen/netdash"
-  url "https://github.com/dennisfriedrichsen/netdash/archive/refs/tags/v0.1.0.tar.gz"
-  sha256 "REPLACE_WITH_TARBALL_SHA256"
+  url "https://github.com/dennisfriedrichsen/netdash/archive/refs/tags/0.1.0.tar.gz"
+  sha256 "965492499059bb25a5d757e3458dfb25d883d6a2737bb2b3bd04a6c42cc839ba"
   license "MIT"
 
   def install
