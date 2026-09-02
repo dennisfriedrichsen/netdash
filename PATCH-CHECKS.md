@@ -209,7 +209,15 @@ $ doas syspatch -c ; echo "exit=$?"
 exit=0
 ```
 
-No output at all, exit 0. That confirms empty output is a genuine all-clear —
+No output at all, exit 0. `syspatch -l` on the same host lists 14 installed
+patches (`002_smtpd` through `014_expat`), which is what makes that zero
+meaningful rather than merely empty: the machinery demonstrably works there and
+has applied patches, so "none available" is an all-clear and not a silent
+failure to look. Worth remembering as the first diagnostic when an OpenBSD card
+reads 0 — `syspatch -l` distinguishes a patched box from a box where syspatch
+does nothing, such as one running -current.
+
+That confirms empty output is a genuine all-clear —
 but only *together with* the exit status. An unreachable mirror also prints
 nothing to stdout, and syspatch(8) exits 0 on success and >0 on error, so the
 status is the only thing separating "nothing to patch" from "could not check".
