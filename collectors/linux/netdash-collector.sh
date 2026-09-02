@@ -31,7 +31,10 @@ eval "$(awk '
 ' /proc/meminfo)"
 
 # ---- Disk: real mounts only ----
-DISKS=$(df -P -B1 -x tmpfs -x devtmpfs -x squashfs -x overlay -x efivarfs 2>/dev/null | awk '
+# -l keeps this to LOCAL filesystems. An NFS/SMB mount is storage owned by
+# another host, which already reports it -- counting it here double-counts it
+# and lets a full fileserver show up as this host being critical.
+DISKS=$(df -P -B1 -l -x tmpfs -x devtmpfs -x squashfs -x overlay -x efivarfs 2>/dev/null | awk '
   NR>1 && $2+0 > 0 {
     mp=$6; for(i=7;i<=NF;i++) mp=mp" "$i;
     gsub(/\\/,"\\\\",mp); gsub(/"/,"\\\"",mp);

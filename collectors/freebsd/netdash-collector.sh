@@ -52,8 +52,8 @@ fi
 
 # Real non-ZFS filesystems (UFS, the EFI partition, ...). df -T puts the type in
 # $2; filtering on it is reliable, whereas `df -t no<type>` is not on FreeBSD.
-OTHER=$(df -k -T 2>/dev/null | awk '
-  NR>1 && $3+0 > 0 && $2 !~ /^(zfs|devfs|procfs|fdescfs|tmpfs|linprocfs|linsysfs|nullfs|cd9660|fusefs)$/ {
+OTHER=$(df -k -T -l 2>/dev/null | awk '
+  NR>1 && $3+0 > 0 && $2 !~ /^(zfs|devfs|procfs|fdescfs|tmpfs|linprocfs|linsysfs|nullfs|cd9660|fusefs|nfs|nfs4|smbfs|cifs)$/ {
     mp=$7; for(i=8;i<=NF;i++) mp=mp" "$i
     gsub(/\\/,"\\\\",mp); gsub(/"/,"\\\"",mp)
     printf "%s{\"mount\":\"%s\",\"used_bytes\":%.0f,\"total_bytes\":%.0f}", (n++?",":""), mp, $4*1024, $3*1024

@@ -35,7 +35,9 @@ MEM_USED=$(vm_stat | awk '
   END { if (!ps) ps=4096; printf "%.0f", (active+wired+comp)*ps }')
 
 # ---- Disk: real volumes; skip APFS synthetic/system helper mounts ----
-DISKS=$(df -k 2>/dev/null | awk '
+# -l keeps this to local filesystems: an SMB or NFS mount of the NAS is storage
+# the NAS already reports. (The /dev/ test below would drop them anyway.)
+DISKS=$(df -k -l 2>/dev/null | awk '
   NR>1 && $1 ~ /^\/dev\// && $2+0 > 0 {
     mp=$9; for(i=10;i<=NF;i++) mp=mp" "$i
     if (mp ~ /^\/System\/Volumes\/(VM|Preboot|Update|xarts|iSCPreboot|Hardware|Recovery)/) next

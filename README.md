@@ -101,6 +101,12 @@ share their pool's free space, so listing them all reports the same pool many
 times over (cerium has 40). The figure is `used + available`, the usable view,
 which is also how the TrueNAS pools are reported.
 
+Only **local** filesystems are reported. An NFS or SMB mount is storage owned by
+another host, which already reports it — counting it on the client double-counts
+the same bytes on two cards, and lets a full fileserver show up as the *client*
+being critical while masking that client's real local disk pressure. cerium
+mounts three TrueNAS exports; they belong to `truenas-core`'s card, not cerium's.
+
 Memory excludes reclaimable cache on every platform, so the hosts read alike:
 `MemAvailable` on Linux, and the ZFS ARC subtracted on FreeBSD and TrueNAS.
 
