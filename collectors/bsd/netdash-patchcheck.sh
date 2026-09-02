@@ -147,15 +147,22 @@ OpenBSD)
   SEC=$(printf '%s' "$OUT" | grep -c . || true)
   CHECKED=$NOW
 
-  # Packages are unclassified and need PKG_PATH pointing at a package set --
-  # on -release that must be the -stable build, or security fixes never appear
-  # at all. Skipped unless the admin has set PKG_PATH, because pkg_add -un
-  # against an unset or wrong PKG_PATH is a slow way to learn nothing.
-  if [ -n "${PKG_PATH:-}" ]; then
-    OTH=$(run pkg_add -un | grep -c . || true)
-  else
-    DET="packages not checked (PKG_PATH unset)"
-  fi
+  # No PKG_PATH needed: pkg_add(1) says that with neither TRUSTED_PKG_PATH nor
+  # PKG_PATH defined it falls back to "installpath", i.e. /etc/installurl --
+  # the same source syspatch already uses here. Gating on PKG_PATH skipped this
+  # entirely on every normally configured host.
+  #
+  # pkg_add prints the quirks signature line whenever it reads the index:
+  #   quirks-7.194 signed on 2026-09-01T16:57:41Z
+  # That is not an update. Counting raw lines reported one phantom pending
+  # package on a host with nothing to do (verified on OpenBSD 7.9), so it is
+  # dropped before counting.
+  OTH=$(run pkg_add -u -n | grep -v '^quirks-[0-9][^ ]* signed on ' | grep -c . || true)
+
+  # /etc/installurl points at the release package set. OpenBSD's security-fixed
+  # packages are built separately, so set PKG_PATH to a packages-stable path in
+  # collector.conf if you want those counted here.
+  [ -n "${PKG_PATH:-}" ] || DET="release packages only (PKG_PATH unset)"
   ;;
 
 NetBSD)

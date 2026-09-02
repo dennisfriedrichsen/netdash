@@ -14,6 +14,7 @@ numbers are untouched.
 | `openbsd/df-k-l.txt` | OpenBSD 7.9 | `df -l` output; `-T`, `-B1` and `-x` are all rejected there |
 | `openbsd/vmstat-s.txt` | OpenBSD 7.9 | page counters — `sysctl vm.uvmexp` is refused, answering "use vmstat" |
 | `openbsd/cp_time.txt` | OpenBSD 7.9 | six fields, comma-separated |
+| `openbsd/pkg_add-un-none.txt` | OpenBSD 7.9 | the quirks signature line pkg_add always prints — not an update |
 | `netbsd/df-k-l.txt` | NetBSD 11.0 | `-l` does **not** exclude tmpfs/kernfs/ptyfs/procfs here |
 | `netbsd/vmstat-s.txt` | NetBSD 11.0 | page counters; both `vm.uvmexp` and `vm.uvmexp2` are refused |
 | `netbsd/cp_time.txt` | NetBSD 11.0 | `user = N, nice = N, ...` key/value pairs |

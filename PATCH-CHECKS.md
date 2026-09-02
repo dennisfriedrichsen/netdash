@@ -291,11 +291,29 @@ The whole check on that host:
  "detail":"packages not checked (PKG_PATH unset)"}
 ```
 
-Packages are separate, unclassified, and awkward: `pkg_add -un` is the
-documented dry run, it needs `PKG_PATH` set, and on `-release` it only sees
-security fixes if `PKG_PATH` points at the `-stable` package build. The
-syspatch count is the signal worth reporting; packages are best-effort, and
-`other` stays null until `PKG_PATH` is set rather than claiming a zero.
+Packages are separate and unclassified. `pkg_add -u -n` is the documented dry
+run, and it needs **no** `PKG_PATH`: pkg_add(1) states that with neither
+`TRUSTED_PKG_PATH` nor `PKG_PATH` defined it falls back to *installpath*, i.e.
+`/etc/installurl` — the same source syspatch already uses. An earlier version
+gated the count on `PKG_PATH` and so skipped it on every normally configured
+host.
+
+It prints its quirks signature whenever it reads the index:
+
+```
+$ doas pkg_add -u -n
+quirks-7.194 signed on 2026-09-01T16:57:41Z
+```
+
+That is the *entire* output on a host with nothing to update, and it is not an
+update — counting raw lines reported one phantom pending package. The line is
+dropped before counting.
+
+`/etc/installurl` points at the release package set, and OpenBSD's
+security-fixed packages are built separately, so set `PKG_PATH` to a
+`packages-stable` path in `collector.conf` to have those counted. Without it the
+detail line says *release packages only*, since a bare zero would read cleaner
+than it is.
 
 ### NetBSD — **verified** end to end on NetBSD 11.0
 

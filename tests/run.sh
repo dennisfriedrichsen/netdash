@@ -441,7 +441,18 @@ print(json.dumps({
   # output on stdout; only the status tells them apart.
   "guards_exit_status": bool(re.search(r"if ! OUT=\$\(syspatch -c", ob)),
   "no_swallow": "syspatch -c 2>/dev/null || true" not in ob,
+  "quirks_none": int(subprocess.run(
+      ["sh","-c","grep -v '^quirks-[0-9][^ ]* signed on ' | grep -c . || true"],
+      input=open(f"{root}/tests/fixtures/openbsd/pkg_add-un-none.txt").read(),
+      capture_output=True,text=True).stdout or 0),
+  "quirks_naive": int(subprocess.run(["grep","-c","."],
+      input=open(f"{root}/tests/fixtures/openbsd/pkg_add-un-none.txt").read(),
+      capture_output=True,text=True).stdout or 0),
   "requires_root": 'id -u' in ob,
+  # pkg_add falls back to /etc/installurl when PKG_PATH is unset, so gating the
+  # package count on PKG_PATH skipped it on every normally configured host.
+  "no_pkgpath_gate": 'if [ -n "${PKG_PATH:-}" ]; then' not in ob,
+  "quirks_filtered": bool(re.search(r"grep -v '\^quirks", ob)),
 }))
 PY
 )
@@ -455,6 +466,12 @@ PY
         "assert d['guards_exit_status'] and d['no_swallow'], d" "$J"
   check "root is required up front (only -l and usage work unprivileged)" \
         "assert d['requires_root'], d" "$J"
+  check "the package count is not gated on PKG_PATH" \
+        "assert d['no_pkgpath_gate'], d" "$J"
+  # "quirks-7.194 signed on ..." is printed whenever pkg_add reads the index and
+  # is not an update; counting it reported one phantom package on an idle host.
+  check "pkg_add's quirks signature line is not counted as an update" \
+        "assert d['quirks_filtered'] and d['quirks_none']==0 and d['quirks_naive']==1, d" "$J"
 fi
 
 if want patches-fedora; then
