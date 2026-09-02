@@ -107,7 +107,8 @@ esac
 
 # ---- Disk ----
 # FreeBSD: one entry per ZFS pool (datasets share the pool's free space, so
-# listing each would report the same pool dozens of times -- cerium has 40),
+# listing each would report the same pool dozens of times -- 40 on one test
+# host),
 # using used+available, the usable view, rather than zpool's raw size which
 # counts raidz parity. Plus real non-ZFS mounts filtered on df -T's type column,
 # because `df -t no<type>` does not exclude on FreeBSD.

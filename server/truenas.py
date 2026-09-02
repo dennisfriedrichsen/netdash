@@ -4,7 +4,7 @@ Auth: API keys authenticate as `Authorization: Bearer <key>` (the box's own Open
 document only advertises HTTP basic, but Bearer is what GUI-created API keys use on
 CORE 13.x). We send Bearer and fall back to basic if the box rejects it.
 
-Endpoints (verified live against 10.0.0.2, TrueNAS CORE 13.0-U6.8):
+Endpoints (verified live against TrueNAS CORE 13.0-U6.8):
   GET  /system/info        -> physmem, uptime_seconds, version
   POST /reporting/get_data -> cpu / memory / arcsize series
   GET  /pool/dataset       -> per-pool used+available (root datasets only)

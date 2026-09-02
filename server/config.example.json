@@ -12,8 +12,8 @@
   },
   "truenas": {
     "enabled": false,
-    "host": "10.0.0.2",
-    "display_name": "truenas-core",
+    "host": "truenas.example",
+    "display_name": "truenas",
     "scheme": "https",
     "verify_tls": false,
     "api_key": "",

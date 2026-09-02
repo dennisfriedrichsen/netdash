@@ -44,7 +44,7 @@ MEM_USED=$(vm_stat | awk '
 # ---- Disk: one entry per APFS container ----
 # APFS volumes in a container share its free space: every volume reports the
 # container's total but only its own Used, so no single volume's used/total is
-# the disk's fullness. On rhenium the boot container showed Data at 83% while
+# the disk's fullness. On one Mac the boot container showed Data at 83% while
 # the container was really 90% full. So group by container (disk3s1s1 and
 # disk3s5 are both disk3) and report used = total - available -- the same
 # treatment ZFS pools get on FreeBSD and TrueNAS.
@@ -52,14 +52,14 @@ MEM_USED=$(vm_stat | awk '
 # Containers are then dropped unless they hold storage you could actually free:
 #   * every volume read-only  -> a mounted image. Xcode's CoreSimulator runtimes
 #     are read-only APFS images, permanently ~97% full because that is what a
-#     packed image is. They made argon read CRITICAL forever.
+#     packed image is. They make a Mac with Xcode read CRITICAL forever.
 #   * every volume nobrowse   -> Apple's own "not user-facing" marker. Catches
 #     the xarts/iSCPreboot/Hardware container, which is read-WRITE and so not
 #     caught by the rule above.
 # Neither test alone is sufficient: Data is nobrowse, and "/" is read-only, so
 # each is rescued by the other volume in its container. Enumerating Apple's
 # synthetic volume names was the previous approach and it broke the moment
-# argon (Apple Silicon, macOS 26) showed a set rhenium (Intel) does not have.
+# an Apple Silicon Mac on macOS 26 showed a set an Intel Mac does not have.
 #
 # -l keeps this to local filesystems: the NAS is storage the NAS reports.
 DISKS=$( { mount 2>/dev/null; printf '@@DF@@\n'; df -k -l 2>/dev/null; } | awk '

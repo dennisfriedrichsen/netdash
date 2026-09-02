@@ -14,18 +14,18 @@ import db  # noqa: E402
 
 # host -> (os label, mem GB, [(mount, size GB, base fullness)], cpu baseline)
 HOSTS = {
-    "argon":          ("macOS 15.6",        32, [("/", 1000, 0.62)], 18),
-    "rhenium":        ("macOS 15.6",        16, [("/", 500, 0.41)], 9),
-    "cesium":         ("Debian 13 (arm64)",  8, [("/", 64, 0.55)], 12),
-    "cerium":         ("FreeBSD 15.0",      16, [("/", 240, 0.33), ("/var", 100, 0.19)], 7),
-    "rubidium":       ("Raspbian 13",        4, [("/", 32, 0.78)], 22),
-    "hermes":         ("Ubuntu 24.04",      16, [("/", 480, 0.66)], 15),
-    "home-assistant": ("Debian 13",          8, [("/", 120, 0.49)], 26),
-    "truenas-core":   ("TrueNAS CORE 13.0", 64, [("tank", 16000, 0.71),
-                                                 ("boot-pool", 240, 0.12)], 11),
+    "mac-desktop":  ("macOS 15.6",        32, [("/", 1000, 0.62)], 18),
+    "mac-laptop":   ("macOS 15.6",        16, [("/", 500, 0.41)], 9),
+    "pi-arm64":     ("Debian 13 (arm64)",  8, [("/", 64, 0.55)], 12),
+    "bsd-server":   ("FreeBSD 15.0",      16, [("/", 240, 0.33), ("/var", 100, 0.19)], 7),
+    "pi-armv7":     ("Raspbian 13",        4, [("/", 32, 0.78)], 22),
+    "linux-server": ("Ubuntu 24.04",      16, [("/", 480, 0.66)], 15),
+    "linux-small":  ("Debian 13",          8, [("/", 120, 0.49)], 26),
+    "truenas":      ("TrueNAS CORE 13.0", 64, [("tank", 16000, 0.71),
+                                               ("boot-pool", 240, 0.12)], 11),
 }
 # one host deliberately unhealthy so the warning/critical styling is exercised
-STRESSED = {"rubidium": ("disk", 0.93), "home-assistant": ("cpu", 88)}
+STRESSED = {"pi-armv7": ("disk", 0.93), "linux-small": ("cpu", 88)}
 
 
 def main():
@@ -76,7 +76,7 @@ def main():
                     "total_bytes": total_b,
                 })
             db.insert_sample(conn, payload,
-                             source="truenas" if host == "truenas-core" else "push")
+                             source="truenas" if host == "truenas" else "push")
             total += 1
 
     print("seeded %d samples across %d hosts (%d min of history)"

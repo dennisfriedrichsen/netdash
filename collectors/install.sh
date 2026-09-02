@@ -2,7 +2,7 @@
 # netdash collector installer for Linux and BSD hosts.
 # macOS hosts use the formula from dennisfriedrichsen/homebrew-tap instead.
 #
-#   sudo ./install.sh --url http://10.0.0.3:8080/api/ingest --token <TOKEN>
+#   sudo ./install.sh --url https://netdash.example/api/ingest --token <TOKEN>
 #
 # Re-running is the upgrade path: it overwrites the script and leaves config alone.
 #
