@@ -36,7 +36,7 @@ DEFAULTS = {
     # Whether a host's OS is still supported upstream, from endoflife.date.
     # Sends nothing about the fleet: it fetches public product files and matches
     # locally. Set "enabled": false to make no outbound request at all.
-    "eol": {"enabled": True, "refresh_hours": 24, "warn_days": 90, "overrides": {}},
+    "eol": {"enabled": True, "refresh_hours": 24, "warn_days": 30, "overrides": {}},
     # How old a patch check may be before the dashboard stops believing it.
     # Two days: the checks run daily, so this tolerates one missed run before
     # the badge drops to "unknown".

@@ -257,7 +257,10 @@ update again, because there will never be another one.
 
 The server matches each host's reported OS string against
 [endoflife.date](https://endoflife.date) and marks a card **EOL** when its
-release is past end of life, or **EOL soon** within `warn_days`. The header
+release is past end of life, or **EOL soon** within `warn_days` (default 30).
+Thirty rather than ninety because Fedora's ~13-month cycle would otherwise leave
+those hosts amber for three months twice a year, and a warning that is always on
+is one you stop reading. The header
 counts how many are past EOL. Nothing is shown for a healthy host: a badge on
 every card reading "supported" is noise, and the value is spotting the one box
 that is not.
@@ -268,7 +271,7 @@ locally; it never tells endoflife.date what you run. Set `"enabled": false` to
 make no outbound request at all.
 
 ```json
-"eol": { "enabled": true, "refresh_hours": 24, "warn_days": 90,
+"eol": { "enabled": true, "refresh_hours": 24, "warn_days": 30,
          "overrides": { "TrueNAS CORE": true } }
 ```
 

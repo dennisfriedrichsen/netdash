@@ -625,7 +625,7 @@ from datetime import date
 # network. Only the shapes the matcher depends on are kept.
 eol._CACHE.update({
  "debian":  {"ts":9e9,"releases":[{"name":"13","isEol":False,"eolFrom":"2028-08-09"},
-                                  {"name":"12","isEol":False,"eolFrom":"2026-07-11"},
+                                  {"name":"12","isEol":True,"eolFrom":"2026-07-11"},
                                   {"name":"11","isEol":True,"eolFrom":"2024-08-14"}]},
  "ubuntu":  {"ts":9e9,"releases":[{"name":"24.04","isEol":False,"eolFrom":"2029-05-31"},
                                   {"name":"22.04","isEol":False,"eolFrom":"2027-06-01"}]},
@@ -633,10 +633,15 @@ eol._CACHE.update({
  "macos":   {"ts":9e9,"releases":[{"name":"26","isEol":False,"eolFrom":None}]},
  "freebsd": {"ts":9e9,"releases":[{"name":"15.1","isEol":False,"eolFrom":"2027-03-31"},
                                   {"name":"15","isEol":False,"eolFrom":"2028-12-31"}]},
+ "fedora":  {"ts":9e9,"releases":[{"name":"43","isEol":False,"eolFrom":"2026-12-09"}]},
 })
-cfg={"warn_days":90,"overrides":{"TrueNAS CORE":"2025-03-31"}}
+cfg={"warn_days":30,"overrides":{"TrueNAS CORE":"2025-03-31"}}
 T=date(2026,9,2)
 def q(s): return eol.lookup(s,cfg,today=T)
+# Same real cycle, two different "todays", to exercise the warn_days boundary
+# without inventing a release: Fedora 43 ends 2026-12-09.
+FED="Fedora Linux 43 (Server Edition) (x86_64)"
+def qd(s,d): return eol.lookup(s,cfg,today=d)
 print(json.dumps({
  "ubuntu_trims":  q("Ubuntu 24.04.4 LTS (x86_64)")["cycle"],
  "netbsd_trims":  q("NetBSD 11.0 (amd64)")["cycle"],
@@ -651,7 +656,14 @@ print(json.dumps({
  "soon":          q("Debian GNU/Linux 12 (bookworm) (x86_64)")["status"],
  "no_eol_date":   q("macOS 26.6.2 (arm64)")["status"],
  "unmatched":     q("Plan 9 from Bell Labs")["status"],
- "uncached":      eol.lookup("Fedora Linux 43 (Server Edition)",cfg,today=T)["status"],
+ "fedora_98d":    qd(FED, date(2026,9,2))["status"],
+ "fedora_98d_n":  qd(FED, date(2026,9,2))["days_left"],
+ "fedora_19d":    qd(FED, date(2026,11,20))["status"],
+ "fedora_19d_n":  qd(FED, date(2026,11,20))["days_left"],
+ # A product the matcher recognises but the cache does not hold. It must not
+ # fall back to an optimistic "supported".
+ "uncached":      q("openSUSE Leap 15.6 (x86_64)")["status"],
+ "uncached_prod": q("openSUSE Leap 15.6 (x86_64)")["product"],
 }))
 PY
 )
@@ -671,8 +683,15 @@ PY
   # The config override is the only way to answer for it.
   check "a config override answers where endoflife.date has no product" \
         "assert d['truenas']=='eol' and d['truenas_src']=='config', d" "$J"
-  check "a past-EOL release reads eol, and one within warn_days reads eol_soon" \
-        "assert d['old_debian']=='eol' and d['soon']=='eol_soon', d" "$J"
+  check "a past-EOL release reads eol" \
+        "assert d['old_debian']=='eol' and d['soon']=='eol', d" "$J"
+  # warn_days defaults to 30, not 90: Fedora's ~13-month cycle would otherwise
+  # hold those hosts amber for three months twice a year, and a warning that is
+  # always on is one nobody reads. 98 days out is quiet; 19 days out is not.
+  check "98 days out is supported at the 30-day warning, 19 days out is eol_soon" \
+        "assert (d['fedora_98d'],d['fedora_19d'])==('supported','eol_soon'), d" "$J"
+  check "the countdown is right in both directions" \
+        "assert (d['fedora_98d_n'],d['fedora_19d_n'])==(98,19), d" "$J"
   # macOS and NetBSD announce no end date at all; that is supported, not eol.
   check "a cycle with no announced end date is supported, not eol" \
         "assert d['no_eol_date']=='supported', d" "$J"
@@ -680,6 +699,8 @@ PY
   # nothing recognises, the other a product the cache has not fetched.
   check "an unrecognised OS and an uncached product both read unknown" \
         "assert d['unmatched']=='unknown' and d['uncached']=='unknown', d" "$J"
+  check "an uncached product is still identified, just not answered" \
+        "assert d['uncached_prod']=='opensuse', d" "$J"
 fi
 
 echo

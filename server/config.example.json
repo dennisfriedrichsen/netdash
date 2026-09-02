@@ -33,7 +33,7 @@
   "eol": {
     "enabled": true,
     "refresh_hours": 24,
-    "warn_days": 90,
+    "warn_days": 30,
     "overrides": {}
   }
 }
