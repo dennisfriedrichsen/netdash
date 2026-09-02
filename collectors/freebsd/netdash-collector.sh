@@ -55,12 +55,29 @@ if [ "$MODE" = "--print" ]; then printf '%s\n' "$JSON"; exit 0; fi
 [ -n "$NETDASH_URL" ] || { echo "netdash: NETDASH_URL not set (see $CONF)" >&2; exit 1; }
 
 if command -v curl >/dev/null 2>&1; then
-  exec curl -fsS --max-time 10 -X POST "$NETDASH_URL" \
+  rc=0
+  ERR=$(curl -fsS --connect-timeout 5 --max-time 15 -X POST "$NETDASH_URL" \
     -H "Content-Type: application/json" \
     -H "X-Netdash-Token: $NETDASH_TOKEN" \
-    --data "$JSON" -o /dev/null
+    --data "$JSON" -o /dev/null 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] && exit 0
+
+  case "$rc" in
+    6|7|28|35)
+      # Could not resolve / connect / timed out / TLS. The server is simply not
+      # reachable from here -- a laptop off the LAN, or the server restarting.
+      # Expected and self-correcting, so stay silent: this runs every 60s and
+      # would otherwise add ~1440 lines a day to the launchd or cron log.
+      exit 0 ;;
+  esac
+  # Anything else (notably 22 = HTTP 4xx/5xx, i.e. a bad token) is a real
+  # misconfiguration that will not fix itself. Say so.
+  echo "netdash: post failed (curl $rc): $ERR" >&2
+  exit "$rc"
 else
-  # fetch(1) is in the FreeBSD base system; curl is not.
+  # fetch(1) is in the FreeBSD base system; curl is not. It has no granular
+  # exit codes, so unreachable-vs-misconfigured cannot be told apart here;
+  # this branch stays loud. Install curl on a host that moves networks.
   exec fetch -q -T 10 -o /dev/null \
     --method=POST \
     --header="Content-Type: application/json" \

@@ -94,6 +94,24 @@ keeps the existing config. `sudo ./uninstall.sh` removes it.
 Config lives at `/etc/netdash/collector.conf` (Linux) or
 `/usr/local/etc/netdash/collector.conf` (FreeBSD), mode 600.
 
+### Failure behaviour
+
+The collector distinguishes two kinds of failure, because it runs every 30-60s
+and its log is never rotated:
+
+| condition | behaviour |
+|---|---|
+| server unreachable — DNS, connect, timeout, TLS (curl 6/7/28/35) | silent, exit 0 |
+| anything else, notably HTTP 4xx/5xx from a bad token (curl 22) | message on stderr, non-zero exit |
+
+The first is expected and self-correcting: a laptop off the LAN, or the server
+restarting. Logging it would add ~1440 lines a day. The second will not fix
+itself, so it is reported. The host simply shows as **Stale** on the dashboard
+in both cases.
+
+The FreeBSD `fetch(1)` fallback has no granular exit codes and stays loud —
+install `curl` on any FreeBSD host that changes networks.
+
 ## Collectors — macOS
 
 Via Homebrew (see `homebrew/netdash-collector.rb`):
