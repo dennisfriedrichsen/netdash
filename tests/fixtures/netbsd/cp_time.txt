@@ -1,0 +1,2 @@
+user = 16238, nice = 3814, sys = 42353, intr = 37653, idle = 85233354
+user = 16250, nice = 3814, sys = 42400, intr = 37700, idle = 85233900

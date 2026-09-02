@@ -1,0 +1,16 @@
+/dev/nvme0n1p3 / btrfs rw,relatime,ssd,space_cache=v2,subvolid=268,subvol=/@/.snapshots/1/snapshot 0 0
+/dev/nvme0n1p3 /var btrfs rw,relatime,subvolid=259,subvol=/@/var 0 0
+/dev/nvme0n1p3 /srv btrfs rw,relatime,subvolid=260,subvol=/@/srv 0 0
+/dev/nvme0n1p3 /opt btrfs rw,relatime,subvolid=261,subvol=/@/opt 0 0
+/dev/nvme0n1p3 /root btrfs rw,relatime,subvolid=262,subvol=/@/root 0 0
+/dev/nvme0n1p3 /usr/local btrfs rw,relatime,subvolid=263,subvol=/@/usr/local 0 0
+/dev/nvme0n1p3 /home btrfs rw,relatime,subvolid=264,subvol=/@/home 0 0
+/dev/nvme0n1p3 /boot/grub2/x86_64-efi btrfs rw,relatime,subvolid=265,subvol=/@/boot/grub2/x86_64-efi 0 0
+/dev/nvme0n1p2 /boot/efi vfat rw,relatime 0 0
+proc /proc proc rw,nosuid 0 0
+sysfs /sys sysfs rw,nosuid 0 0
+tmpfs /run tmpfs rw,nosuid 0 0
+devtmpfs /dev devtmpfs rw 0 0
+nas:/export/media /mnt/media nfs4 rw,relatime 0 0
+rpool/ROOT/suse /zfsroot zfs rw,relatime 0 0
+rpool/home /zfsroot/home zfs rw,relatime 0 0

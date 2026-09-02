@@ -1,0 +1,5 @@
+Filesystem   Type 1024-blocks     Used     Avail Capacity  Mounted on
+zroot/ROOT/default zfs 230000000 31000000 199000000 13% /
+devfs devfs 1 1 0 100% /dev
+/dev/gpt/efiboot0 msdosfs 262144 1300 260844 0% /boot/efi
+nas:/export nfs 8589934592 4294967296 4294967296 50% /mnt/nas

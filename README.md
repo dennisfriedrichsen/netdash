@@ -241,6 +241,23 @@ sudo python3 /opt/netdash/server/truenas.py /etc/netdash/server.json
 
 That prints exactly what the dashboard will show, or the API error.
 
+## Tests
+
+```sh
+sh tests/run.sh              # everything
+sh tests/run.sh openbsd      # just the cases matching a name
+```
+
+27 cases, no network, no root, nothing installed — `sh`, `awk` and `python3`.
+The BSD and macOS cases run the real collector end to end against mocked
+`sysctl`/`df`/`mount`/`vmstat`; the Linux cases drive its awk programs directly,
+since `/proc` reads cannot be intercepted through `PATH`.
+
+Every case pins a bug that actually shipped, and the fixtures are real captures
+from real hosts (see `tests/fixtures/README.md`). Confirmed the suite fails when
+the boottime anchor, the `nobrowse` container test, or the 64-bit `%.0f` are
+reverted — a test that has never failed proves nothing.
+
 ## Troubleshooting
 
 ```sh

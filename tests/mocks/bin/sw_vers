@@ -1,0 +1,5 @@
+#!/bin/sh
+case "$1" in
+  -productName) echo macOS ;;
+  -productVersion) echo "${NETDASH_MOCK_REL:-15.0}" ;;
+esac

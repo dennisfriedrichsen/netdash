@@ -1,0 +1,10 @@
+#!/bin/sh
+# Mock uname. $NETDASH_MOCK_OS selects the platform being emulated.
+case "$1" in
+  -s) echo "$NETDASH_MOCK_OS" ;;
+  -m) echo "${NETDASH_MOCK_ARCH:-amd64}" ;;
+  -r) echo "${NETDASH_MOCK_REL:-0.0}" ;;
+  -sr) echo "$NETDASH_MOCK_OS ${NETDASH_MOCK_REL:-0.0}" ;;
+  -n) echo "${NETDASH_MOCK_HOST:-mockhost}" ;;
+  *) echo "$NETDASH_MOCK_OS ${NETDASH_MOCK_HOST:-mockhost} ${NETDASH_MOCK_REL:-0.0} ${NETDASH_MOCK_ARCH:-amd64}" ;;
+esac

@@ -1,0 +1,4 @@
+Filesystem  1K-blocks      Used     Avail Capacity  Mounted on
+/dev/sd0a     1179582     96224   1024380     9%    /
+/dev/sd0e     2025438       342   1923826     1%    /home
+/dev/sd0d     3041454   1859350   1030032    65%    /usr

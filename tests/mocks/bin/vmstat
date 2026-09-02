@@ -1,0 +1,4 @@
+#!/bin/sh
+F="$NETDASH_FIXTURES/${NETDASH_MOCK_FIXDIR:-$(echo "$NETDASH_MOCK_OS" | tr 'A-Z' 'a-z')}"
+[ "$1" = "-s" ] && exec cat "$F/vmstat-s.txt"
+exit 1

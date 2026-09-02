@@ -1,0 +1,6 @@
+#!/bin/sh
+# macOS: `top -l 2 -n 0 -s 1`; the collector reads the SECOND "CPU usage" line.
+cat <<'X'
+CPU usage: 3.44% user, 6.89% sys, 89.65% idle
+CPU usage: 12.50% user, 7.29% sys, 80.20% idle
+X

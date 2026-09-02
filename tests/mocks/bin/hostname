@@ -1,0 +1,2 @@
+#!/bin/sh
+echo "${NETDASH_MOCK_HOST:-mockhost}"

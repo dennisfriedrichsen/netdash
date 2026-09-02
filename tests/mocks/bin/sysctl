@@ -1,0 +1,24 @@
+#!/bin/sh
+# Mock sysctl. Only -n is used by the collector.
+F="$NETDASH_FIXTURES/${NETDASH_MOCK_FIXDIR:-$(echo "$NETDASH_MOCK_OS" | tr 'A-Z' 'a-z')}"
+key=$2
+case "$key" in
+  kern.cp_time)
+    # two successive reads return the two fixture lines, so a delta exists
+    t="$NETDASH_MOCK_TMP/tick"
+    n=$(cat "$t" 2>/dev/null || echo 1); echo $((n+1)) > "$t"
+    sed -n "${n}p" "$F/cp_time.txt"; exit 0 ;;
+  hw.physmem)   [ -n "$MOCK_PHYSMEM" ] && { echo "$MOCK_PHYSMEM"; exit 0; }; exit 1 ;;
+  hw.physmem64) [ -n "$MOCK_PHYSMEM64" ] && { echo "$MOCK_PHYSMEM64"; exit 0; }
+                echo "sysctl: second level name physmem64 in hw.physmem64 is invalid" >&2; exit 1 ;;
+  kern.boottime) echo "$MOCK_BOOTTIME"; exit 0 ;;
+  vm.uvmexp|vm.uvmexp2)
+    echo "sysctl: $key: use 'vmstat' or 'systat' to view this information" >&2; exit 1 ;;
+  vm.stats.vm.v_page_size)       [ -n "$MOCK_PAGESIZE" ] && { echo "$MOCK_PAGESIZE"; exit 0; }; exit 1 ;;
+  vm.stats.vm.v_free_count)      [ -n "$MOCK_FREE" ]     && { echo "$MOCK_FREE"; exit 0; };     exit 1 ;;
+  vm.stats.vm.v_inactive_count)  [ -n "$MOCK_INACT" ]    && { echo "$MOCK_INACT"; exit 0; };    exit 1 ;;
+  vm.stats.vm.v_laundry_count)   [ -n "$MOCK_LAUNDRY" ]  && { echo "$MOCK_LAUNDRY"; exit 0; };  exit 1 ;;
+  kstat.zfs.misc.arcstats.size)  [ -n "$MOCK_ARC" ]      && { echo "$MOCK_ARC"; exit 0; };      exit 1 ;;
+  hw.memsize)   [ -n "$MOCK_MEMSIZE" ] && { echo "$MOCK_MEMSIZE"; exit 0; }; exit 1 ;;
+  *) exit 1 ;;
+esac

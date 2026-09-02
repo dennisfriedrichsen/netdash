@@ -1,0 +1,16 @@
+     4096 bytes per page
+       32 page colors
+   119720 pages managed
+     9040 pages free
+    43316 pages active
+    24236 pages inactive
+        0 pages paging
+     4799 pages wired
+        1 reserve pagedaemon pages
+        5 reserve kernel pages
+    60324 cached file pages
+      256 minimum free pages
+      341 target free pages
+    39906 maximum wired pages
+        0 pages swapped in
+        0 pages swapped out

@@ -1,0 +1,9 @@
+#!/bin/sh
+cat <<'X'
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                               45231.
+Pages active:                            524288.
+Pages inactive:                          301122.
+Pages wired down:                        262144.
+Pages occupied by compressor:            131072.
+X

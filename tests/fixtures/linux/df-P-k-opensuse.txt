@@ -1,0 +1,15 @@
+Filesystem     1024-blocks      Used Available Capacity Mounted on
+/dev/nvme0n1p3   494006272 198412800 294503936      41% /
+/dev/nvme0n1p3   494006272 198412800 294503936      41% /var
+/dev/nvme0n1p3   494006272 198412800 294503936      41% /srv
+/dev/nvme0n1p3   494006272 198412800 294503936      41% /opt
+/dev/nvme0n1p3   494006272 198412800 294503936      41% /root
+/dev/nvme0n1p3   494006272 198412800 294503936      41% /usr/local
+/dev/nvme0n1p3   494006272 198412800 294503936      41% /home
+/dev/nvme0n1p3   494006272 198412800 294503936      41% /boot/grub2/x86_64-efi
+/dev/nvme0n1p2      523248     12048    511200       3% /boot/efi
+proc                     0         0         0     100% /proc
+tmpfs               802816       900    801916       1% /run
+nas:/export/media 8589934592 4294967296 4294967296  50% /mnt/media
+rpool/ROOT/suse   104857600  20971520  83886080      21% /zfsroot
+rpool/home        104857600  41943040  62914560      41% /zfsroot/home

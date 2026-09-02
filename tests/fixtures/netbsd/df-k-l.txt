@@ -1,0 +1,7 @@
+Filesystem      1K-blocks         Used        Avail %Cap Mounted on
+/dev/dk1          9530926      2598008      6456372  29% /
+tmpfs              130600            0       130600   0% /tmp
+kernfs                  1            1            0 100% /kern
+ptyfs                   1            1            0 100% /dev/pts
+procfs                  4            4            0 100% /proc
+tmpfs              130600            0       130600   0% /var/shm

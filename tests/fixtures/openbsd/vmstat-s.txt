@@ -1,0 +1,16 @@
+       4096 bytes per page
+     113240 pages managed
+      51501 pages free
+       3614 pages active
+      24866 pages inactive
+          0 pages being paged out
+          2 pages wired
+       6355 pages zeroed
+         32 pages reserved for pagedaemon
+         64 pages reserved for kernel
+      65535 swap pages
+       4088 swap pages in use
+    3702914 page faults
+      66725 pages freed by pagedaemon
+     112338 pages scanned by pagedaemon
+          0 pages reactivated by pagedaemon

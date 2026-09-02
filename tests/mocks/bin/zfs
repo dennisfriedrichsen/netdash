@@ -1,0 +1,4 @@
+#!/bin/sh
+F="$NETDASH_FIXTURES/${NETDASH_MOCK_FIXDIR:-$(echo "$NETDASH_MOCK_OS" | tr 'A-Z' 'a-z')}"
+case "$*" in *list*) [ -f "$F/zfs-list.txt" ] && exec cat "$F/zfs-list.txt"; exit 0 ;; esac
+exit 1
