@@ -50,6 +50,19 @@ run() { "$@" 2>/dev/null || true; }
 # BSD stat(1), not GNU: -f %m, not -c %Y.
 mtime() { [ -e "$1" ] && stat -f %m "$1" 2>/dev/null || true; }
 
+# Names of the security-relevant items, capped. A tooltip is not a report: one
+# host with fifty vulnerable packages must not push a fifty-name string through
+# every 60-second sample. Reads names on stdin, one per line, and strips
+# anything that could break out of the JSON string.
+NAME_CAP=6
+cap_names() {
+  tr -cd 'A-Za-z0-9._+:~,()\- \n' | awk -v max="$NAME_CAP" '
+    NF { n++; if (n <= max) out = out (out ? ", " : "") $0 }
+    END { if (n > max) out = out " (+" n - max " more)"; printf "%s", out }'
+}
+SECPKGS=""
+
+
 case "$OSNAME" in
 FreeBSD)
   SRC=pkg-audit
@@ -89,6 +102,7 @@ FreeBSD)
   # Fallback for a release that words the summary differently: one
   # "<pkg> is vulnerable:" header is printed per affected package.
   [ -n "$SEC" ] || SEC=$(printf '%s\n' "$AUDIT" | grep -c 'is vulnerable' || true)
+  SECPKGS=$(printf '%s\n' "$AUDIT" | awk '/is vulnerable/ {print $1}' | cap_names)
 
   # Out-of-date packages, a different question from "vulnerable" -- a package
   # can be behind with no advisory against it.
@@ -145,6 +159,7 @@ OpenBSD)
     exit 1
   fi
   SEC=$(printf '%s' "$OUT" | grep -c . || true)
+  SECPKGS=$(printf '%s\n' "$OUT" | cap_names)
   CHECKED=$NOW
 
   # No PKG_PATH needed: pkg_add(1) says that with neither TRUSTED_PKG_PATH nor
@@ -203,7 +218,9 @@ NetBSD)
   # Match on 'vulnerability' exactly. A lenient 'vulnerabilit' also matches
   # pkg-vulnerabilities in the "Cannot open" error, turning a host with no
   # database into a host with one finding.
-  SEC=$(run pkg_admin audit | awk '/vulnerability/ {print $2}' | sort -u | grep -c . || true)
+  AUDITED=$(run pkg_admin audit | awk '/vulnerability/ {print $2}' | sort -u)
+  SEC=$(printf '%s' "$AUDITED" | grep -c . || true)
+  SECPKGS=$(printf '%s\n' "$AUDITED" | cap_names)
 
   # NetBSD has no syspatch or freebsd-update equivalent: base security fixes
   # mean rebuilding from source or installing new sets. Saying so beats a
@@ -260,8 +277,8 @@ if [ -z "$CHECKED" ]; then
   exit 1
 fi
 
-JSON=$(printf '{"security":%s,"other":%s,"reboot_required":%s,"checked_at":%d,"source":"%s","detail":"%s"}' \
-  "$SEC" "$OTH" "$REBOOT" "$CHECKED" "$SRC" "$DET")
+JSON=$(printf '{"security":%s,"other":%s,"reboot_required":%s,"checked_at":%d,"source":"%s","detail":"%s","packages":"%s"}' \
+  "$SEC" "$OTH" "$REBOOT" "$CHECKED" "$SRC" "$DET" "$SECPKGS")
 
 if [ "$MODE" = "--print" ]; then printf '%s\n' "$JSON"; exit 0; fi
 

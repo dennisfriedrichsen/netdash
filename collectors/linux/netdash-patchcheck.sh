@@ -50,6 +50,18 @@ run() { "$@" 2>/dev/null || true; }
 
 mtime() { [ -e "$1" ] && stat -c %Y "$1" 2>/dev/null || true; }
 
+# Names of the security-relevant packages, capped. A tooltip is not a report:
+# one host with fifty vulnerable packages must not push a fifty-name string
+# through every 30-second sample for the rest of the day. Reads names on stdin,
+# one per line.
+NAME_CAP=6
+cap_names() {
+  tr -cd 'A-Za-z0-9._+:~,()\- \n' | awk -v max="$NAME_CAP" '
+    NF { n++; if (n <= max) out = out (out ? ", " : "") $0 }
+    END { if (n > max) out = out " (+" n - max " more)"; printf "%s", out }'
+}
+SECPKGS=""
+
 # ---------------------------------------------------------------- apt ----
 if command -v apt-get >/dev/null 2>&1; then
   SRC=apt
@@ -77,10 +89,13 @@ if command -v apt-get >/dev/null 2>&1; then
   # covers both. The test is applied to the parenthesised part alone: matching
   # the whole line counts any package whose *name* contains "security". A
   # package name cannot contain "(", so the cut is unambiguous.
-  set -- $(run apt-get --just-print -o Debug::NoLocking=true dist-upgrade | awk '
+  UPG=$(run apt-get --just-print -o Debug::NoLocking=true dist-upgrade)
+  set -- $(printf '%s\n' "$UPG" | awk '
     /^Inst / { n++; s=$0; sub(/^[^(]*\(/,"",s); if (s ~ /-security/) sec++ }
     END { printf "%d %d\n", sec+0, n-sec+0 }')
   SEC=${1:-0}; OTH=${2:-0}
+  SECPKGS=$(printf '%s\n' "$UPG" | awk '
+    /^Inst / { s=$0; sub(/^[^(]*\(/,"",s); if (s ~ /-security/) print $2 }' | cap_names)
 
 # ---------------------------------------------------------------- dnf ----
 elif command -v dnf5 >/dev/null 2>&1 || command -v dnf >/dev/null 2>&1; then
@@ -100,7 +115,9 @@ elif command -v dnf5 >/dev/null 2>&1 || command -v dnf >/dev/null 2>&1; then
   for d in /var/cache/libdnf5 /var/cache/dnf; do
     META=$(mtime "$d"); [ -n "$META" ] && break
   done
-  SEC=$(count_dnf --security)
+  SECOUT=$(run $DNF -q check-update --security)
+  SEC=$(printf '%s\n' "$SECOUT" | awk 'NF==3 && $1 ~ /\./ {n++} END{print n+0}')
+  SECPKGS=$(printf '%s\n' "$SECOUT" | awk 'NF==3 && $1 ~ /\./ {print $1}' | cap_names)
   ALL=$(count_dnf)
   OTH=$((ALL - SEC)); [ "$OTH" -ge 0 ] || OTH=0
 
@@ -151,6 +168,7 @@ elif command -v pacman >/dev/null 2>&1; then
     # success too.
     if [ "$rc" -eq 0 ] || [ -n "$AA" ]; then
       SEC=$(printf '%s' "$AA" | grep -c . || true)
+      SECPKGS=$(printf '%s\n' "$AA" | cap_names)
       REFRESHED=1
       SRC="pacman+arch-audit"
     else
@@ -303,8 +321,8 @@ else
 fi
 [ "$REFRESH_FAILED" -eq 1 ] && DET="${DET:+$DET; }metadata refresh failed"
 
-JSON=$(printf '{"security":%s,"other":%s,"reboot_required":%s,"checked_at":%d,"source":"%s","detail":"%s"}' \
-  "$SEC" "$OTH" "$REBOOT" "$CHECKED" "$SRC" "$DET")
+JSON=$(printf '{"security":%s,"other":%s,"reboot_required":%s,"checked_at":%d,"source":"%s","detail":"%s","packages":"%s"}' \
+  "$SEC" "$OTH" "$REBOOT" "$CHECKED" "$SRC" "$DET" "$SECPKGS")
 
 if [ "$MODE" = "--print" ]; then printf '%s\n' "$JSON"; exit 0; fi
 

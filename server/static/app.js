@@ -59,6 +59,7 @@ function patchTitle(p) {
   if (p.other !== null && p.other !== undefined) bits.push(p.other + ' other');
   /* Worth saying even when something else is already pending: updates that are
      installed but not running are invisible to the package database. */
+  if (p.packages) bits.push(p.packages);
   if (p.reboot_required) bits.push('reboot required for installed updates');
   bits.push('checked ' + fmtAge(p.age_seconds));
   if (p.source) bits.push('via ' + p.source);
@@ -515,6 +516,7 @@ function renderDetail(host, data) {
     }
     p4.appendChild(el('div', 'sub',
       (pp.source || 'unknown source') + ' · checked ' + fmtAge(pp.age_seconds)));
+    if (pp.packages) p4.appendChild(el('div', 'sub', pp.packages));
     if (pp.reboot_required) {
       p4.appendChild(el('div', 'sub',
         'updates are installed but not running until this host reboots'));

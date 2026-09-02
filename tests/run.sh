@@ -215,13 +215,24 @@ if want patches-apt; then
 import re,subprocess,sys,json
 root=sys.argv[1]
 src=open(f"{root}/collectors/linux/netdash-patchcheck.sh").read()
-prog=re.search(r"dist-upgrade \| awk '(.*?)'\)", src, re.S).group(1)
+prog=re.search(r'"\$UPG" \| awk \'(.*?)\'\)', src, re.S).group(1)
+names=re.search(r"SECPKGS=\$\(printf[^|]*\| awk '(.*?)' \| cap_names\)", src, re.S).group(1)
+capfn=re.search(r"(NAME_CAP=\d+\ncap_names\(\) \{.*?\n\})", src, re.S).group(1)
 fixture=open(f"{root}/tests/fixtures/linux/apt-dist-upgrade.txt").read()
 out=subprocess.run(["awk",prog],input=fixture,capture_output=True,text=True)
 sec,oth=out.stdout.split()
+
+def cap(text):
+    return subprocess.run(["sh","-c",capfn+"\ncap_names"],input=text,
+                          capture_output=True,text=True).stdout
+raw=subprocess.run(["awk",names],input=fixture,capture_output=True,text=True).stdout
 # What a naive whole-line match would have counted, for the contrast below.
 naive=sum(1 for l in fixture.splitlines() if l.startswith("Inst ") and "-security" in l)
-print(json.dumps({"security":int(sec),"other":int(oth),"naive":naive}))
+print(json.dumps({"security":int(sec),"other":int(oth),"naive":naive,
+  "names": cap(raw),
+  "over_cap": cap("".join("pkg-%d\n" % i for i in range(1,10))),
+  "no_quotes": cap('ok-1.0\nbad"quote\\\\slash\n'),
+}))
 PY
 )
   check "3 security updates found among 36 pending" \
@@ -233,6 +244,17 @@ PY
   # and the fixture exists to keep that mistake from coming back.
   check "a package NAMED *-security is not miscounted as a security update" \
         "assert d['naive']==4 and d['security']==3, d" "$J"
+  # The badge says how many; the names say which, so a host can be triaged
+  # without logging into it. Only the security ones are listed.
+  check "the three security packages are named, and only those" \
+        "assert d['names']=='openssl-provider-legacy, libssl3t64, openssl', d" "$J"
+  # A tooltip is not a report: fifty names must not ride along on every sample.
+  check "the list is capped, with the remainder counted" \
+        "assert d['over_cap']=='pkg-1, pkg-2, pkg-3, pkg-4, pkg-5, pkg-6 (+3 more)', d" "$J"
+  # The names go into a JSON string built by printf in shell, so a quote or
+  # backslash in a package name would produce malformed JSON.
+  check "quotes and backslashes are stripped before the names reach JSON" \
+        "assert '\"' not in d['no_quotes'] and '\\\\' not in d['no_quotes'], d" "$J"
 fi
 
 if want patches-zypper; then

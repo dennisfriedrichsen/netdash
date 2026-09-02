@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS samples (
     patch_detail       TEXT,
     -- 1 / 0 / NULL. NULL means the host has no way to answer, not "no".
     patch_reboot       INTEGER,
+    -- Names of the security-relevant packages, capped by the collector.
+    patch_packages     TEXT,
     -- Which netdash-collector produced this sample, for spotting hosts left
     -- behind on an old one. NULL for TrueNAS, which has no collector.
     collector_version  TEXT
@@ -54,6 +56,7 @@ _ADDED_COLUMNS = {
         ("patch_source", "TEXT"),
         ("patch_detail", "TEXT"),
         ("patch_reboot", "INTEGER"),
+        ("patch_packages", "TEXT"),
         ("collector_version", "TEXT"),
     ],
 }
@@ -95,8 +98,8 @@ def insert_sample(conn, payload, source="push"):
         """INSERT INTO samples
              (host, ts, os, source, cpu_pct, mem_used_bytes, mem_total_bytes, uptime_seconds,
               patch_security, patch_other, patch_checked_at, patch_source, patch_detail,
-              patch_reboot, collector_version)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+              patch_reboot, patch_packages, collector_version)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             payload["host"],
             ts,
@@ -112,6 +115,7 @@ def insert_sample(conn, payload, source="push"):
             p.get("source"),
             p.get("detail") or None,
             None if p.get("reboot_required") is None else int(bool(p["reboot_required"])),
+            p.get("packages") or None,
             payload.get("collector_version"),
         ),
     )

@@ -83,7 +83,8 @@ Payload shape:
   "mem_used_bytes": 1234, "mem_total_bytes": 5678, "uptime_seconds": 99,
   "disks": [ { "mount": "/", "used_bytes": 1, "total_bytes": 2 } ],
   "patches": { "security": 3, "other": 41, "reboot_required": false,
-               "checked_at": 1788300000, "source": "apt", "detail": "" },
+               "checked_at": 1788300000, "source": "apt", "detail": "",
+               "packages": "openssl-provider-legacy, libssl3t64, openssl" },
   "collector_version": "0.3.2" }
 ```
 
@@ -394,7 +395,7 @@ sh tests/run.sh              # everything
 sh tests/run.sh openbsd      # just the cases matching a name
 ```
 
-92 cases, no network, no root, nothing installed — `sh`, `awk` and `python3`.
+95 cases, no network, no root, nothing installed — `sh`, `awk` and `python3`.
 The BSD and macOS cases run the real collector end to end against mocked
 `sysctl`/`df`/`mount`/`vmstat`; the Linux cases drive its awk programs directly,
 since `/proc` reads cannot be intercepted through `PATH`.

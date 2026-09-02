@@ -595,6 +595,33 @@ Two gates matter:
 macOS is genuinely not applicable: it installs updates during a reboot rather
 than leaving a booted system running stale code.
 
+## Naming the packages
+
+A count alone means going to the box to find out what it is. Each check also
+reports the *security-relevant names*, capped at six with a `(+N more)` tail:
+
+| platform | names come from |
+|---|---|
+| Debian / Ubuntu / Raspbian | the `Inst` lines whose origin is `-security` |
+| Fedora | `check-update --security` rows |
+| Arch | `arch-audit -u` output |
+| FreeBSD | the `<pkg> is vulnerable:` headers |
+| NetBSD | `Package <pkg> has a …`, deduplicated |
+| OpenBSD | the syspatch names themselves (`014_expat`) |
+| macOS | the `* Label:` values |
+
+Alpine and Tumbleweed name nothing, because neither can say which updates are
+security ones in the first place.
+
+The cap is not cosmetic: this string rides on *every* sample, once or twice a
+minute, forever. A host with fifty vulnerable packages would otherwise push
+fifty names through the ingest path and into every row of the rolling window.
+
+Names are also stripped of anything outside a safe character set before they
+reach the JSON. The payload is assembled by `printf` in shell, so a quote or a
+backslash in a package name would produce malformed JSON that the server then
+rejects — losing the whole sample, metrics included, over a cosmetic field.
+
 ## Payload
 
 Collectors add one optional `patches` object; hosts that have never run a check
@@ -608,7 +635,8 @@ simply omit it and read as *unknown*.
   "reboot_required": false,
   "checked_at": 1788300000,
   "source":     "apt",
-  "detail":     ""
+  "detail":     "",
+  "packages":   "openssl-provider-legacy, libssl3t64, openssl"
 }
 ```
 

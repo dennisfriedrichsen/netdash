@@ -44,6 +44,19 @@ SUPLIST=/Library/Preferences/com.apple.SoftwareUpdate
 # AutomaticCheckEnabled -- so every read is guarded.
 sud() { defaults read "$SUPLIST" "$1" 2>/dev/null || true; }
 
+# Names of the security-relevant items, capped. A tooltip is not a report: one
+# host with fifty vulnerable packages must not push a fifty-name string through
+# every 60-second sample. Reads names on stdin, one per line, and strips
+# anything that could break out of the JSON string.
+NAME_CAP=6
+cap_names() {
+  tr -cd 'A-Za-z0-9._+:~,()\- \n' | awk -v max="$NAME_CAP" '
+    NF { n++; if (n <= max) out = out (out ? ", " : "") $0 }
+    END { if (n > max) out = out " (+" n - max " more)"; printf "%s", out }'
+}
+SECPKGS=""
+
+
 # LastSuccessfulDate IS checked_at: the moment the system last completed a scan.
 # macOS runs one every six hours on its own, so this is normally minutes to
 # hours old, and it stops advancing the moment scanning stops -- which is what
@@ -143,6 +156,9 @@ else
     exit 1
   fi
   OTH=$(( TOT - SEC )); [ "$OTH" -ge 0 ] || OTH=0
+  # "* Label: macOS Sequoia 15.7.1-24G90" -> the label, which is what
+  # softwareupdate itself takes on the command line.
+  SECPKGS=$(printf '%s\n' "$LIST" | sed -n 's/^\*[[:space:]]*Label:[[:space:]]*//p' | cap_names)
 fi
 
 DET=""
@@ -152,8 +168,8 @@ DET=""
 # macOS installs its updates at reboot rather than leaving a booted system
 # running stale code, so there is no equivalent state to report. Emitted as
 # null for a consistent payload shape.
-JSON=$(printf '{"security":%s,"other":%s,"reboot_required":null,"checked_at":%d,"source":"%s","detail":"%s"}' \
-  "$SEC" "$OTH" "$CHECKED" "softwareupdate" "$DET")
+JSON=$(printf '{"security":%s,"other":%s,"reboot_required":null,"checked_at":%d,"source":"%s","detail":"%s","packages":"%s"}' \
+  "$SEC" "$OTH" "$CHECKED" "softwareupdate" "$DET" "$SECPKGS")
 
 if [ "$MODE" = "--print" ]; then printf '%s\n' "$JSON"; exit 0; fi
 

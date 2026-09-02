@@ -146,6 +146,7 @@ def patch_summary(sample, now):
         "age_seconds": age,
         "source": sample.get("patch_source"),
         "detail": sample.get("patch_detail"),
+        "packages": sample.get("patch_packages"),
     }
 
 
