@@ -10,7 +10,7 @@ MODE="${1:-}"
 # /usr/local/bin, where curl lives. Appended, not prepended: this adds the
 # standard directories when they are missing without overriding whatever the
 # caller already chose.
-PATH="$PATH:/usr/local/sbin:/usr/local/bin:/opt/homebrew/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+PATH="$PATH:/usr/local/sbin:/usr/local/bin:/usr/pkg/sbin:/usr/pkg/bin:/opt/homebrew/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export PATH
 
 # FreeBSD packages live under /usr/local/etc; OpenBSD and NetBSD installs put
@@ -30,12 +30,16 @@ NETDASH_TOKEN="${NETDASH_TOKEN:-}"
 HOST="${NETDASH_HOSTNAME:-$(hostname -s 2>/dev/null || hostname)}"
 
 # ---- CPU: two samples of kern.cp_time ----
-# The field count differs by OS -- FreeBSD and NetBSD give 5 (user nice sys intr
-# idle), OpenBSD gives 6 (it splits spin from intr) -- and OpenBSD prints array
-# values comma-separated rather than space-separated. Idle is the last field on
-# all three, so sum everything and take the last as idle rather than indexing a
-# fixed position.
-cp_time() { sysctl -n kern.cp_time 2>/dev/null | tr ',' ' '; }
+# Three different renderings of the same counters:
+#   FreeBSD  1000 50 500 20 8430                     (5, space-separated)
+#   OpenBSD  7413,20,29570,0,20845,90572418          (6, comma-separated)
+#   NetBSD   user = 16238, nice = 3814, ... idle = N (5, "key = value" pairs)
+# Strip everything that is not a digit or separator, so all three reduce to bare
+# numbers. Without this, NetBSD only worked by accident: awk coerced the "user"
+# and "=" tokens to zero, which happened to leave the arithmetic right while
+# quietly depending on idle staying the last field.
+# Idle is last on all three, so sum every field and take the last as idle.
+cp_time() { sysctl -n kern.cp_time 2>/dev/null | tr -cd '0-9 ,\n' | tr ',' ' '; }
 S1=$(cp_time); sleep 1; S2=$(cp_time)
 CPU=$(awk -v a="$S1" -v b="$S2" 'BEGIN{
   na=split(a,A," "); nb=split(b,B," ")
@@ -112,11 +116,14 @@ esac
 # using used+available, the usable view, rather than zpool's raw size which
 # counts raidz parity. Plus real non-ZFS mounts filtered on df -T's type column,
 # because `df -t no<type>` does not exclude on FreeBSD.
-# OpenBSD/NetBSD: no ZFS in base and no -T, so keep rows whose device sits under
-# /dev/, which drops mfs/procfs/kernfs/ptyfs and anything networked.
+# OpenBSD/NetBSD: no df -T, so keep rows whose device sits under /dev/. That is
+# what drops tmpfs/kernfs/ptyfs/procfs, since -l does NOT exclude them on NetBSD
+# -- its -l output is identical to plain df. NetBSD does ship ZFS, so the pool
+# branch above runs there too whenever zfs(8) is present; without it those
+# datasets would vanish entirely, their device names not starting with /dev/.
 # -l restricts all of them to local filesystems.
 ZPOOLS=""
-if [ "$OSNAME" = "FreeBSD" ] && command -v zfs >/dev/null 2>&1; then
+if command -v zfs >/dev/null 2>&1; then
   ZPOOLS=$(zfs list -Hp -d 0 -o name,used,avail 2>/dev/null | awk '
     { total=$2+$3
       if (total > 0) printf "%s{\"mount\":\"%s\",\"used_bytes\":%.0f,\"total_bytes\":%.0f}", (n++?",":""), $1, $2, total }')

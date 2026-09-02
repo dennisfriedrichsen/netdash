@@ -10,7 +10,7 @@ MODE="${1:-}"   # capture before `set --` below reuses the positional params
 # /usr/local/bin, where curl lives. Appended, not prepended: this adds the
 # standard directories when they are missing without overriding whatever the
 # caller already chose.
-PATH="$PATH:/usr/local/sbin:/usr/local/bin:/opt/homebrew/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+PATH="$PATH:/usr/local/sbin:/usr/local/bin:/usr/pkg/sbin:/usr/pkg/bin:/opt/homebrew/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export PATH
 
 CONF="${NETDASH_CONF:-/etc/netdash/collector.conf}"

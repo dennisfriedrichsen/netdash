@@ -86,7 +86,7 @@ Payload shape:
 | Linux (musl) | Alpine | OpenRC + BusyBox crond, 60s |
 | FreeBSD | 15.1 | cron, 60s |
 | OpenBSD | 7.9 | cron, 60s |
-| NetBSD | — | cron, 60s; see caveat below |
+| NetBSD | 11.0 | cron, 60s |
 | macOS | 15 (Intel), 26 (Apple Silicon) | Homebrew + launchd, 60s |
 
 Three portability traps this had to work around, all of them silent failures
@@ -112,9 +112,22 @@ free pages is 201 MiB against top's `Free: 201M`. Parse the `vmstat -s` fields
 exactly: a loose `/pages free/` also matches `pages freed by pagedaemon`, a
 lifetime counter, which is a 30% error.
 
-**NetBSD is implemented but not yet verified on real hardware.** It shares the
-OpenBSD path, with `hw.physmem64` tried before `hw.physmem`. Run
-`collectors/probe.sh` there and send the output before trusting its figures.
+**NetBSD** renders the same counters a third way: `kern.cp_time` comes back as
+`user = N, nice = N, ...` key/value pairs, where FreeBSD is space-separated and
+OpenBSD comma-separated. All three are stripped to bare numbers before parsing.
+It refuses both `vm.uvmexp` and `vm.uvmexp2` through sysctl, so memory also comes
+from `vmstat -s`; `kern.boottime` is a bare epoch as on OpenBSD, not the struct.
+Its `df -l` does **not** exclude tmpfs/kernfs/ptyfs/procfs — the output is
+identical to plain `df` — so the `/dev/` device test is what filters them. NetBSD
+does ship ZFS, and its pools are reported.
+
+**Memory on OpenBSD and NetBSD reads higher than on Linux for a comparable
+workload.** Used is `physmem - (free + inactive)`, so active file cache counts as
+used: the NetBSD test host reports 74.5% while holding 236 MB of file cache that
+would largely be reclaimed under pressure. The counters that would let cache be
+subtracted cleanly overlap the active/inactive pools, so subtracting them would
+double-count. Tune the memory thresholds per host if this matters — the numbers
+are consistent and conservative, not wrong.
 
 ## Collectors — Linux and BSD
 
