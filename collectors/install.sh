@@ -1,6 +1,6 @@
 #!/bin/sh
 # netdash collector installer for Linux and BSD hosts.
-# macOS hosts use the Homebrew formula in /homebrew instead.
+# macOS hosts use the formula from dennisfriedrichsen/homebrew-tap instead.
 #
 #   sudo ./install.sh --url http://10.0.0.3:8080/api/ingest --token <TOKEN>
 #
