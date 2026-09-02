@@ -12,6 +12,9 @@
 # its own. This reads the result the system cached from that scan.
 set -eu
 
+# Kept in sync with the repository VERSION file by tests/run.sh.
+NETDASH_VERSION="0.3.2"
+
 MODE="${1:-}"
 
 PATH="$PATH:/usr/local/sbin:/usr/local/bin:/opt/homebrew/bin:/usr/sbin:/usr/bin:/sbin:/bin"

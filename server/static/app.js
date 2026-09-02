@@ -230,8 +230,10 @@ function renderOverview(data) {
   var bad = data.hosts.filter(function (h) {
     return h.status === 'critical' || h.status === 'warning' || h.status === 'stale';
   }).length;
+  var behind = data.hosts.filter(function (h) { return h.collector_outdated; }).length;
   metaEl.textContent = data.hosts.length + ' hosts · ' +
-    (bad ? bad + ' need attention' : 'all clear') + ' · ' +
+    (bad ? bad + ' need attention' : 'all clear') +
+    (behind ? ' · ' + behind + ' on an old collector' : '') + ' · ' +
     new Date(data.now * 1000).toLocaleTimeString();
 
   var grid = el('div', 'grid');
@@ -271,8 +273,20 @@ function renderOverview(data) {
 
     a.appendChild(patchRow(h.patches));
 
-    a.appendChild(el('div', 'sub', (h.stale ? 'last seen ' : 'updated ') + fmtAge(h.age_seconds) +
-      (h.source === 'truenas' ? ' · via API' : '')));
+    var sub = el('div', 'sub', (h.stale ? 'last seen ' : 'updated ') + fmtAge(h.age_seconds) +
+      (h.source === 'truenas' ? ' · via API' : ''));
+    /* Version only earns card space when it is the odd one out. Printing it on
+       every card at fleet scale is noise; printing it on the three that are
+       behind is the whole point. */
+    if (h.collector_version) {
+      var v = el('span', h.collector_outdated ? 'ver old' : 'ver', ' · v' + h.collector_version);
+      if (h.collector_outdated) {
+        v.title = 'Older than v' + data.collector_newest +
+                  ', which other hosts are running. Re-run install.sh here.';
+      }
+      sub.appendChild(v);
+    }
+    a.appendChild(sub);
     grid.appendChild(a);
   });
   frag.appendChild(grid);
@@ -387,7 +401,8 @@ function renderDetail(host, data) {
   var c = data.current, s = st(c.status);
   titleEl.textContent = host;
   metaEl.textContent = (c.os || 'unknown os') + ' · ' + fmtUptime(c.uptime_seconds) +
-    ' · ' + (c.stale ? 'last seen ' : 'updated ') + fmtAge(c.age_seconds);
+    ' · ' + (c.stale ? 'last seen ' : 'updated ') + fmtAge(c.age_seconds) +
+    (c.collector_version ? ' · collector v' + c.collector_version : '');
 
   var frag = document.createDocumentFragment();
 

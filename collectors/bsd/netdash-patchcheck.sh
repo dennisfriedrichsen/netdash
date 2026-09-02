@@ -14,6 +14,9 @@
 #   NetBSD   packages only (pkg_admin audit); base has no patch mechanism
 set -eu
 
+# Kept in sync with the repository VERSION file by tests/run.sh.
+NETDASH_VERSION="0.3.2"
+
 MODE="${1:-}"
 
 PATH="$PATH:/usr/local/sbin:/usr/local/bin:/usr/pkg/sbin:/usr/pkg/bin:/usr/sbin:/usr/bin:/sbin:/bin"

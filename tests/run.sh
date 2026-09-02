@@ -571,6 +571,42 @@ PY
   rm -rf "$TMPD"
 fi
 
+if want version; then
+  echo "version (six hardcoded copies must not drift, and 0.3.10 > 0.3.9)"
+  J=$(python3 - "$ROOT" <<'PY'
+import re,sys,json,glob
+root=sys.argv[1]; sys.path.insert(0,f"{root}/server")
+import app
+want=open(f"{root}/VERSION").read().strip()
+found={}
+for f in sorted(glob.glob(f"{root}/collectors/*/netdash-*.sh")):
+    m=re.search(r'^NETDASH_VERSION="([^"]+)"', open(f).read(), re.M)
+    found[f.split("/collectors/")[1]] = m.group(1) if m else None
+def newest(vs): return app.newest_version([{"collector_version":v} for v in vs])
+print(json.dumps({
+  "want": want, "found": found,
+  "mismatched": {k:v for k,v in found.items() if v != want},
+  "double_digit": ".".join(str(x) for x in newest(["0.3.9","0.3.10"])),
+  "string_compare_would_say": max(["0.3.9","0.3.10"]),
+  "ignores_unversioned": ".".join(str(x) for x in newest([None,"0.3.1",None])),
+}))
+PY
+)
+  check "every collector and patch check matches the VERSION file" \
+        "assert not d['mismatched'], d['mismatched']" "$J"
+  check "all six scripts carry a version at all" \
+        "assert len(d['found'])==6 and all(d['found'].values()), d['found']" "$J"
+  # Compared per component, not as text: "0.3.10" sorts before "0.3.9" as a
+  # string, which would mark an entire fleet outdated the first time a minor
+  # number reached double digits.
+  check "0.3.10 is newer than 0.3.9 (string compare gets this backwards)" \
+        "assert d['double_digit']=='0.3.10' and d['string_compare_would_say']=='0.3.9', d" "$J"
+  # A host that has not upgraded yet reports no version at all; that is not the
+  # same as running an old one, and must not drag the fleet baseline down.
+  check "hosts reporting no version do not affect the newest seen" \
+        "assert d['ignores_unversioned']=='0.3.1', d" "$J"
+fi
+
 echo
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]

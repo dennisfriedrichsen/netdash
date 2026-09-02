@@ -11,6 +11,9 @@
 # See PATCH-CHECKS.md for what each package manager can and cannot answer.
 set -eu
 
+# Kept in sync with the repository VERSION file by tests/run.sh.
+NETDASH_VERSION="0.3.2"
+
 MODE="${1:-}"
 
 PATH="$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"

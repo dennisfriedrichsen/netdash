@@ -62,6 +62,38 @@ def _level(pct, t):
 _RANK = {"unknown": 0, "ok": 1, "warning": 2, "critical": 3, "stale": 4}
 
 
+def _vparts(v):
+    """'0.3.10' -> (0, 3, 10). Unparseable or missing sorts lowest."""
+    if not v:
+        return ()
+    out = []
+    for part in str(v).split("."):
+        digits = "".join(c for c in part if c.isdigit())
+        if not digits:
+            break
+        out.append(int(digits))
+    return tuple(out)
+
+
+def newest_version(hosts):
+    """The highest collector version any host is reporting.
+
+    Compared numerically per component, not as a string: "0.3.10" is newer than
+    "0.3.9" but sorts before it alphabetically, which would mark the whole fleet
+    outdated the first time a minor number reached double digits.
+
+    Using the newest *seen* rather than the server's own version is deliberate:
+    the server does not know what has been released, only what its hosts run, and
+    upgrading one host is what makes the rest visibly stale.
+    """
+    best = ()
+    for h in hosts:
+        p = _vparts(h.get("collector_version"))
+        if p > best:
+            best = p
+    return best
+
+
 def patch_summary(sample, now):
     """Patch status for one sample.
 
@@ -173,6 +205,7 @@ def summarize(sample, now=None):
         },
         "disk": {"worst_pct": worst_disk_pct, "status": disk_status, "mounts": disks},
         "patches": patch_summary(sample, now),
+        "collector_version": sample.get("collector_version"),
         "status": overall,
     }
 
@@ -258,10 +291,21 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 samples = db.latest_per_host(CONN)
                 now = time.time()
+                hosts = [summarize(s, now) for s in samples]
+                # A host is "behind" only against a version actually seen in this
+                # fleet, and only when it reported one at all -- a host that has
+                # not upgraded its collector yet reports nothing and must not be
+                # confused with one running an old version.
+                newest = newest_version(hosts)
+                for h in hosts:
+                    h["collector_outdated"] = bool(
+                        h.get("collector_version") and _vparts(h["collector_version"]) < newest
+                    )
                 return self._json(200, {
                     "now": int(now),
                     "thresholds": CFG["thresholds"],
-                    "hosts": [summarize(s, now) for s in samples],
+                    "collector_newest": ".".join(str(x) for x in newest) or None,
+                    "hosts": hosts,
                 })
             except Exception as e:
                 return self._fail(500, "overview", e)

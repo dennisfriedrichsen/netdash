@@ -132,6 +132,11 @@ button.link:hover { color: var(--text-1); }
 .patch .pglyph { margin-left: auto; color: var(--st, var(--st-none)); font-size: 12px; line-height: 1; }
 .patch .pval { color: var(--text-1); font-weight: 600; font-variant-numeric: tabular-nums; }
 
+/* Collector version: recessive when it matches the fleet, amber when behind --
+   the only time it is worth a reader's attention. */
+.ver { color: var(--muted); }
+.ver.old { color: var(--st-warn); font-weight: 600; }
+
 /* ---------- detail ---------- */
 .panels { padding: 8px 22px 30px; display: grid; gap: 14px;
           grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); }

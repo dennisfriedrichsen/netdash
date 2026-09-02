@@ -71,7 +71,7 @@ threshold rather than lowering the sample interval.
 | route | purpose |
 |---|---|
 | `POST /api/ingest` | collector push (requires `X-Netdash-Token`) |
-| `GET /api/overview` | all hosts, latest sample + status |
+| `GET /api/overview` | all hosts, latest sample + status, newest collector version seen |
 | `GET /api/host/<name>?minutes=60` | one host + recent history |
 | `GET /api/health` | liveness |
 
@@ -81,8 +81,9 @@ Payload shape:
 { "host": "example-host", "os": "Ubuntu 24.04 (x86_64)", "cpu_pct": 12.4,
   "mem_used_bytes": 1234, "mem_total_bytes": 5678, "uptime_seconds": 99,
   "disks": [ { "mount": "/", "used_bytes": 1, "total_bytes": 2 } ],
-  "patches": { "security": 3, "other": 41, "checked_at": 1788300000,
-               "source": "apt", "detail": "" } }
+  "patches": { "security": 3, "other": 41, "reboot_required": false,
+               "checked_at": 1788300000, "source": "apt", "detail": "" },
+  "collector_version": "0.3.2" }
 ```
 
 `patches` is optional: a host whose patch check has never run omits it, or sends
@@ -246,6 +247,28 @@ Homebrew never auto-starts a service on install, so `brew services start` is a
 one-time extra step. After that, `brew upgrade netdash-collector` is enough —
 it restarts the job for you.
 
+## Collector versions
+
+Each collector reports its own version, and `/api/overview` returns the highest
+one any host is currently sending. A host below that is marked
+`collector_outdated`, its version turns amber on the card, and the header
+counts how many are behind.
+
+The baseline is the newest version *seen in this fleet*, not the server's own:
+the server does not know what has been released, only what its hosts run, so
+upgrading one host is what makes the rest visibly stale. A host that has not
+upgraded far enough to report a version at all shows nothing rather than being
+counted as behind — those two states are different, and only one of them is
+fixed by re-running `install.sh`.
+
+Versions compare per numeric component, so `0.3.10` is newer than `0.3.9`; as
+strings that is backwards, which would mark an entire fleet outdated the first
+time a minor number reached double digits.
+
+The version lives in `VERSION` and is stamped into all six collector and patch
+check scripts, which `tests/run.sh version` keeps in sync — six hardcoded
+copies drift silently otherwise, and a wrong version is worse than none.
+
 ## Patch status
 
 Each card carries a **Patches** badge: security updates pending, a reboot
@@ -327,7 +350,7 @@ sh tests/run.sh              # everything
 sh tests/run.sh openbsd      # just the cases matching a name
 ```
 
-69 cases, no network, no root, nothing installed — `sh`, `awk` and `python3`.
+73 cases, no network, no root, nothing installed — `sh`, `awk` and `python3`.
 The BSD and macOS cases run the real collector end to end against mocked
 `sysctl`/`df`/`mount`/`vmstat`; the Linux cases drive its awk programs directly,
 since `/proc` reads cannot be intercepted through `PATH`.

@@ -3,6 +3,9 @@
 # Usage: netdash-collector.sh [--print]
 set -eu
 
+# Kept in sync with the repository VERSION file by tests/run.sh.
+NETDASH_VERSION="0.3.2"
+
 MODE="${1:-}"
 
 # cron on the BSDs and BusyBox crond run with a minimal PATH that often omits
@@ -132,8 +135,8 @@ for f in $PATCH_FILES; do
   case "$P" in '{'*'}') PATCHES="$P"; break ;; esac
 done
 
-JSON=$(printf '{"host":"%s","os":"%s (%s)","cpu_pct":%s,"mem_used_bytes":%s,"mem_total_bytes":%s,"uptime_seconds":%d,"disks":[%s],"patches":%s}' \
-  "$HOST" "$OS" "$ARCH" "$CPU" "$MEM_USED" "$MEM_TOTAL" "$UPTIME" "$DISKS" "$PATCHES")
+JSON=$(printf '{"host":"%s","os":"%s (%s)","cpu_pct":%s,"mem_used_bytes":%s,"mem_total_bytes":%s,"uptime_seconds":%d,"disks":[%s],"patches":%s,"collector_version":"%s"}' \
+  "$HOST" "$OS" "$ARCH" "$CPU" "$MEM_USED" "$MEM_TOTAL" "$UPTIME" "$DISKS" "$PATCHES" "$NETDASH_VERSION")
 
 if [ "$MODE" = "--print" ]; then printf '%s\n' "$JSON"; exit 0; fi
 
