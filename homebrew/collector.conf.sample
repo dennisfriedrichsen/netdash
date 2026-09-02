@@ -1,0 +1,5 @@
+# netdash collector configuration (macOS)
+# Fill both values in, then: brew services start netdash-collector
+NETDASH_URL="http://10.0.0.3:8080/api/ingest"
+NETDASH_TOKEN=""
+# NETDASH_HOSTNAME="override-if-needed"

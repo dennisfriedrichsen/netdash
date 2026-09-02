@@ -1,0 +1,28 @@
+[Unit]
+Description=netdash central server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=netdash
+Group=netdash
+Environment=NETDASH_CONFIG=/etc/netdash/server.json
+WorkingDirectory=/opt/netdash/server
+ExecStart=/usr/bin/python3 /opt/netdash/server/app.py
+Restart=on-failure
+RestartSec=5
+
+# hardening -- the service only needs its own state directory
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/netdash
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+
+[Install]
+WantedBy=multi-user.target
