@@ -56,7 +56,11 @@ OSNAME=$(uname -s)
 MEM_TOTAL=null
 MEM_USED=null
 
-sysctl_n() { sysctl -n "$1" 2>/dev/null; }
+# Must never return non-zero: under `set -e`, VAR=$(failing_cmd) aborts the
+# script. Several of these sysctls are legitimately absent -- hw.physmem64 does
+# not exist on OpenBSD, and kstat.zfs.misc.arcstats.size does not exist on a
+# FreeBSD box without ZFS -- and querying one must yield "" rather than death.
+sysctl_n() { sysctl -n "$1" 2>/dev/null || true; }
 
 case "$OSNAME" in
 FreeBSD)
@@ -73,29 +77,25 @@ FreeBSD)
     MEM_TOTAL="${MEM_TOTAL:-null}"
   fi
   ;;
-OpenBSD)
-  # OpenBSD has no vm.stats.vm.* tree; the page counters live in vm.uvmexp,
-  # printed as space-separated key=value pairs.
-  MEM_TOTAL=$(sysctl_n hw.physmem)
-  UVM=$(sysctl -n vm.uvmexp 2>/dev/null | tr ' ' '\n')
-  uvm() { printf '%s\n' "$UVM" | sed -n "s/^$1=//p" | head -1; }
-  PS=$(uvm pagesize); FREE=$(uvm free); INACT=$(uvm inactive)
-  if [ -n "$MEM_TOTAL" ] && [ -n "$PS" ] && [ -n "$FREE" ]; then
-    INACT=${INACT:-0}
-    MEM_USED=$(awk -v t="$MEM_TOTAL" -v ps="$PS" -v f="$FREE" -v i="$INACT" 'BEGIN{
-      u = t - (f+i)*ps; if (u<0) u=0; printf "%.0f", u }')
-  else
-    MEM_TOTAL="${MEM_TOTAL:-null}"
-  fi
-  ;;
-NetBSD)
+OpenBSD|NetBSD)
+  # OpenBSD refuses to expose vm.uvmexp through sysctl -- it answers "use vmstat
+  # or systat" -- and has no hw.physmem64 or vm.uvmexp2 (those are NetBSD names).
+  # vmstat -s prints the page counters on both, and its figures cross-check
+  # against top: free 51501 pages = 201 MiB against top's "Free: 201M".
+  #
+  # Field-exact matching matters here: a loose /pages free/ also matches
+  # "66725 pages freed by pagedaemon", which is a lifetime counter, not a gauge.
   MEM_TOTAL=$(sysctl_n hw.physmem64); [ -n "$MEM_TOTAL" ] || MEM_TOTAL=$(sysctl_n hw.physmem)
-  PS=$(sysctl_n vm.uvmexp2.pagesize)
-  FREE=$(sysctl_n vm.uvmexp2.free)
-  INACT=$(sysctl_n vm.uvmexp2.inactive)
-  if [ -n "$MEM_TOTAL" ] && [ -n "$PS" ] && [ -n "$FREE" ]; then
-    INACT=${INACT:-0}
-    MEM_USED=$(awk -v t="$MEM_TOTAL" -v ps="$PS" -v f="$FREE" -v i="$INACT" 'BEGIN{
+  eval "$(vmstat -s 2>/dev/null | awk '
+    $2=="bytes" && $3=="per" && $4=="page"  { ps=$1 }
+    $2=="pages" && $3=="free"     && NF==3  { free=$1 }
+    $2=="pages" && $3=="inactive" && NF==3  { inact=$1 }
+    END { printf "VM_PS=%.0f\nVM_FREE=%.0f\nVM_INACT=%.0f\n", ps, free, inact }')"
+  VM_PS=${VM_PS:-0}; VM_FREE=${VM_FREE:-0}; VM_INACT=${VM_INACT:-0}
+  if [ -n "$MEM_TOTAL" ] && [ "$VM_PS" -gt 0 ] && [ "$VM_FREE" -gt 0 ]; then
+    # Same shape as the FreeBSD formula: physical total minus what the system
+    # can reclaim (free + inactive), so every host means the same thing.
+    MEM_USED=$(awk -v t="$MEM_TOTAL" -v ps="$VM_PS" -v f="$VM_FREE" -v i="$VM_INACT" 'BEGIN{
       u = t - (f+i)*ps; if (u<0) u=0; printf "%.0f", u }')
   else
     MEM_TOTAL="${MEM_TOTAL:-null}"
@@ -143,7 +143,7 @@ else DISKS="$ZPOOLS$OTHER"; fi
 # FreeBSD and NetBSD print '{ sec = N, usec = M }'; anchor on the leading brace,
 # because a greedy .* before 'sec' runs past the 'u' in 'usec' and captures the
 # microseconds (~20000 days of uptime). OpenBSD prints a bare epoch instead.
-RAWBOOT=$(sysctl -n kern.boottime 2>/dev/null)
+RAWBOOT=$(sysctl -n kern.boottime 2>/dev/null || true)
 BOOT=$(printf '%s' "$RAWBOOT" | sed -n 's/^{ *sec *= *\([0-9][0-9]*\).*/\1/p')
 [ -n "$BOOT" ] || BOOT=$(printf '%s' "$RAWBOOT" | sed -n 's/^\([0-9][0-9]*\)$/\1/p')
 if [ -n "$BOOT" ]; then UPTIME=$(( $(date +%s) - BOOT )); else UPTIME=0; fi

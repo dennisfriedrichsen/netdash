@@ -85,7 +85,8 @@ Payload shape:
 | Linux (other) | Fedora, Arch, openSUSE | systemd timer, 30s |
 | Linux (musl) | Alpine | OpenRC + BusyBox crond, 60s |
 | FreeBSD | 15.1 | cron, 60s |
-| OpenBSD / NetBSD | — | cron, 60s; see caveat below |
+| OpenBSD | 7.9 | cron, 60s |
+| NetBSD | — | cron, 60s; see caveat below |
 | macOS | 15 (Intel), 26 (Apple Silicon) | Homebrew + launchd, 60s |
 
 Three portability traps this had to work around, all of them silent failures
@@ -101,11 +102,19 @@ rather than errors:
   filesystem across many mount points. Entries are grouped by source device, so
   openSUSE's eight subvolumes report once.
 
-**OpenBSD and NetBSD are implemented but not yet verified on real hardware.** The
-CPU and disk paths are written against their documented shapes, and every sysctl
-is probed defensively — a name that does not exist yields `null` rather than a
-wrong number. Run `collectors/probe.sh` on such a host and send the output to
-confirm before trusting the memory figures.
+**OpenBSD** needed three things FreeBSD does not: `kern.cp_time` has six fields
+and is comma-separated (idle is last on all of them, so the parser sums every
+field and takes the last rather than indexing position 5); `kern.boottime` is a
+bare epoch rather than the `{ sec = N }` struct; and memory comes from
+`vmstat -s`, because OpenBSD refuses to expose `vm.uvmexp` through sysctl and
+answers *"use vmstat or systat"*. Its counters cross-check against `top` — 51501
+free pages is 201 MiB against top's `Free: 201M`. Parse the `vmstat -s` fields
+exactly: a loose `/pages free/` also matches `pages freed by pagedaemon`, a
+lifetime counter, which is a 30% error.
+
+**NetBSD is implemented but not yet verified on real hardware.** It shares the
+OpenBSD path, with `hw.physmem64` tried before `hw.physmem`. Run
+`collectors/probe.sh` there and send the output before trusting its figures.
 
 ## Collectors — Linux and BSD
 
