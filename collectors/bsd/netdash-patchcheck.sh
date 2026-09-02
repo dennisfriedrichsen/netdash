@@ -124,16 +124,33 @@ OpenBSD)
 
 NetBSD)
   SRC=pkg_admin-audit
+  # No vulnerability database ships with the system, and on a stock NetBSD 11.0
+  # install nothing ever fetches one: /etc/daily.conf does not set
+  # fetch_pkg_vulnerabilities=YES by default (verified on the test host, where
+  # the file was simply absent). So this daily job is normally the only thing
+  # that will ever populate it, which is why the fetch runs before the audit
+  # rather than trusting the system to have done it.
   [ "$REFRESH" = yes ] && run pkg_admin fetch-pkg-vulnerabilities >/dev/null
 
-  # Audits installed packages against the local pkg-vulnerabilities file; no
-  # network. /etc/daily fetches that file when fetch_pkg_vulnerabilities=YES
-  # is set in /etc/daily.conf. As on FreeBSD, the file's mtime is the freshness
-  # signal, so a failed fetch ages out instead of reporting stale as current.
-  SEC=$(run pkg_admin audit | grep -c 'vulnerability' || true)
+  # The file's mtime is the freshness signal, as with vuln.xml on FreeBSD, so a
+  # failed fetch ages out instead of reporting a stale count as current.
   for f in /usr/pkg/pkgdb/pkg-vulnerabilities /var/db/pkg/pkg-vulnerabilities; do
     CHECKED=$(mtime "$f"); [ -n "$CHECKED" ] && break
   done
+  # Checked before the audit, not after: `pkg_admin audit` against a missing
+  # database prints "Cannot open ..." and exits, which counts as zero
+  # vulnerabilities and is indistinguishable from a clean host. Bail with
+  # something the admin can act on instead.
+  if [ -z "$CHECKED" ]; then
+    echo "netdash-patchcheck: no pkg-vulnerabilities database on this host, so" >&2
+    echo "  packages cannot be audited. Fix either way:" >&2
+    echo "    - run this as root with NETDASH_PATCH_REFRESH=yes (the default)" >&2
+    echo "    - or set fetch_pkg_vulnerabilities=YES in /etc/daily.conf" >&2
+    exit 1
+  fi
+
+  # Audits installed packages against that local file; no network.
+  SEC=$(run pkg_admin audit | grep -c 'vulnerability' || true)
 
   # NetBSD has no syspatch or freebsd-update equivalent: base security fixes
   # mean rebuilding from source or installing new sets. Saying so beats a

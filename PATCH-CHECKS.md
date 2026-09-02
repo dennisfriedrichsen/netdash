@@ -207,15 +207,43 @@ documented dry run, it needs `PKG_PATH` set, and on `-release` it only sees
 security fixes if `PKG_PATH` points at the `-stable` package build. The
 syspatch count is the signal worth reporting; packages are best-effort.
 
-### NetBSD
+### NetBSD — partly **verified** on NetBSD 11.0
 
 `pkg_admin audit` checks installed packages against the local
 `pkg-vulnerabilities` file in pkgdb — cheap, no network. The fetch is
 `pkg_admin fetch-pkg-vulnerabilities`, which `/etc/daily` performs when
 `fetch_pkg_vulnerabilities=YES` is set in `/etc/daily.conf`.
 
-Pending package *updates* need `pkgin` (`pkgin -n upgrade`); with plain
-`pkg_add` there is nothing built in. Base system: nothing, as above.
+**On the test host that file did not exist, and nothing was going to create
+it.** `/etc/daily.conf` did not set `fetch_pkg_vulnerabilities`, so the daily
+fetch was off, and the audit simply failed:
+
+```
+$ pkg_admin audit
+pkg_admin: Cannot open /usr/pkg/pkgdb/pkg-vulnerabilities: No such file or directory
+```
+
+Two consequences, both handled. First, netdash's own daily job runs the fetch
+rather than assuming the system did — otherwise this platform would never
+report at all. Second, the database's presence is checked *before* the audit
+runs: `pkg_admin audit` against a missing file prints that error and exits, and
+counting its output gives zero, which is indistinguishable from a host with no
+vulnerable packages. A missing database is *unknown*, and the script says which
+of the two fixes to apply.
+
+The error string cannot be miscounted, incidentally: the grep looks for
+`vulnerability` and the path is `pkg-vulnerabilities`, which does not contain
+it.
+
+Still unverified: what `pkg_admin audit` prints when it *does* find something.
+The parse counts lines containing `vulnerability`, and no host in the fleet has
+had a populated database to check it against.
+
+Pending package *updates* need `pkgin` (`pkgin -n upgrade`, root only —
+unprivileged it answers *"You don't have enough rights for this operation"*);
+with plain `pkg_add` there is nothing built in. That count comes from pkgin's
+own database, whose age is not reflected in `checked_at`, so treat `other` on
+NetBSD as softer than `security`. Base system: nothing, as above.
 
 ### macOS
 
