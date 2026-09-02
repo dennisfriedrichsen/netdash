@@ -351,10 +351,10 @@ error instead, turning a host with no data into a host with one finding.
 
 Pending package *updates* need `pkgin` (`pkgin -n upgrade`, root only —
 unprivileged it answers *"You don't have enough rights for this operation"*);
-with plain `pkg_add` there is nothing built in. **The pkgin parse is still
-unconfirmed**: on the test host, which has pkgin installed, the run above
-returned `other: null`, meaning the `N packages to upgrade` sed matched
-nothing. That is the designed degradation rather than a wrong number, but it
+with plain `pkg_add` there is nothing built in. **The pkgin parse is half confirmed.** On the test host it returns
+`nothing to do.`, which is read as a real `0` — a box with nothing pending must
+not look like one nobody could ask. The populated wording is still unverified,
+so anything else leaves the count null rather than guessing. That is the designed degradation rather than a wrong number, but it
 means NetBSD currently reports security findings and no update count.
 
 That count would come from pkgin's own database, whose age is not reflected in

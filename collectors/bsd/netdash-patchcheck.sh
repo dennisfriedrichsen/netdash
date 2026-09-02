@@ -203,11 +203,23 @@ NetBSD)
   # silent zero that reads as "base is clean".
   DET="base system not checked (NetBSD ships no binary patch mechanism)"
 
-  # pkgin is optional and its summary wording varies between versions, so an
-  # unmatched line leaves the count null rather than guessing at zero.
+  # pkgin is optional and its wording varies between versions, so anything
+  # unrecognised leaves the count null rather than guessing at zero.
+  #
+  # "nothing to do." is verified on the test host and is the steady state most
+  # of the time, so it is worth reading as a real 0 rather than an unknown --
+  # otherwise a NetBSD box with nothing pending looks the same as one nobody
+  # could ask. The populated wording is still unconfirmed; that branch stays
+  # best-effort.
   if command -v pkgin >/dev/null 2>&1; then
-    N=$(run pkgin -n upgrade | sed -n 's/^\([0-9][0-9]*\) packages* to upgrade.*/\1/p' | head -1)
-    [ -n "$N" ] && OTH=$N
+    PKGIN=$(run pkgin -n upgrade)
+    case "$PKGIN" in
+      *"nothing to do"*) OTH=0 ;;
+      *)
+        N=$(printf '%s\n' "$PKGIN" | sed -n 's/^\([0-9][0-9]*\) packages* to upgrade.*/\1/p' | head -1)
+        [ -n "$N" ] && OTH=$N
+        ;;
+    esac
   fi
   ;;
 esac

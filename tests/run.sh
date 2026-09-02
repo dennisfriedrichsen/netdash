@@ -288,6 +288,14 @@ def count(text):
     u=subprocess.run(["sort","-u"],input=a,capture_output=True,text=True).stdout
     return int(subprocess.run(["grep","-c","."],input=u,capture_output=True,text=True).stdout or 0)
 
+def pkgin(text):
+    """Run the shipped pkgin branch against captured output."""
+    blk=re.search(r'(PKGIN=\$\(run pkgin -n upgrade\).*?esac)', src, re.S).group(1)
+    blk=blk.replace('$(run pkgin -n upgrade)', '"$PKGIN_IN"')
+    r=subprocess.run(["sh","-c",'OTH=null\n'+blk+'\nprintf "%s" "$OTH"'],
+                     env={"PKGIN_IN":text,"PATH":"/usr/bin:/bin"},capture_output=True,text=True)
+    return r.stdout
+
 found=open(f"{root}/tests/fixtures/netbsd/pkg_admin-audit.txt").read()
 nodb=open(f"{root}/tests/fixtures/netbsd/pkg_admin-audit-nodb.txt").read()
 # Same package, two advisories: must count as one package to upgrade, matching
@@ -299,6 +307,8 @@ print(json.dumps({
   # matches the path in the error message instead.
   "naive_nodb": int(subprocess.run(["grep","-c","vulnerabilit"],input=nodb,
                                    capture_output=True,text=True).stdout or 0),
+ "pkgin_none": pkgin(open(f"{root}/tests/fixtures/netbsd/pkgin-upgrade-none.txt").read()),
+ "pkgin_junk": pkgin("some wording this version does not use\n"),
 }))
 PY
 )
@@ -316,6 +326,11 @@ PY
         "assert d['nodb']==0, d" "$J"
   check "a lenient 'vulnerabilit' prefix would match the error path instead" \
         "assert d['naive_nodb']==1 and d['nodb']==0, d" "$J"
+  # "nothing to do." is a real answer, not a parse failure: a NetBSD box with
+  # nothing pending must not look like one nobody could ask. Wording this pkgin
+  # does not use still leaves the count null rather than guessing at zero.
+  check "pkgin's 'nothing to do' is a real 0, unrecognised wording is null" \
+        "assert (d['pkgin_none'],d['pkgin_junk'])==('0','null'), d" "$J"
 fi
 
 if want patches-freebsd; then

@@ -34,6 +34,7 @@ numbers are untouched.
 | `linux/dnf5-check-update-security.txt` | Fedora 43 | the 6 of them that are security — kernel is *not* among them |
 | `freebsd/pkg-audit.txt` | FreeBSD 15.1 | `14 problem(s) in 9 package(s) found.` — the package count is the one to use |
 | `netbsd/pkg_admin-audit-nodb.txt` | NetBSD 11.0 | the same command with no database: must count zero, not one |
+| `netbsd/pkgin-upgrade-none.txt` | NetBSD 11.0 | `nothing to do.` — a real zero, not a parse failure |
 | `macos/softwareupdate-none.txt` | macOS 26.6.2 | both streams combined: the all-clear string is what makes a zero safe to report |
 | `macos/softwareupdate-stdout-only.txt` | macOS 26.6.2 | the same command with stderr discarded — a lone banner, and not an all-clear |
 
