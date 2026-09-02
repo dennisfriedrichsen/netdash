@@ -352,6 +352,42 @@ PY
         "assert d['captures_stderr'], d" "$J"
 fi
 
+if want patches-openbsd; then
+  echo "patches-openbsd (empty output is only an all-clear when syspatch exited 0)"
+  J=$(python3 - "$ROOT" <<'PY'
+import re,subprocess,sys,json
+root=sys.argv[1]
+src=open(f"{root}/collectors/bsd/netdash-patchcheck.sh").read()
+ob=re.search(r"^OpenBSD\)(.*?)^  ;;", src, re.S|re.M).group(1)
+# A current box prints nothing at all and exits 0 (verified on OpenBSD 7.9), so
+# the count is a line count over possibly-empty input.
+empty=int(subprocess.run(["grep","-c","."],input="",capture_output=True,text=True).stdout or 0)
+two=int(subprocess.run(["grep","-c","."],input="001_libcrypto\n002_ssh\n",
+                       capture_output=True,text=True).stdout or 0)
+print(json.dumps({
+  "empty_counts_zero": empty,
+  "two_counts_two": two,
+  # The load-bearing line: the exit status is tested, so a mirror that cannot be
+  # reached is distinguished from a box with no patches pending. Both produce no
+  # output on stdout; only the status tells them apart.
+  "guards_exit_status": bool(re.search(r"if ! OUT=\$\(syspatch -c", ob)),
+  "no_swallow": "syspatch -c 2>/dev/null || true" not in ob,
+  "requires_root": 'id -u' in ob,
+}))
+PY
+)
+  check "no patches pending counts zero" \
+        "assert d['empty_counts_zero']==0 and d['two_counts_two']==2, d" "$J"
+  # syspatch -c fetches the index from the mirror on every run and prints
+  # nothing when there is nothing to do. An unreachable mirror also prints
+  # nothing, so treating bare emptiness as an all-clear would report a box that
+  # could not be checked as fully patched.
+  check "syspatch's exit status is checked, not swallowed" \
+        "assert d['guards_exit_status'] and d['no_swallow'], d" "$J"
+  check "root is required up front (only -l and usage work unprivileged)" \
+        "assert d['requires_root'], d" "$J"
+fi
+
 if want patches-stale; then
   echo "patches-stale (an old or missing check must read unknown, never ok)"
   J=$(python3 - "$ROOT" <<'PY'

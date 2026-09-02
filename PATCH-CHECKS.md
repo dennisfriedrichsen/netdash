@@ -189,7 +189,7 @@ the base system already schedules. netdash reads and schedules nothing.
 If neither scheduled job is enabled on a given host, both reads still answer,
 just from an ageing database — which is exactly what `checked_at` is for.
 
-### OpenBSD
+### OpenBSD — **verified** on OpenBSD 7.9
 
 The worst-behaved, on three counts:
 
@@ -202,10 +202,34 @@ The worst-behaved, on three counts:
    against the current source), so unlike FreeBSD there is no OS-scheduled
    result sitting on disk. netdash's own daily job is the only thing running it.
 
+On the test host, a box with nothing pending:
+
+```
+$ doas syspatch -c ; echo "exit=$?"
+exit=0
+```
+
+No output at all, exit 0. That confirms empty output is a genuine all-clear —
+but only *together with* the exit status. An unreachable mirror also prints
+nothing to stdout, and syspatch(8) exits 0 on success and >0 on error, so the
+status is the only thing separating "nothing to patch" from "could not check".
+The check tests it and keeps the previous result on failure, letting the badge
+age into *unknown* rather than reporting an unreachable box as fully patched.
+`tests/run.sh patches-openbsd` pins that; swallowing the status with
+`|| true` fails it.
+
+The whole check on that host:
+
+```json
+{"security":0,"other":null,"checked_at":1788371193,"source":"syspatch",
+ "detail":"packages not checked (PKG_PATH unset)"}
+```
+
 Packages are separate, unclassified, and awkward: `pkg_add -un` is the
 documented dry run, it needs `PKG_PATH` set, and on `-release` it only sees
 security fixes if `PKG_PATH` points at the `-stable` package build. The
-syspatch count is the signal worth reporting; packages are best-effort.
+syspatch count is the signal worth reporting; packages are best-effort, and
+`other` stays null until `PKG_PATH` is set rather than claiming a zero.
 
 ### NetBSD — **verified** end to end on NetBSD 11.0
 
