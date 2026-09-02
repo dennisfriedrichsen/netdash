@@ -5,6 +5,13 @@ set -eu
 
 MODE="${1:-}"
 
+# cron on the BSDs and BusyBox crond run with a minimal PATH that often omits
+# /usr/local/bin, where curl lives. Appended, not prepended: this adds the
+# standard directories when they are missing without overriding whatever the
+# caller already chose.
+PATH="$PATH:/usr/local/sbin:/usr/local/bin:/opt/homebrew/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
+
 CONF="${NETDASH_CONF:-/usr/local/etc/netdash/collector.conf}"
 [ -f "$CONF" ] || CONF="/opt/homebrew/etc/netdash/collector.conf"
 [ -f "$CONF" ] && . "$CONF"

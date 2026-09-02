@@ -1,0 +1,193 @@
+#!/bin/sh
+# netdash collector -- FreeBSD, OpenBSD and NetBSD.
+# Native tools only: sysctl, df, and curl / fetch / ftp.
+# Usage: netdash-collector.sh [--print]
+set -eu
+
+MODE="${1:-}"
+
+# cron on the BSDs and BusyBox crond run with a minimal PATH that often omits
+# /usr/local/bin, where curl lives. Appended, not prepended: this adds the
+# standard directories when they are missing without overriding whatever the
+# caller already chose.
+PATH="$PATH:/usr/local/sbin:/usr/local/bin:/opt/homebrew/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
+
+# FreeBSD packages live under /usr/local/etc; OpenBSD and NetBSD installs put
+# the config in /etc. Take whichever exists.
+CONF="${NETDASH_CONF:-}"
+if [ -z "$CONF" ]; then
+  for c in /usr/local/etc/netdash/collector.conf /etc/netdash/collector.conf \
+           /usr/pkg/etc/netdash/collector.conf; do
+    [ -f "$c" ] && { CONF="$c"; break; }
+  done
+  CONF="${CONF:-/usr/local/etc/netdash/collector.conf}"
+fi
+[ -f "$CONF" ] && . "$CONF"
+
+NETDASH_URL="${NETDASH_URL:-}"
+NETDASH_TOKEN="${NETDASH_TOKEN:-}"
+HOST="${NETDASH_HOSTNAME:-$(hostname -s 2>/dev/null || hostname)}"
+
+# ---- CPU: two samples of kern.cp_time ----
+# The field count differs by OS -- FreeBSD and NetBSD give 5 (user nice sys intr
+# idle), OpenBSD gives 6 (it splits spin from intr) -- and OpenBSD prints array
+# values comma-separated rather than space-separated. Idle is the last field on
+# all three, so sum everything and take the last as idle rather than indexing a
+# fixed position.
+cp_time() { sysctl -n kern.cp_time 2>/dev/null | tr ',' ' '; }
+S1=$(cp_time); sleep 1; S2=$(cp_time)
+CPU=$(awk -v a="$S1" -v b="$S2" 'BEGIN{
+  na=split(a,A," "); nb=split(b,B," ")
+  if (na<4 || nb<4 || na!=nb) { print "null"; exit }
+  dt=0; for(i=1;i<=nb;i++) dt += B[i]-A[i]
+  di = B[nb]-A[na]
+  if (dt<=0) { print "null"; exit }
+  p=100*(dt-di)/dt; if(p<0)p=0; if(p>100)p=100
+  printf "%.1f", p
+}')
+
+# ---- Memory ----
+# Reported as "not reclaimable": free, inactive and laundry pages are available
+# to the system, and the ZFS ARC is cache. This matches the Linux collector's
+# MemAvailable and the TrueNAS poller, so every host means the same thing.
+# Any sysctl that does not exist leaves the value null rather than wrong.
+OSNAME=$(uname -s)
+MEM_TOTAL=null
+MEM_USED=null
+
+sysctl_n() { sysctl -n "$1" 2>/dev/null; }
+
+case "$OSNAME" in
+FreeBSD)
+  MEM_TOTAL=$(sysctl_n hw.physmem)
+  PS=$(sysctl_n vm.stats.vm.v_page_size)
+  FREE=$(sysctl_n vm.stats.vm.v_free_count)
+  INACT=$(sysctl_n vm.stats.vm.v_inactive_count)
+  LAUND=$(sysctl_n vm.stats.vm.v_laundry_count); LAUND=${LAUND:-0}
+  ARC=$(sysctl_n kstat.zfs.misc.arcstats.size); ARC=${ARC:-0}
+  if [ -n "$MEM_TOTAL" ] && [ -n "$PS" ] && [ -n "$FREE" ] && [ -n "$INACT" ]; then
+    MEM_USED=$(awk -v t="$MEM_TOTAL" -v ps="$PS" -v f="$FREE" -v i="$INACT" -v l="$LAUND" -v a="$ARC" 'BEGIN{
+      u = t - (f+i+l)*ps - a; if (u<0) u=0; printf "%.0f", u }')
+  else
+    MEM_TOTAL="${MEM_TOTAL:-null}"
+  fi
+  ;;
+OpenBSD)
+  # OpenBSD has no vm.stats.vm.* tree; the page counters live in vm.uvmexp,
+  # printed as space-separated key=value pairs.
+  MEM_TOTAL=$(sysctl_n hw.physmem)
+  UVM=$(sysctl -n vm.uvmexp 2>/dev/null | tr ' ' '\n')
+  uvm() { printf '%s\n' "$UVM" | sed -n "s/^$1=//p" | head -1; }
+  PS=$(uvm pagesize); FREE=$(uvm free); INACT=$(uvm inactive)
+  if [ -n "$MEM_TOTAL" ] && [ -n "$PS" ] && [ -n "$FREE" ]; then
+    INACT=${INACT:-0}
+    MEM_USED=$(awk -v t="$MEM_TOTAL" -v ps="$PS" -v f="$FREE" -v i="$INACT" 'BEGIN{
+      u = t - (f+i)*ps; if (u<0) u=0; printf "%.0f", u }')
+  else
+    MEM_TOTAL="${MEM_TOTAL:-null}"
+  fi
+  ;;
+NetBSD)
+  MEM_TOTAL=$(sysctl_n hw.physmem64); [ -n "$MEM_TOTAL" ] || MEM_TOTAL=$(sysctl_n hw.physmem)
+  PS=$(sysctl_n vm.uvmexp2.pagesize)
+  FREE=$(sysctl_n vm.uvmexp2.free)
+  INACT=$(sysctl_n vm.uvmexp2.inactive)
+  if [ -n "$MEM_TOTAL" ] && [ -n "$PS" ] && [ -n "$FREE" ]; then
+    INACT=${INACT:-0}
+    MEM_USED=$(awk -v t="$MEM_TOTAL" -v ps="$PS" -v f="$FREE" -v i="$INACT" 'BEGIN{
+      u = t - (f+i)*ps; if (u<0) u=0; printf "%.0f", u }')
+  else
+    MEM_TOTAL="${MEM_TOTAL:-null}"
+  fi
+  ;;
+esac
+[ -n "$MEM_TOTAL" ] || MEM_TOTAL=null
+[ -n "$MEM_USED" ] || MEM_USED=null
+
+# ---- Disk ----
+# FreeBSD: one entry per ZFS pool (datasets share the pool's free space, so
+# listing each would report the same pool dozens of times -- cerium has 40),
+# using used+available, the usable view, rather than zpool's raw size which
+# counts raidz parity. Plus real non-ZFS mounts filtered on df -T's type column,
+# because `df -t no<type>` does not exclude on FreeBSD.
+# OpenBSD/NetBSD: no ZFS in base and no -T, so keep rows whose device sits under
+# /dev/, which drops mfs/procfs/kernfs/ptyfs and anything networked.
+# -l restricts all of them to local filesystems.
+ZPOOLS=""
+if [ "$OSNAME" = "FreeBSD" ] && command -v zfs >/dev/null 2>&1; then
+  ZPOOLS=$(zfs list -Hp -d 0 -o name,used,avail 2>/dev/null | awk '
+    { total=$2+$3
+      if (total > 0) printf "%s{\"mount\":\"%s\",\"used_bytes\":%.0f,\"total_bytes\":%.0f}", (n++?",":""), $1, $2, total }')
+fi
+
+if [ "$OSNAME" = "FreeBSD" ]; then
+  OTHER=$(df -k -T -l 2>/dev/null | awk '
+    NR>1 && $3+0 > 0 && $2 !~ /^(zfs|devfs|procfs|fdescfs|tmpfs|linprocfs|linsysfs|nullfs|cd9660|fusefs|nfs|nfs4|smbfs|cifs)$/ {
+      mp=$7; for(i=8;i<=NF;i++) mp=mp" "$i
+      gsub(/\\/,"\\\\",mp); gsub(/"/,"\\\"",mp)
+      printf "%s{\"mount\":\"%s\",\"used_bytes\":%.0f,\"total_bytes\":%.0f}", (n++?",":""), mp, $4*1024, $3*1024
+    }')
+else
+  OTHER=$(df -k -l 2>/dev/null | awk '
+    NR>1 && $1 ~ /^\/dev\// && $2+0 > 0 {
+      mp=$6; for(i=7;i<=NF;i++) mp=mp" "$i
+      gsub(/\\/,"\\\\",mp); gsub(/"/,"\\\"",mp)
+      printf "%s{\"mount\":\"%s\",\"used_bytes\":%.0f,\"total_bytes\":%.0f}", (n++?",":""), mp, $3*1024, $2*1024
+    }')
+fi
+
+if [ -n "$ZPOOLS" ] && [ -n "$OTHER" ]; then DISKS="$ZPOOLS,$OTHER"
+else DISKS="$ZPOOLS$OTHER"; fi
+
+# FreeBSD and NetBSD print '{ sec = N, usec = M }'; anchor on the leading brace,
+# because a greedy .* before 'sec' runs past the 'u' in 'usec' and captures the
+# microseconds (~20000 days of uptime). OpenBSD prints a bare epoch instead.
+RAWBOOT=$(sysctl -n kern.boottime 2>/dev/null)
+BOOT=$(printf '%s' "$RAWBOOT" | sed -n 's/^{ *sec *= *\([0-9][0-9]*\).*/\1/p')
+[ -n "$BOOT" ] || BOOT=$(printf '%s' "$RAWBOOT" | sed -n 's/^\([0-9][0-9]*\)$/\1/p')
+if [ -n "$BOOT" ]; then UPTIME=$(( $(date +%s) - BOOT )); else UPTIME=0; fi
+OS="$(uname -sr)"
+ARCH=$(uname -m)
+
+JSON=$(printf '{"host":"%s","os":"%s (%s)","cpu_pct":%s,"mem_used_bytes":%s,"mem_total_bytes":%s,"uptime_seconds":%d,"disks":[%s]}' \
+  "$HOST" "$OS" "$ARCH" "$CPU" "$MEM_USED" "$MEM_TOTAL" "$UPTIME" "$DISKS")
+
+if [ "$MODE" = "--print" ]; then printf '%s\n' "$JSON"; exit 0; fi
+
+[ -n "$NETDASH_URL" ] || { echo "netdash: NETDASH_URL not set (see $CONF)" >&2; exit 1; }
+
+if command -v curl >/dev/null 2>&1; then
+  rc=0
+  ERR=$(curl -fsS --connect-timeout 5 --max-time 15 -X POST "$NETDASH_URL" \
+    -H "Content-Type: application/json" \
+    -H "X-Netdash-Token: $NETDASH_TOKEN" \
+    --data "$JSON" -o /dev/null 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] && exit 0
+
+  case "$rc" in
+    6|7|28|35)
+      # Could not resolve / connect / timed out / TLS. The server is simply not
+      # reachable from here -- a laptop off the LAN, or the server restarting.
+      # Expected and self-correcting, so stay silent: this runs every 60s and
+      # would otherwise add ~1440 lines a day to the launchd or cron log.
+      exit 0 ;;
+  esac
+  # Anything else (notably 22 = HTTP 4xx/5xx, i.e. a bad token) is a real
+  # misconfiguration that will not fix itself. Say so.
+  if [ "$rc" -eq 22 ] && [ -z "$NETDASH_TOKEN" ]; then
+    echo "netdash: server rejected the post and NETDASH_TOKEN is empty in $CONF" >&2
+  else
+    echo "netdash: post failed (curl $rc): $ERR" >&2
+  fi
+  exit "$rc"
+else
+  # fetch(1) is in the FreeBSD base system; curl is not. It has no granular
+  # exit codes, so unreachable-vs-misconfigured cannot be told apart here;
+  # this branch stays loud. Install curl on a host that moves networks.
+  exec fetch -q -T 10 -o /dev/null \
+    --method=POST \
+    --header="Content-Type: application/json" \
+    --header="X-Netdash-Token: $NETDASH_TOKEN" \
+    --body="$JSON" "$NETDASH_URL"
+fi

@@ -14,10 +14,11 @@ Network throughput is deliberately not collected — that lives in the Unifi con
 ```
 server/       central service + dashboard UI (runs on 10.0.0.3)
 collectors/   per-OS collector scripts
-  linux/      /proc/stat, /proc/meminfo, df
-  freebsd/    sysctl, zfs list, df
-  macos/      top, vm_stat, sysctl, df
-  install.sh  installer for Linux + FreeBSD hosts
+  linux/      /proc/stat, /proc/meminfo, /proc/mounts, df
+  bsd/        sysctl, zfs list, df
+  macos/      top, vm_stat, sysctl, df, mount
+  install.sh  installer for Linux + BSD hosts
+  probe.sh    read-only dump of what a new OS reports, for adding support
 homebrew/     Homebrew formula for the macOS hosts
 ```
 
@@ -75,7 +76,37 @@ Payload shape:
   "disks": [ { "mount": "/", "used_bytes": 1, "total_bytes": 2 } ] }
 ```
 
-## Collectors — Linux and FreeBSD
+## Supported platforms
+
+| family | tested on | notes |
+|---|---|---|
+| Linux (glibc) | Debian, Ubuntu, Raspbian | systemd timer, 30s |
+| Linux (other) | Fedora, Arch, openSUSE | systemd timer, 30s |
+| Linux (musl) | Alpine | OpenRC + BusyBox crond, 60s |
+| FreeBSD | 15.1 | cron, 60s |
+| OpenBSD / NetBSD | — | cron, 60s; see caveat below |
+| macOS | 15 (Intel), 26 (Apple Silicon) | Homebrew + launchd, 60s |
+
+Three portability traps this had to work around, all of them silent failures
+rather than errors:
+
+- **BusyBox `df` rejects `-l` and `-x`**, so the old GNU-flavoured invocation
+  returned *nothing* on Alpine. Disks now come from `/proc/mounts` (universal on
+  Linux), which also supplies the filesystem type and source device the filtering
+  actually needs.
+- **BusyBox `awk` uses 32-bit signed ints for `printf "%d"`.** Any host with more
+  than 2 GiB reported `mem_total_bytes: -2147483648`. All money values are `%.0f`.
+- **btrfs subvolumes** (the Fedora and openSUSE default layouts) repeat one
+  filesystem across many mount points. Entries are grouped by source device, so
+  openSUSE's eight subvolumes report once.
+
+**OpenBSD and NetBSD are implemented but not yet verified on real hardware.** The
+CPU and disk paths are written against their documented shapes, and every sysctl
+is probed defensively — a name that does not exist yields `null` rather than a
+wrong number. Run `collectors/probe.sh` on such a host and send the output to
+confirm before trusting the memory figures.
+
+## Collectors — Linux and BSD
 
 ```sh
 git clone https://github.com/dennisfriedrichsen/netdash.git netdash && cd netdash/collectors
@@ -86,13 +117,21 @@ The installer verifies the collector runs *and* that a real post succeeds before
 it schedules anything, so a broken host fails immediately rather than silently.
 
 - **Linux with systemd** → `netdash-collector.timer`, every 30s
-- **FreeBSD / no systemd** → root crontab, every 60s
+- **Alpine / OpenRC** → root crontab every 60s, and `crond` is enabled and
+  started, since it does not run by default on a minimal install and scheduling
+  would otherwise silently do nothing
+- **FreeBSD / OpenBSD / NetBSD** → root crontab, every 60s
+
+The installer refuses to proceed if the host has no `curl`, `wget` or `fetch`,
+and names the right command for that package manager (`apk`, `dnf`, `pacman`,
+`zypper`, `apt-get`, `pkg_add`, `pkgin`, `pkg`).
 
 Updating later: `git pull && sudo ./install.sh` — it overwrites the script and
 keeps the existing config. `sudo ./uninstall.sh` removes it.
 
-Config lives at `/etc/netdash/collector.conf` (Linux) or
-`/usr/local/etc/netdash/collector.conf` (FreeBSD), mode 600.
+Config lives at `/etc/netdash/collector.conf` (Linux, OpenBSD, NetBSD) or
+`/usr/local/etc/netdash/collector.conf` (FreeBSD), mode 600. The collector
+searches all of those plus `/usr/pkg/etc`, so it finds its config either way.
 
 ### What counts as a disk
 
@@ -142,8 +181,12 @@ restarting. Logging it would add ~1440 lines a day. The second will not fix
 itself, so it is reported. The host simply shows as **Stale** on the dashboard
 in both cases.
 
-The FreeBSD `fetch(1)` fallback has no granular exit codes and stays loud —
-install `curl` on any FreeBSD host that changes networks.
+On Linux the collector uses `curl` if present and falls back to `wget`, since
+Alpine ships BusyBox `wget` and no `curl`. BusyBox `wget` exits 1 for every
+failure, so the message text is the only signal for telling a network problem
+from an HTTP error; GNU `wget`'s codes (4 network, 8 server) are used when
+available. The BSD `fetch(1)` fallback has no granular exit codes and stays
+loud — install `curl` on any BSD host that changes networks.
 
 ## Collectors — macOS
 
