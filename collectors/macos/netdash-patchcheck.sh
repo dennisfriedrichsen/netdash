@@ -31,36 +31,50 @@ else
   STATE="$NETDASH_PATCH_STATE"
 fi
 REFRESH="${NETDASH_PATCH_REFRESH:-yes}"
+NOW=$(date +%s)
 
 SUPLIST=/Library/Preferences/com.apple.SoftwareUpdate
 
 # World-readable, so this works without root. `defaults read` exits non-zero
 # for a key that is not present -- which is the normal state for a Mac that has
-# never found an update -- so every read is guarded.
+# never found an update, and on macOS 26 is also the normal state for
+# AutomaticCheckEnabled -- so every read is guarded.
 sud() { defaults read "$SUPLIST" "$1" 2>/dev/null || true; }
 
+# LastSuccessfulDate IS checked_at: the moment the system last completed a scan.
+# macOS runs one every six hours on its own, so this is normally minutes to
+# hours old, and it stops advancing the moment scanning stops -- which is what
+# ages a neglected Mac into "unknown" on the dashboard.
+read_su() {
+  ALL=$(sud LastUpdatesAvailable)
+  REC=$(sud LastRecommendedUpdatesAvailable)
+  DATE=$(sud LastSuccessfulDate)
+  CHECKED=""
+  # `defaults` prints "2026-09-02 17:04:55 +0000"; BSD date parses it back.
+  [ -n "$DATE" ] && CHECKED=$(date -j -f "%Y-%m-%d %H:%M:%S %z" "$DATE" +%s 2>/dev/null || true)
+}
+read_su
+
+# Whether to force a scan. `softwareupdate -l` costs tens of seconds and a
+# network round trip, so it runs only when there is no usable cached answer.
+#
+# AutomaticCheckEnabled is checked but NOT relied on: it does not exist at all
+# on macOS 26 (verified), where its absence says nothing either way. The
+# durable signal is the age of the last successful scan -- if the system has
+# not managed one in a day, something is stopping it, whatever the preference
+# is called on that release, and this is the one case where the scan earns its
+# cost.
 AUTO=$(sud AutomaticCheckEnabled)
+NEED_SCAN=0
+[ "$AUTO" = "0" ] && NEED_SCAN=1
+[ -z "$CHECKED" ] && NEED_SCAN=1
+[ -n "$CHECKED" ] && [ $(( NOW - CHECKED )) -gt 86400 ] && NEED_SCAN=1
 
-# A Mac with automatic checks switched off never updates these counts, so a
-# neglected machine would otherwise report a confident, permanent zero. There
-# is no cached answer to read, so this is the one case where a scan is worth
-# its cost -- once a day, and only here.
-if [ "$AUTO" = "0" ] && [ "$REFRESH" = yes ]; then
+if [ "$NEED_SCAN" -eq 1 ] && [ "$REFRESH" = yes ]; then
   softwareupdate -l >/dev/null 2>&1 || true
+  read_su
 fi
 
-ALL=$(sud LastUpdatesAvailable)
-REC=$(sud LastRecommendedUpdatesAvailable)
-DATE=$(sud LastSuccessfulDate)
-
-# LastSuccessfulDate IS checked_at: it is the moment the system last completed
-# a scan. When automatic checks are disabled it simply stops advancing, and the
-# dashboard ages the host into "unknown" with no special case needed here.
-CHECKED=""
-if [ -n "$DATE" ]; then
-  # `defaults` prints "2026-08-30 06:12:44 +0000"; BSD date parses it back.
-  CHECKED=$(date -j -f "%Y-%m-%d %H:%M:%S %z" "$DATE" +%s 2>/dev/null || true)
-fi
 if [ -z "$CHECKED" ]; then
   echo "netdash-patchcheck: no LastSuccessfulDate; has this Mac ever checked?" >&2
   exit 1
@@ -74,6 +88,7 @@ OTH=$(( ${ALL:-0} - SEC )); [ "$OTH" -ge 0 ] || OTH=0
 
 DET=""
 [ "$AUTO" = "0" ] && DET="automatic update checks are disabled on this Mac"
+[ $(( NOW - CHECKED )) -gt 86400 ] && DET="${DET:+$DET; }last successful scan was over a day ago"
 
 JSON=$(printf '{"security":%s,"other":%s,"checked_at":%d,"source":"%s","detail":"%s"}' \
   "$SEC" "$OTH" "$CHECKED" "softwareupdate" "$DET")

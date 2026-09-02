@@ -271,7 +271,7 @@ That count would come from pkgin's own database, whose age is not reflected in
 `checked_at`, so `other` on NetBSD is a softer number than `security` even once
 it works. Base system: nothing, as above.
 
-### macOS
+### macOS — **verified** on macOS 26.6.2 (Apple Silicon)
 
 **Do not run `softwareupdate -l` from the collector.** It triggers a full
 network scan that takes tens of seconds, and at a 60s cadence the scans overlap.
@@ -286,13 +286,27 @@ launchd job running as your user rather than root. The keys that matter:
 | `LastUpdatesAvailable` | count of all pending updates |
 | `RecommendedUpdates` | array, for the detail string |
 | `LastSuccessfulDate` | freshness — this is `checked_at` |
-| `AutomaticCheckEnabled` | **gates everything** |
+| `AutomaticCheckEnabled` | advisory only — see below |
 
-macOS scans on its own every six hours when "check for updates" is enabled, so
-the cache is normally fresher than a daily job would manage. But when
-`AutomaticCheckEnabled` is false, nothing ever updates those counts and a
-neglected Mac would report a permanent, confident zero. That key being false
-means *unknown*, not OK.
+macOS scans on its own every six hours, so the cache is normally fresher than
+a daily job would manage. On the test host `LastSuccessfulDate` was four
+minutes old, and `date -j -f "%Y-%m-%d %H:%M:%S %z"` parsed
+`2026-09-02 17:04:55 +0000` correctly.
+
+**`AutomaticCheckEnabled` does not exist on macOS 26.** `defaults read` answers
+*"The domain/default pair ... does not exist"*. An earlier draft leaned on that
+key to detect a Mac that had stopped scanning, which would have been a check
+that silently never fired on the newest release in the fleet.
+
+The durable signal is the *age of the last successful scan*. If the system has
+not managed one in 24 hours, something is stopping it — whatever the preference
+is called on that release — and only then is a `softwareupdate -l` scan worth
+its tens of seconds and network round trip. The key is still consulted when
+present, but nothing depends on it.
+
+A neglected Mac is therefore caught twice over: the forced rescan tries to fix
+it, and if that fails `checked_at` stops advancing and the badge ages into
+*unknown* rather than reporting a confident zero.
 
 Apple's "recommended" is the closest thing to a security classification;
 Rapid Security Responses appear in the same list. Homebrew packages
