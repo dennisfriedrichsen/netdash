@@ -266,7 +266,9 @@ function compactRow(h) {
     var m = k === 'disk' ? { pct: h.disk.worst_pct, status: h.disk.status } : h[k];
     var v = el('span', 'cnum', fmtPct(m.pct));
     v.style.color = m.status === 'ok' ? 'var(--text-2)' : st(m.status).css;
-    v.title = k.toUpperCase() + ' ' + fmtPct(m.pct);
+    v.title = k === 'disk' && h.disk.mounts.length
+      ? 'Fullest filesystem: ' + fmtPct(m.pct)
+      : k.toUpperCase() + ' ' + fmtPct(m.pct);
     a.appendChild(v);
   });
 
@@ -634,7 +636,18 @@ function renderDetail(host, data) {
   p3.appendChild(el('h2', null, 'Disk space'));
   var b3 = el('div', 'big');
   b3.appendChild(document.createTextNode(fmtPct(c.disk.worst_pct)));
-  b3.appendChild(el('span', 'unit', '  worst mount'));
+  /* Name the mount rather than describing the number. "worst mount" says what
+     the figure is rather than what it belongs to, and on a host with one
+     filesystem it claims a superlative over a field of one. */
+  var fullest = null;
+  c.disk.mounts.forEach(function (d) {
+    if (d.pct !== null && (!fullest || d.pct > fullest.pct)) fullest = d;
+  });
+  if (fullest) {
+    b3.appendChild(el('span', 'unit', c.disk.mounts.length > 1
+      ? '  fullest: ' + fullest.mount
+      : '  ' + fullest.mount));
+  }
   p3.appendChild(b3);
   var mounts = el('div', 'mounts');
   c.disk.mounts.slice().sort(function (a2, b4) { return (b4.pct || 0) - (a2.pct || 0); })
