@@ -401,9 +401,16 @@ function renderOverview(data, tab) {
 
 var NS = 'http://www.w3.org/2000/svg';
 
-function sparkline(points, colorVar) {
-  /* points: [{ts, v}] with v possibly null. Single series -> no legend needed. */
-  var W = 600, H = 62, PAD = 3;
+function sparkline(points, colorVar, th) {
+  /* points: [{ts, v}] with v possibly null. `th` is this host's effective
+     {warn, crit} for the metric, which is what turns a floating line into a
+     line with a position: 14% means nothing on its own, and everything once
+     you can see it is nowhere near the 85 that would matter.
+
+     The scale is fixed 0-100 rather than fitted to the data. Auto-scaling would
+     make two percentage points of idle CPU jitter fill the panel and look
+     like an event. */
+  var W = 600, H = 84, PAD = 3;
   var svg = document.createElementNS(NS, 'svg');
   svg.setAttribute('class', 'spark');
   svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
@@ -425,12 +432,29 @@ function sparkline(points, colorVar) {
   var x = function (p) { return ((p.ts - t0) / span) * W; };
   var y = function (v) { return H - PAD - (Math.max(0, Math.min(100, v)) / 100) * (H - PAD * 2); };
 
-  /* recessive baseline only -- no gridlines competing with a 62px sparkline */
-  var base = document.createElementNS(NS, 'line');
-  base.setAttribute('x1', 0); base.setAttribute('x2', W);
-  base.setAttribute('y1', H - PAD); base.setAttribute('y2', H - PAD);
-  base.setAttribute('stroke', 'var(--baseline)'); base.setAttribute('stroke-width', '1');
-  svg.appendChild(base);
+  function rule(v, colour, dash) {
+    var l = document.createElementNS(NS, 'line');
+    l.setAttribute('x1', 0); l.setAttribute('x2', W);
+    l.setAttribute('y1', y(v)); l.setAttribute('y2', y(v));
+    l.setAttribute('stroke', colour);
+    l.setAttribute('stroke-width', '1');
+    l.setAttribute('vector-effect', 'non-scaling-stroke');
+    if (dash) l.setAttribute('stroke-dasharray', dash);
+    svg.appendChild(l);
+    return l;
+  }
+
+  /* Bound the plot top and bottom so it reads as an area with a known extent
+     rather than open space with a line in it. */
+  rule(100, 'var(--grid)');
+  rule(0, 'var(--baseline)');
+
+  /* The thresholds, where the host has them. Dashed and drawn under the series
+     so they read as guides rather than data. This is the whole point of the
+     redesign: the question is never "what is the number", which is printed
+     above in 34px -- it is "how much room is left". */
+  if (th && th.warn != null) rule(th.warn, 'var(--st-warn)', '4 4');
+  if (th && th.crit != null) rule(th.crit, 'var(--st-crit)', '4 4');
 
   /* break the line across gaps rather than drawing through missing samples */
   var d = '', pen = false;
@@ -439,6 +463,35 @@ function sparkline(points, colorVar) {
     d += (pen ? 'L' : 'M') + x(p).toFixed(1) + ' ' + y(p.v).toFixed(1) + ' ';
     pen = true;
   });
+  /* Fill under the line, drawn first so the stroke sits on top. Mass beneath
+     the trace is what stops it floating: the eye reads the filled area against
+     the 0 and 100 rules and gets the proportion without reading a number. */
+  /* One closed subpath per contiguous run, matching how the stroke breaks:
+     filling straight across a gap would draw an area over minutes the host
+     never reported. */
+  var area = '', run = [];
+  function flushRun() {
+    if (run.length > 1) {
+      area += 'M' + x(run[0]).toFixed(1) + ' ' + y(0);
+      run.forEach(function (p) { area += 'L' + x(p).toFixed(1) + ' ' + y(p.v).toFixed(1); });
+      area += 'L' + x(run[run.length - 1]).toFixed(1) + ' ' + y(0) + 'Z';
+    }
+    run = [];
+  }
+  points.forEach(function (p) {
+    if (p.v === null || p.v === undefined) { flushRun(); return; }
+    run.push(p);
+  });
+  flushRun();
+  if (area) {
+    var fill = document.createElementNS(NS, 'path');
+    fill.setAttribute('d', area);
+    fill.setAttribute('fill', colorVar);
+    fill.setAttribute('opacity', '0.16');
+    fill.setAttribute('stroke', 'none');
+    svg.appendChild(fill);
+  }
+
   var path = document.createElementNS(NS, 'path');
   path.setAttribute('d', d.trim());
   path.setAttribute('fill', 'none');
@@ -499,6 +552,25 @@ function sparkline(points, colorVar) {
   return svg;
 }
 
+/* Axis labels live in HTML, not in the SVG: the chart uses
+   preserveAspectRatio="none" so the plot stretches to the panel width, which
+   would stretch any text inside it too. */
+function chartCaption(th, minutes) {
+  var c = el('div', 'cap');
+  c.appendChild(el('span', null, minutes + ' min ago'));
+  var mid = el('span', null);
+  if (th && th.warn != null) {
+    mid.appendChild(el('span', 'capw', 'warn ' + th.warn + '%'));
+    if (th.crit != null) {
+      mid.appendChild(document.createTextNode('  '));
+      mid.appendChild(el('span', 'capc', 'crit ' + th.crit + '%'));
+    }
+  }
+  c.appendChild(mid);
+  c.appendChild(el('span', null, 'now'));
+  return c;
+}
+
 /* ---------- detail ---------- */
 
 function renderDetail(host, data) {
@@ -535,9 +607,11 @@ function renderDetail(host, data) {
   var b1 = el('div', 'big');
   b1.appendChild(document.createTextNode(fmtPct(c.cpu.pct)));
   p1.appendChild(b1);
+  var th = c.thresholds || data.thresholds || {};
   p1.appendChild(sparkline(data.history.map(function (h) {
     return { ts: h.ts, v: h.cpu_pct };
-  }), st(c.cpu.status).css));
+  }), st(c.cpu.status).css, th.cpu));
+  p1.appendChild(chartCaption(th.cpu, 60));
   panels.appendChild(p1);
 
   /* Memory */
@@ -551,7 +625,8 @@ function renderDetail(host, data) {
   p2.appendChild(b2);
   p2.appendChild(sparkline(data.history.map(function (h) {
     return { ts: h.ts, v: h.mem_pct };
-  }), st(c.mem.status).css));
+  }), st(c.mem.status).css, th.mem));
+  p2.appendChild(chartCaption(th.mem, 60));
   panels.appendChild(p2);
 
   /* Disk -- every real mount, worst first */

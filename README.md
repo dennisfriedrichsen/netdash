@@ -64,6 +64,14 @@ Starting points — tune in the config, no code change needed:
 | Memory | 85% | 95% |
 | Disk | 85% | 95% |
 
+The detail page plots CPU and memory against these thresholds rather than on a
+bare axis: the dashed guides are this host's own warn and crit lines, and the
+trace is filled down to zero. A line at 14% floating in an empty panel says
+nothing you cannot read from the number above it — the useful question is never
+"what is the value" but "how much room is left", and that needs the limits drawn
+in. The scale stays fixed at 0–100 for the same reason: fitting it to the data
+would make two points of idle CPU jitter fill the panel and read as an event.
+
 A host's overall status is the worst of its three metrics. CPU is the noisiest
 signal at a 30–60s sample rate — if the grid flickers amber, raise the CPU warn
 threshold rather than lowering the sample interval.
