@@ -60,6 +60,84 @@ function meter(name, pct, status, subtext) {
   return m;
 }
 
+
+/* ---------- OS icons ----------
+   Inline SVG only: the dashboard must not fetch anything off the LAN.
+   Drawn in muted ink rather than brand colours -- green/amber/red are reserved
+   for status here, and a red BSD mark beside a green status dot reads as an
+   alert. Shape carries identity, colour stays meaningful. The icon is a
+   redundant cue (the OS string is printed underneath), so it is aria-hidden. */
+var NS_SVG = 'http://www.w3.org/2000/svg';
+
+var OS_ICONS = {
+  apple: [['path', { d: 'M12.9 4.2c.6-.8 1-1.8.9-2.9-.9.05-2 .6-2.6 1.4-.6.7-1.1 1.7-.9 2.7 1 .08 2-.5 2.6-1.2zM16.5 12.6c-.02-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.85-1.45-.15-2.8.85-3.5.85-.72 0-1.85-.83-3.05-.8-1.56.02-3 .9-3.8 2.3-1.62 2.8-.42 7 1.15 9.3.77 1.13 1.68 2.4 2.88 2.35 1.15-.05 1.6-.75 3-.75s1.8.75 3.05.72c1.26-.02 2.05-1.15 2.8-2.28.88-1.3 1.25-2.56 1.27-2.63-.03-.01-2.4-.93-2.4-3.7z' }]],
+  ubuntu: [['circle', { cx: 12, cy: 12, r: 6.6, fill: 'none', 'stroke-width': 1.7 }],
+           ['circle', { cx: 12, cy: 4.6, r: 2.1 }],
+           ['circle', { cx: 5.5, cy: 15.7, r: 2.1 }],
+           ['circle', { cx: 18.5, cy: 15.7, r: 2.1 }]],
+  debian: [['path', { d: 'M14.6 6.9a6 6 0 1 0 3.1 8.6A7.2 7.2 0 1 1 14.6 6.9z' }],
+           ['circle', { cx: 12.4, cy: 12.2, r: 3.4, fill: 'none', 'stroke-width': 1.5 }]],
+  raspberry: [['circle', { cx: 8.6, cy: 14.4, r: 2.5 }],
+              ['circle', { cx: 15.4, cy: 14.4, r: 2.5 }],
+              ['circle', { cx: 12, cy: 17.6, r: 2.5 }],
+              ['circle', { cx: 12, cy: 11.2, r: 2.5 }],
+              ['path', { d: 'M9.6 7.2c.9-1.6 2.6-2.5 4.6-2.4', fill: 'none', 'stroke-width': 1.7 }]],
+  bsd: [['path', { d: 'M6.3 4.6l3.3 2.6M17.7 4.6l-3.3 2.6', fill: 'none', 'stroke-width': 1.8 }],
+        ['circle', { cx: 12, cy: 13.6, r: 6.2, fill: 'none', 'stroke-width': 1.8 }],
+        ['circle', { cx: 9.7, cy: 12.6, r: 1.1 }],
+        ['circle', { cx: 14.3, cy: 12.6, r: 1.1 }]],
+  nas: [['rect', { x: 3.6, y: 4.8, width: 16.8, height: 4.4, rx: 1.3, fill: 'none', 'stroke-width': 1.6 }],
+        ['rect', { x: 3.6, y: 14.8, width: 16.8, height: 4.4, rx: 1.3, fill: 'none', 'stroke-width': 1.6 }],
+        ['circle', { cx: 7, cy: 7, r: 1 }],
+        ['circle', { cx: 7, cy: 17, r: 1 }],
+        ['path', { d: 'M12 10.2v3.6M10.3 12.4L12 14.1l1.7-1.7', fill: 'none', 'stroke-width': 1.5 }]],
+  linux: [['ellipse', { cx: 12, cy: 14.8, rx: 5, ry: 6.2 }],
+          ['circle', { cx: 12, cy: 6.6, r: 3.6 }],
+          ['circle', { cx: 10.7, cy: 6.2, r: 0.85, fill: 'var(--surface-1)' }],
+          ['circle', { cx: 13.3, cy: 6.2, r: 0.85, fill: 'var(--surface-1)' }]],
+  unknown: [['circle', { cx: 12, cy: 12, r: 7.6, fill: 'none', 'stroke-width': 1.7 }],
+            ['path', { d: 'M9.8 9.8a2.3 2.3 0 1 1 2.7 2.9v1.2', fill: 'none', 'stroke-width': 1.7 }],
+            ['circle', { cx: 12.4, cy: 16.4, r: 1 }]]
+};
+
+function osFamily(os) {
+  var s = String(os || '').toLowerCase();
+  /* TrueNAS is FreeBSD underneath, so it has to be tested before bsd. */
+  if (s.indexOf('truenas') > -1) return 'nas';
+  if (s.indexOf('macos') > -1 || s.indexOf('mac os') > -1 || s.indexOf('darwin') > -1) return 'apple';
+  if (s.indexOf('raspbian') > -1 || s.indexOf('raspberry') > -1) return 'raspberry';
+  if (s.indexOf('ubuntu') > -1) return 'ubuntu';
+  if (s.indexOf('debian') > -1) return 'debian';
+  if (s.indexOf('bsd') > -1) return 'bsd';
+  if (s.indexOf('linux') > -1 || s.indexOf('alpine') > -1) return 'linux';
+  return 'unknown';
+}
+
+function osIcon(os) {
+  var fam = osFamily(os);
+  var svg = document.createElementNS(NS_SVG, 'svg');
+  svg.setAttribute('class', 'osicon');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  (OS_ICONS[fam] || OS_ICONS.unknown).forEach(function (spec) {
+    /* Built with createElementNS rather than innerHTML: assigning innerHTML on
+       an SVG element is not reliable in older iPad Safari. */
+    var el2 = document.createElementNS(NS_SVG, spec[0]);
+    var a = spec[1];
+    for (var k in a) { if (Object.prototype.hasOwnProperty.call(a, k)) el2.setAttribute(k, a[k]); }
+    if (!a.fill) el2.setAttribute('fill', 'currentColor');
+    if (a['stroke-width']) {
+      el2.setAttribute('stroke', 'currentColor');
+      el2.setAttribute('stroke-linecap', 'round');
+      el2.setAttribute('stroke-linejoin', 'round');
+    }
+    svg.appendChild(el2);
+  });
+  svg.appendChild(document.createComment(fam));
+  return svg;
+}
+
 /* ---------- overview ---------- */
 
 function renderOverview(data) {
@@ -87,6 +165,7 @@ function renderOverview(data) {
     a.style.setProperty('--st', s.css);
 
     var row = el('div', 'row1');
+    row.appendChild(osIcon(h.os));
     row.appendChild(el('span', 'name', h.host));
     var chip = el('span', 'chip');
     var dot = el('span', 'dot'); chip.appendChild(dot);
@@ -96,7 +175,9 @@ function renderOverview(data) {
     a.appendChild(row);
 
     var os = [h.os || 'unknown os', fmtUptime(h.uptime_seconds)].filter(Boolean).join(' · ');
-    a.appendChild(el('div', 'os', os));
+    var osEl = el('div', 'os', os);
+    osEl.title = os;            /* truncated by CSS; full text on hover */
+    a.appendChild(osEl);
 
     a.appendChild(meter('CPU', h.cpu.pct, h.cpu.status));
     a.appendChild(meter('Memory', h.mem.pct, h.mem.status,
@@ -232,6 +313,8 @@ function renderDetail(host, data) {
   var frag = document.createDocumentFragment();
 
   var back = el('div', 'banner');
+  var hi = osIcon(c.os); hi.classList.add('osicon-lg');
+  back.appendChild(hi);
   var a = el('a', null, '← All hosts');
   a.href = '#/'; a.style.color = 'inherit';
   back.appendChild(a);

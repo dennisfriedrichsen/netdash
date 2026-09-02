@@ -74,9 +74,20 @@ button.link:hover { color: var(--text-1); }
   border-left: 4px solid var(--st, var(--st-none));
 }
 .card:hover { border-color: var(--baseline); }
-.card .row1 { display: flex; align-items: center; gap: 10px; margin-bottom: 2px; }
+.card .row1 { display: flex; align-items: center; gap: 9px; margin-bottom: 2px; }
+
+/* OS icon: identity by shape, in muted ink -- never a brand colour, so it
+   cannot be mistaken for the status dot sitting a few pixels away. */
+.osicon { width: 19px; height: 19px; flex: none; color: var(--muted); }
+.card:hover .osicon { color: var(--text-2); }
+.osicon-lg { width: 22px; height: 22px; vertical-align: -5px; margin-right: 9px; color: var(--text-2); }
 .card .name { font-size: 20px; font-weight: 650; letter-spacing: -0.01em; }
-.card .os { color: var(--muted); font-size: 13px; margin-bottom: 12px; }
+.card .os {
+  color: var(--muted); font-size: 13px; margin-bottom: 12px;
+  /* one line: the model suffix can be long, and ragged card heights read badly
+     on a wall panel. Full string is on the detail view and in the title attr. */
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 
 /* status chip: dot + glyph + word. Never colour alone. */
 .chip {
@@ -133,6 +144,7 @@ button.link:hover { color: var(--text-1); }
   body { font-size: 17px; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 16px; }
   .card .name { font-size: 24px; }
+  .osicon { width: 22px; height: 22px; }
   .meter .lbl { font-size: 14px; }
   .meter .track { height: 10px; }
 }

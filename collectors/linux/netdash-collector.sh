@@ -45,6 +45,20 @@ UPTIME=$(awk '{printf "%d", $1}' /proc/uptime)
 OS=$( . /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-Linux}" )
 ARCH=$(uname -m)
 
+# Raspberry Pi OS reports PRETTY_NAME="Debian GNU/Linux 13 (trixie)", so a Pi is
+# indistinguishable from any other Debian box by os-release alone. The board
+# model lives in the device tree (absent on x86, present on most ARM SBCs).
+# Appending it keeps the payload shape unchanged while letting the dashboard
+# tell a Pi apart. Trailing NUL and the "Rev 1.4" suffix are dropped.
+MODEL=""
+for f in /proc/device-tree/model /sys/firmware/devicetree/base/model; do
+  if [ -r "$f" ]; then
+    MODEL=$(tr -d '\000' < "$f" | sed -e 's/ Rev [0-9.]*$//' -e 's/[[:space:]]*$//')
+    break
+  fi
+done
+[ -n "$MODEL" ] && OS="$OS - $MODEL"
+
 JSON=$(printf '{"host":"%s","os":"%s (%s)","cpu_pct":%s,"mem_used_bytes":%d,"mem_total_bytes":%d,"uptime_seconds":%d,"disks":[%s]}' \
   "$HOST" "$OS" "$ARCH" "$CPU" "$MEM_USED" "$MEM_TOTAL" "$UPTIME" "$DISKS")
 
