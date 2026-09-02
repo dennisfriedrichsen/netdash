@@ -215,6 +215,25 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, f.read(), ctype)
 
 
+class Server(ThreadingHTTPServer):
+    """A client hanging up mid-request is routine here -- a wall-panel browser
+    tab closed, a collector that hit its own timeout and walked away -- and says
+    nothing about the server. socketserver's handle_error prints a full
+    traceback for each one into a journal nothing rotates, so a flapping
+    collector can bury real errors. These collapse to a single line; anything
+    else keeps its traceback."""
+
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ConnectionResetError, BrokenPipeError,
+                            ConnectionAbortedError, TimeoutError)):
+            addr = client_address[0] if isinstance(client_address, tuple) else client_address
+            sys.stderr.write("client %s hung up mid-request (%s)\n"
+                             % (addr, type(exc).__name__))
+            return
+        ThreadingHTTPServer.handle_error(self, request, client_address)
+
+
 # ---------- background workers ----------
 
 def pruner():
@@ -253,7 +272,7 @@ def main():
         threading.Thread(target=truenas_poller, daemon=True).start()
         sys.stderr.write("truenas poller started\n")
 
-    srv = ThreadingHTTPServer((CFG["bind_host"], CFG["bind_port"]), Handler)
+    srv = Server((CFG["bind_host"], CFG["bind_port"]), Handler)
     sys.stderr.write("netdash listening on %s:%s\n" % (CFG["bind_host"], CFG["bind_port"]))
     srv.serve_forever()
 
