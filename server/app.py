@@ -53,15 +53,20 @@ def summarize(sample, now=None):
     th = CFG["thresholds"]
     age = now - sample["ts"]
 
+    # A collector may legitimately report a metric it could not read -- OpenBSD
+    # refuses to expose vm.uvmexp via sysctl, for instance. Every ratio here
+    # needs BOTH halves: with only the total, this raised TypeError and the
+    # whole /api/overview response 500'd, so one quiet host took the entire
+    # dashboard down rather than showing itself as unknown.
     mem_pct = None
-    if sample.get("mem_total_bytes"):
+    if sample.get("mem_total_bytes") and sample.get("mem_used_bytes") is not None:
         mem_pct = 100.0 * sample["mem_used_bytes"] / sample["mem_total_bytes"]
 
     disks = []
     worst_disk_pct = None
     for d in sample.get("disks", []):
         pct = None
-        if d.get("total_bytes"):
+        if d.get("total_bytes") and d.get("used_bytes") is not None:
             pct = 100.0 * d["used_bytes"] / d["total_bytes"]
             if worst_disk_pct is None or pct > worst_disk_pct:
                 worst_disk_pct = pct
@@ -181,7 +186,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(404, {"error": "unknown host"})
             hist = db.history(CONN, host, mins * 60)
             for h in hist:
-                if h.get("mem_total_bytes"):
+                if h.get("mem_total_bytes") and h.get("mem_used_bytes") is not None:
                     h["mem_pct"] = 100.0 * h["mem_used_bytes"] / h["mem_total_bytes"]
                 else:
                     h["mem_pct"] = None
