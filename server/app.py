@@ -109,6 +109,12 @@ def summarize(sample, now=None):
 
 # ---------- HTTP ----------
 
+# A client that went away. These surface from the response write rather than
+# from the work, so they can land in any handler's `except Exception`.
+CLIENT_GONE = (ConnectionResetError, BrokenPipeError,
+               ConnectionAbortedError, TimeoutError)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "netdash"
     protocol_version = "HTTP/1.1"
@@ -116,6 +122,22 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         if os.environ.get("NETDASH_VERBOSE"):
             sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
+
+    def _fail(self, code, where, e):
+        """Answer an error, and say so in the log.
+
+        log_message is silent unless NETDASH_VERBOSE, and BaseHTTPRequestHandler
+        routes log_error through it, so before this every 4xx/5xx these handlers
+        returned left no trace at all: a collector posting malformed JSON, or a
+        database error, dropped a host off the dashboard with an empty journal.
+
+        A disconnect is re-raised rather than answered -- the socket is already
+        gone, so writing to it just produces a second exception. Server's
+        handle_error logs it as one line."""
+        if isinstance(e, CLIENT_GONE):
+            raise
+        sys.stderr.write("%s: %s: %s\n" % (where, type(e).__name__, e))
+        return self._json(code, {"error": str(e)})
 
     def _send(self, code, body, ctype="application/json; charset=utf-8"):
         if isinstance(body, str):
@@ -146,7 +168,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(400, {"error": "bad content-length"})
             payload = json.loads(self.rfile.read(n))
         except Exception as e:
-            return self._json(400, {"error": "bad json: %s" % e})
+            return self._fail(400, "ingest: bad json", e)
 
         if not payload.get("host"):
             return self._json(400, {"error": "missing 'host'"})
@@ -154,7 +176,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             db.insert_sample(CONN, payload)
         except Exception as e:
-            return self._json(500, {"error": str(e)})
+            return self._fail(500, "ingest %s" % payload["host"], e)
         return self._json(200, {"ok": True, "host": payload["host"]})
 
     # -- GET --
@@ -172,7 +194,7 @@ class Handler(BaseHTTPRequestHandler):
                     "hosts": [summarize(s, now) for s in samples],
                 })
             except Exception as e:
-                return self._json(500, {"error": str(e)})
+                return self._fail(500, "overview", e)
 
         if path.startswith("/api/host/"):
             host = path[len("/api/host/"):]
@@ -225,8 +247,7 @@ class Server(ThreadingHTTPServer):
 
     def handle_error(self, request, client_address):
         exc = sys.exc_info()[1]
-        if isinstance(exc, (ConnectionResetError, BrokenPipeError,
-                            ConnectionAbortedError, TimeoutError)):
+        if isinstance(exc, CLIENT_GONE):
             addr = client_address[0] if isinstance(client_address, tuple) else client_address
             sys.stderr.write("client %s hung up mid-request (%s)\n"
                              % (addr, type(exc).__name__))

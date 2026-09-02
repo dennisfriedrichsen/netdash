@@ -79,15 +79,23 @@ Payload shape:
 
 ## Supported platforms
 
+Every version below is one a host actually reported from, not one believed to
+work.
+
 | family | tested on | notes |
 |---|---|---|
-| Linux (glibc) | Debian, Ubuntu, Raspbian | systemd timer, 30s |
-| Linux (other) | Fedora, Arch, openSUSE | systemd timer, 30s |
-| Linux (musl) | Alpine | OpenRC + BusyBox crond, 60s |
+| Linux (glibc) | Debian 13, Ubuntu 22.04 / 24.04 / 26.04, Raspbian 13 | systemd timer, 30s |
+| Linux (other) | Fedora 43, Arch (rolling), openSUSE Tumbleweed | systemd timer, 30s |
+| Linux (musl) | Alpine 3.24 | OpenRC + BusyBox crond, 60s |
 | FreeBSD | 15.1 | cron, 60s |
 | OpenBSD | 7.9 | cron, 60s |
 | NetBSD | 11.0 | cron, 60s |
 | macOS | 15 (Intel), 26 (Apple Silicon) | Homebrew + launchd, 60s |
+| TrueNAS | CORE 13.0 | server-side API poll, no collector installed |
+
+Architectures covered: `x86_64` (`amd64` as the BSDs spell it), `aarch64`
+(Debian), `armv7l` (Pi 3 B+), `arm64` (Apple Silicon). The collectors pass
+`uname -m` through untranslated, so the label follows the platform's own naming.
 
 Three portability traps this had to work around, all of them silent failures
 rather than errors:
