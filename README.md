@@ -272,8 +272,10 @@ Two rules hold everywhere:
 **The check is daily, never per-sample.** Every mechanism above either hits the
 network or parses the whole package database — `apt-get --just-print
 dist-upgrade` alone takes ~3s on an idle Debian box. So `netdash-patchcheck`
-runs once a day and writes `/var/lib/netdash/patches.json`
-(`/var/db/netdash` on the BSDs); the collector only reads that file back.
+runs once a day and writes `/var/lib/netdash-collector/patches.json`
+(`/var/db/netdash-collector` on the BSDs); the collector only reads that file
+back. That is deliberately not `/var/lib/netdash`, which belongs to the server
+on a host running both.
 
 **An old check is never green.** A count of zero from metadata last refreshed
 in March is indistinguishable from a genuinely patched host, so a check older

@@ -122,7 +122,8 @@ done
 # which is untenable at a 30s cadence. An absent, unreadable or truncated file
 # reports null, and the server renders that as "unknown" -- never as up to date.
 PATCHES=null
-for f in ${NETDASH_PATCH_STATE:-} /var/lib/netdash/patches.json /var/db/netdash/patches.json; do
+for f in ${NETDASH_PATCH_STATE:-} /var/lib/netdash-collector/patches.json \
+         /var/db/netdash-collector/patches.json /var/lib/netdash/patches.json; do
   [ -r "$f" ] || continue
   P=$(tr -d '\n' < "$f" 2>/dev/null || true)
   case "$P" in '{'*'}') PATCHES="$P"; break ;; esac

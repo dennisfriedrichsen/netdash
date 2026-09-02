@@ -15,5 +15,8 @@ crontab "$TMP" 2>/dev/null || true; rm -f "$TMP"
 rm -f /usr/local/bin/netdash-collector /usr/local/bin/netdash-patchcheck
 # The cached patch result is state this host produced, not configuration, so it
 # goes with the scripts that produced it.
+rm -f /var/lib/netdash-collector/patches.json /var/db/netdash-collector/patches.json
+rmdir /var/lib/netdash-collector /var/db/netdash-collector 2>/dev/null || true
+# Older layout, when this shared the server's data directory.
 rm -f /var/lib/netdash/patches.json /var/db/netdash/patches.json
 echo "removed collector (config left at /etc/netdash or /usr/local/etc/netdash)"

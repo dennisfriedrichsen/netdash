@@ -55,10 +55,18 @@ netdash-patchcheck  (daily, root, network)  ->  patches.json
 netdash-collector   (every 30-60s)          ->  reads patches.json, inlines it
 ```
 
-The state file lives at `/var/lib/netdash/patches.json` on Linux,
-`/var/db/netdash/patches.json` on the BSDs, and `<brew --prefix>/var/netdash/`
-on macOS. All three collectors search every one of those paths, so a
-mis-guessed platform convention degrades to *unknown*, not to a wrong reading.
+The state file lives at `/var/lib/netdash-collector/patches.json` on Linux,
+`/var/db/netdash-collector/patches.json` on the BSDs, and
+`<brew --prefix>/var/netdash/` on macOS. All three collectors search every one
+of those paths, so a mis-guessed platform convention degrades to *unknown*, not
+to a wrong reading.
+
+The `-collector` suffix matters on a host that also runs the netdash server.
+`/var/lib/netdash` is the *server's* data directory — mode 750 `netdash:netdash`,
+holding the database — and `deploy.sh` runs `chown -R netdash:netdash` over it.
+Collector state written there ended up owned by another component and changed
+owner on the next server deploy. The old paths are still searched, so a host
+installed before this keeps working until its next patch check.
 
 ## Per platform
 

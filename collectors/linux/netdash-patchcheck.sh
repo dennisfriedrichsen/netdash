@@ -20,7 +20,11 @@ export DEBIAN_FRONTEND=noninteractive LC_ALL=C
 CONF="${NETDASH_CONF:-/etc/netdash/collector.conf}"
 [ -f "$CONF" ] && . "$CONF"
 
-STATE="${NETDASH_PATCH_STATE:-/var/lib/netdash/patches.json}"
+# Deliberately NOT /var/lib/netdash: on a host that also runs the netdash
+# server that directory belongs to the server, is mode 750 netdash:netdash, and
+# deploy.sh does `chown -R netdash:netdash` over it -- so collector state landed
+# in another component's data directory and changed owner on the next deploy.
+STATE="${NETDASH_PATCH_STATE:-/var/lib/netdash-collector/patches.json}"
 # Refreshing package metadata is what makes this indicator mean anything on a
 # host with no unattended-upgrades: without it the counts come from whenever
 # the admin last ran an update by hand, and "0 pending" from March reads

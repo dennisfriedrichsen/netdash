@@ -30,7 +30,8 @@ if [ -z "$CONF" ]; then
 fi
 [ -f "$CONF" ] && . "$CONF"
 
-STATE="${NETDASH_PATCH_STATE:-/var/db/netdash/patches.json}"
+# A directory of the collector's own; see the note in the Linux patch check.
+STATE="${NETDASH_PATCH_STATE:-/var/db/netdash-collector/patches.json}"
 REFRESH="${NETDASH_PATCH_REFRESH:-yes}"
 
 OSNAME=$(uname -s)
