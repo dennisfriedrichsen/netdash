@@ -33,6 +33,10 @@ CONN = None
 # server reads a config written before these keys existed, and a bare
 # CFG["patch_stale_hours"] would KeyError on every request.
 DEFAULTS = {
+    # Per-host settings, keyed by the hostname the collector reports. Each entry
+    # may carry "thresholds" and/or "stale_after_seconds"; anything absent falls
+    # back to the global value.
+    "hosts": {},
     # Whether a host's OS is still supported upstream, from endoflife.date.
     # Sends nothing about the fleet: it fetches public product files and matches
     # locally. Set "enabled": false to make no outbound request at all.
@@ -53,6 +57,35 @@ def load_config(path):
 
 
 # ---------- status logic ----------
+
+def host_cfg(host):
+    return (CFG.get("hosts") or {}).get(host) or {}
+
+
+def thresholds_for(host):
+    """Global thresholds with any per-host override merged over the top.
+
+    Merged per metric AND per level, so an override can say just
+    {"mem": {"warn": 92}} and still inherit crit from the global block. Making
+    it replace the whole metric would mean restating numbers you did not want
+    to change, which is how a fleet's thresholds quietly drift apart.
+    """
+    base = CFG["thresholds"]
+    ov = host_cfg(host).get("thresholds") or {}
+    if not ov:
+        return base
+    out = {}
+    for metric, levels in base.items():
+        merged = dict(levels)
+        merged.update(ov.get(metric) or {})
+        out[metric] = merged
+    return out
+
+
+def stale_after_for(host):
+    ov = host_cfg(host).get("stale_after_seconds")
+    return int(ov if ov is not None else CFG["stale_after_seconds"])
+
 
 def _level(pct, t):
     if pct is None:
@@ -153,7 +186,7 @@ def patch_summary(sample, now):
 def summarize(sample, now=None):
     """Turn a raw sample row into the shape the UI consumes."""
     now = now or time.time()
-    th = CFG["thresholds"]
+    th = thresholds_for(sample["host"])
     age = now - sample["ts"]
 
     # A collector may legitimately report a metric it could not read -- OpenBSD
@@ -185,7 +218,7 @@ def summarize(sample, now=None):
     mem_status = _level(mem_pct, th["mem"])
     disk_status = _level(worst_disk_pct, th["disk"])
 
-    stale = age > CFG["stale_after_seconds"]
+    stale = age > stale_after_for(sample["host"])
     # Patch status is deliberately NOT part of this rollup. Resource pressure is
     # live and self-clearing; pending patches sit amber for a week and train you
     # to ignore amber. It gets its own badge, and "needs attention" in the header
@@ -210,6 +243,9 @@ def summarize(sample, now=None):
             "status": mem_status,
         },
         "disk": {"worst_pct": worst_disk_pct, "status": disk_status, "mounts": disks},
+        # The effective values, so an override can be confirmed from the API
+        # rather than inferred from a card being a colour you did not expect.
+        "thresholds": th,
         "patches": patch_summary(sample, now),
         # Derived from the OS string against a cached lookup, so it is computed
         # per request rather than stored per sample -- the answer changes with
@@ -431,6 +467,16 @@ def main():
     CFG = load_config(cfg_path)
     CONN = db.connect(CFG["db_path"])
     db.prune(CONN, CFG["retention_hours"])
+
+    # A per-host block keyed by a hostname that never reports does nothing at
+    # all, silently, and a typo looks exactly like a host not installed yet.
+    # Say which, once, rather than leaving it to be discovered.
+    configured = set(CFG.get("hosts") or {})
+    if configured:
+        unseen = sorted(configured - set(db.known_hosts(CONN)))
+        if unseen:
+            sys.stderr.write("config: per-host settings for hosts that have "
+                             "never reported: %s\n" % ", ".join(unseen))
 
     threading.Thread(target=pruner, daemon=True).start()
     if CFG["eol"].get("enabled"):

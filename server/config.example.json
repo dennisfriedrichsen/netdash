@@ -35,5 +35,6 @@
     "refresh_hours": 24,
     "warn_days": 30,
     "overrides": {}
-  }
+  },
+  "hosts": {}
 }

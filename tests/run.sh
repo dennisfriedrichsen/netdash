@@ -25,6 +25,10 @@ mkbin() {
   echo "$d"
 }
 
+# A generator that dies leaves json empty, which lands here as a failure rather
+# than aborting the run: under `set -e` a failing J=$(...) assignment would take
+# the whole suite with it, and every case after the broken one would silently
+# never execute.
 check() { # name, python-expression-file, json
   name=$1; expr=$2; json=$3
   if printf '%s' "$json" | python3 -c "
@@ -173,7 +177,7 @@ cmd=["busybox","awk",prog] if awkname=="busybox-awk" else ["awk",prog]
 out=subprocess.run(cmd,input=stream,capture_output=True,text=True)
 print(json.dumps({"disks":json.loads("["+out.stdout+"]")}))
 PY
-)
+) || J=''
     check "[$AWK] 8 btrfs subvolumes collapse to one filesystem" \
           "assert sorted(x['mount'] for x in d['disks'])==['/','/boot/efi','/zfsroot'], d['disks']" "$J"
     check "[$AWK] ZFS datasets grouped into one pool" \
@@ -196,7 +200,7 @@ out=subprocess.run(["busybox","awk",prog],input=meminfo,capture_output=True,text
 vals=dict(l.split("=",1) for l in out.stdout.strip().split("\n"))
 print(json.dumps({"mem_total_bytes":int(float(vals["MEM_TOTAL"]))}))
 PY
-)
+) || J=''
     check "4 GiB host does not report -2147483648" \
           "assert d['mem_total_bytes']==4110864384, d['mem_total_bytes']" "$J"
   else
@@ -234,7 +238,7 @@ print(json.dumps({"security":int(sec),"other":int(oth),"naive":naive,
   "no_quotes": cap('ok-1.0\nbad"quote\\\\slash\n'),
 }))
 PY
-)
+) || J=''
   check "3 security updates found among 36 pending" \
         "assert d['security']==3, d" "$J"
   check "the other 33 counted as non-security" \
@@ -281,7 +285,7 @@ print(json.dumps({
   "patch_sec":   run(["sed","-n",secp],check),
 }))
 PY
-)
+) || J=''
   check "the rolling branch counts 23 pending updates" \
         "assert d['rolling']==23, d" "$J"
   check "the header row and the ---+--- separator are not counted" \
@@ -333,7 +337,7 @@ print(json.dumps({
  "pkgin_junk": pkgin("some wording this version does not use\n"),
 }))
 PY
-)
+) || J=''
   check "one vulnerable package is counted once" \
         "assert d['found']==1, d" "$J"
   # Deduplicated by package name so this means what FreeBSD's "N package(s)
@@ -378,7 +382,7 @@ print(json.dumps({
   "no_exit_status_gate": "pkg audit -F -q >/dev/null 2>&1 &&" not in src,
 }))
 PY
-)
+) || J=''
   # The captured host: 14 problems across 9 packages. One chromium carried 300+
   # CVEs on its own, so counting advisories would let a single package swamp the
   # badge. Nine is the number of upgrades to perform.
@@ -422,7 +426,7 @@ print(json.dumps({"none": probe(none), "empty": probe(""), "banner": probe(banne
                   "counters_referenced": bool(re.search(r"^\s*(REC|ALL)=\$\(sud ", src, re.M)),
                   "captures_stderr": "softwareupdate --list --no-scan 2>&1" in src}))
 PY
-)
+) || J=''
   check "a Mac with nothing pending reports the all-clear string" \
         "assert d['none']['allclear'] and d['none']['entries']==0, d" "$J"
   # Both cases count zero entries, so the entry count alone cannot tell them
@@ -477,7 +481,7 @@ print(json.dumps({
   "quirks_filtered": bool(re.search(r"grep -v '\^quirks", ob)),
 }))
 PY
-)
+) || J=''
   check "no patches pending counts zero" \
         "assert d['empty_counts_zero']==0 and d['two_counts_two']==2, d" "$J"
   # syspatch -c fetches the index from the mirror on every run and prints
@@ -517,7 +521,7 @@ print(json.dumps({"all": allc, "security": secc, "other": allc-secc,
                   "cache_order": order,
                   "refreshed_wins": bool(refreshed_first)}))
 PY
-)
+) || J=''
   check "11 pending rows, 6 of them security, 5 other" \
         "assert (d['all'],d['security'],d['other'])==(11,6,5), d" "$J"
   # The kernel rows appear in check-update but not in --security on that host,
@@ -566,7 +570,7 @@ print(json.dumps({
   "reboot_null":  s(patch_security=0,patch_other=0,patch_reboot=None,patch_checked_at=now-2*H),
 }))
 PY
-)
+) || J=''
   check "a host that has never been checked is unknown, not ok" \
         "assert d['never']=='unknown', d" "$J"
   # The whole point of the design: 0 pending from a check three days old is
@@ -624,7 +628,7 @@ for name in ("good","truncated","garbage","empty","/nonexistent/nope"):
     out[name.strip("/").split("/")[-1] if name.startswith("/") else name]=r.stdout
 print(json.dumps(out))
 PY
-)
+) || J=''
     check "[$FAM] a well-formed state file is passed through" \
           "assert d['good'].startswith('{') and 'apt' in d['good'], d" "$J"
     check "[$FAM] truncated, garbage, empty and absent all report null" \
@@ -653,7 +657,7 @@ print(json.dumps({
   "ignores_unversioned": ".".join(str(x) for x in newest([None,"0.3.1",None])),
 }))
 PY
-)
+) || J=''
   check "every collector and patch check matches the VERSION file" \
         "assert not d['mismatched'], d['mismatched']" "$J"
   check "all six scripts carry a version at all" \
@@ -720,7 +724,7 @@ print(json.dumps({
  "uncached_prod": q("openSUSE Leap 15.6 (x86_64)")["product"],
 }))
 PY
-)
+) || J=''
   # Every platform spells its version differently from its release cycle.
   check "versions are trimmed to the cycle the platform actually uses" \
         "assert (d['ubuntu_trims'],d['netbsd_trims'],d['macos_trims'])==('24.04','11','26'), d" "$J"
@@ -783,7 +787,7 @@ print(json.dumps({
       r'\[ "\$KNEW" != "\$KRUN" \]; then\n\s*REBOOT=true', src)),
 }))
 PY
-)
+) || J=''
   # 6.12.94 sorts after 6.12.107 as text, so a plain sort calls a freshly booted
   # Debian host stale on every point release.
   check "kernels compare by version, not as strings" \
@@ -796,6 +800,72 @@ PY
         "assert d['gates_on_script'] and d['no_package_gate'], d" "$J"
   check "the kernel fallback can only report true, never false" \
         "assert d['fallback_sets_only_true'], d" "$J"
+fi
+
+if want host-thresholds; then
+  echo "host-thresholds (per-host overrides merge, they do not replace)"
+  J=$(python3 - "$ROOT" <<'PY'
+import sys,json,time; sys.path.insert(0,f"{sys.argv[1]}/server")
+import app
+app.CFG={"thresholds":{"cpu":{"warn":80,"crit":95},
+                       "mem":{"warn":85,"crit":95},
+                       "disk":{"warn":85,"crit":95}},
+         "stale_after_seconds":180,
+         "patch_stale_hours":48,
+         "eol":{"enabled":False},
+         "hosts":{
+           # NetBSD reads high because active file cache counts as used, so its
+           # memory warning is raised -- but only warn, not crit.
+           "netbsd11dot0":{"thresholds":{"mem":{"warn":92}}},
+           # A laptop that is legitimately off the LAN for hours.
+           "argon":{"stale_after_seconds":900},
+         }}
+now=time.time()
+def s(host, **kw):
+    row={"host":host,"ts":now-kw.pop("age",5),"os":"x","cpu_pct":None,
+         "mem_used_bytes":None,"mem_total_bytes":None,"uptime_seconds":1,
+         "patch_security":None,"patch_other":None,"patch_checked_at":None,
+         "patch_source":None,"patch_detail":None,"patch_reboot":None,
+         "patch_packages":None,"collector_version":None,"disks":[]}
+    row.update(kw)
+    return app.summarize(row, now)
+# 90% memory: over the global 85 warn, under netbsd's raised 92.
+mem=dict(mem_used_bytes=90,mem_total_bytes=100)
+print(json.dumps({
+  "override_warn":  app.thresholds_for("netbsd11dot0")["mem"]["warn"],
+  "inherited_crit": app.thresholds_for("netbsd11dot0")["mem"]["crit"],
+  "other_metric":   app.thresholds_for("netbsd11dot0")["cpu"]["warn"],
+  "unlisted_host":  app.thresholds_for("hermes")["mem"]["warn"],
+  "netbsd_at_90":   s("netbsd11dot0", **mem)["mem"]["status"],
+  "hermes_at_90":   s("hermes", **mem)["mem"]["status"],
+  "stale_override": app.stale_after_for("argon"),
+  "stale_default":  app.stale_after_for("hermes"),
+  "argon_600s":     s("argon", age=600)["stale"],
+  "hermes_600s":    s("hermes", age=600)["stale"],
+  "reported":       s("netbsd11dot0", **mem)["thresholds"]["mem"],
+}))
+PY
+) || J=''
+  # An override naming only warn must inherit crit, not blank it: restating
+  # numbers you did not mean to change is how a fleet's thresholds drift.
+  check "an override merges per level, inheriting what it does not name" \
+        "assert (d['override_warn'],d['inherited_crit'])==(92,95), d" "$J"
+  check "metrics the override does not mention are untouched" \
+        "assert d['other_metric']==80, d" "$J"
+  check "a host with no entry gets the global thresholds" \
+        "assert d['unlisted_host']==85, d" "$J"
+  # The point of the whole thing: 90% memory is a warning everywhere except the
+  # host told to expect it.
+  check "90% memory warns on a default host and not on the overridden one" \
+        "assert (d['hermes_at_90'],d['netbsd_at_90'])==('warning','ok'), d" "$J"
+  # Laptops leave the LAN; a fixed 180s marks them stale for being asleep.
+  check "stale_after_seconds is overridable per host" \
+        "assert (d['stale_override'],d['stale_default'])==(900,180), d" "$J"
+  check "a 10-minute-old sample is stale by default but not for the laptop" \
+        "assert d['hermes_600s'] is True and d['argon_600s'] is False, d" "$J"
+  # A card being an unexpected colour should be explainable from the API.
+  check "the effective thresholds are reported per host" \
+        "assert d['reported']=={'warn':92,'crit':95}, d" "$J"
 fi
 
 echo

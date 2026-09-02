@@ -51,6 +51,7 @@ instructions.
 | `patch_stale_hours` | a patch check older than this shows as **unknown**, not OK |
 | `eol` | end-of-life lookups via endoflife.date (see below) |
 | `thresholds` | warn/crit percentages per metric |
+| `hosts` | per-host threshold and staleness overrides (see below) |
 | `truenas` | API polling for the NAS (see below) |
 
 ### Thresholds
@@ -66,6 +67,35 @@ Starting points — tune in the config, no code change needed:
 A host's overall status is the worst of its three metrics. CPU is the noisiest
 signal at a 30–60s sample rate — if the grid flickers amber, raise the CPU warn
 threshold rather than lowering the sample interval.
+
+### Per-host overrides
+
+Some hosts are legitimately different. `hosts` in the server config carries
+per-host settings, keyed by the name the collector reports:
+
+```json
+"hosts": {
+  "netbsd11dot0": { "thresholds": { "mem": { "warn": 92 } } },
+  "argon":        { "stale_after_seconds": 900 }
+}
+```
+
+Overrides **merge**, per metric and per level, so naming just `mem.warn` leaves
+`mem.crit` and every other metric at the global value. Replacing whole blocks
+would mean restating numbers you did not want to change, which is how a fleet's
+thresholds drift apart.
+
+The two cases above are the ones this fleet actually has. NetBSD and OpenBSD
+count active file cache as used, so they read 10–15 points higher than Linux for
+the same workload — raising the warn threshold there is more honest than
+pretending the number means something different. And a laptop that leaves the
+LAN is not stale at 180 seconds; it is asleep.
+
+`stale_after_seconds` is overridable the same way. The effective values come
+back per host in `/api/overview`, so a card being a colour you did not expect is
+explainable without guessing, and the server logs at startup any configured host
+that has never reported — a typo'd hostname otherwise does nothing, silently and
+indistinguishably from a host not installed yet.
 
 ### API
 
@@ -395,7 +425,7 @@ sh tests/run.sh              # everything
 sh tests/run.sh openbsd      # just the cases matching a name
 ```
 
-95 cases, no network, no root, nothing installed — `sh`, `awk` and `python3`.
+102 cases, no network, no root, nothing installed — `sh`, `awk` and `python3`.
 The BSD and macOS cases run the real collector end to end against mocked
 `sysctl`/`df`/`mount`/`vmstat`; the Linux cases drive its awk programs directly,
 since `/proc` reads cannot be intercepted through `PATH`.
