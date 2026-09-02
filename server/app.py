@@ -219,6 +219,11 @@ def summarize(sample, now=None):
     disk_status = _level(worst_disk_pct, th["disk"])
 
     stale = age > stale_after_for(sample["host"])
+
+    virt_override = host_cfg(sample["host"]).get("virt")
+    virt = virt_override if virt_override else sample.get("virt")
+    virt_source = ("config" if virt_override
+                   else "host" if sample.get("virt") else None)
     # Patch status is deliberately NOT part of this rollup. Resource pressure is
     # live and self-clearing; pending patches sit amber for a week and train you
     # to ignore amber. It gets its own badge, and "needs attention" in the header
@@ -253,11 +258,17 @@ def summarize(sample, now=None):
         "eol": (eol.lookup(sample.get("os"), CFG["eol"])
                 if CFG["eol"].get("enabled") else eol._unknown()),
         "collector_version": sample.get("collector_version"),
-        # "none", a hypervisor name, or None when the host cannot tell.
-        # is_vm is deliberately tri-state: unknown must not read as bare metal.
-        "virt": sample.get("virt"),
-        "is_vm": (None if not sample.get("virt")
-                  else sample["virt"] != "none"),
+        # "none", a hypervisor name, or None when nothing can tell.
+        #
+        # A config entry wins over the collector. Some hosts can never report it
+        # -- TrueNAS is polled over its API and runs no collector at all -- and
+        # on OpenBSD and NetBSD the detection is a DMI heuristic that an admin
+        # may simply know better than. virt_source says which answered, so an
+        # override is auditable rather than indistinguishable from a real
+        # reading; is_vm stays tri-state either way.
+        "virt": virt,
+        "virt_source": virt_source,
+        "is_vm": (None if not virt else virt != "none"),
         "status": overall,
     }
 

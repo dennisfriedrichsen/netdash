@@ -879,7 +879,22 @@ app.CFG={"thresholds":{"cpu":{"warn":80,"crit":95},"mem":{"warn":85,"crit":95},
          "stale_after_seconds":180,"patch_stale_hours":48,
          "eol":{"enabled":False},"hosts":{}}
 now=time.time()
+def _sum(host, virt):
+    row={"host":host,"ts":now,"os":"x","cpu_pct":None,"mem_used_bytes":None,
+         "mem_total_bytes":None,"uptime_seconds":1,"disks":[],"virt":virt,
+         "patch_security":None,"patch_other":None,"patch_checked_at":None,
+         "patch_source":None,"patch_detail":None,"patch_reboot":None,
+         "patch_packages":None,"collector_version":None}
+    return app.summarize(row, now)
+def _with(cfgvirt, reported):
+    app.CFG["hosts"] = {"h": {"virt": cfgvirt}} if cfgvirt else {}
+    return _sum("h", reported)
+def ov(c, r):  return _with(c, r)["virt"]
+def ovs(c, r): return _with(c, r)["virt_source"]
+def ovm(c, r): return _with(c, r)["is_vm"]
+
 def s(virt):
+    app.CFG["hosts"]={}
     row={"host":"h","ts":now,"os":"x","cpu_pct":None,"mem_used_bytes":None,
          "mem_total_bytes":None,"uptime_seconds":1,"disks":[],"virt":virt,
          "patch_security":None,"patch_other":None,"patch_checked_at":None,
@@ -899,6 +914,15 @@ print(json.dumps({
   "map_qemu":   name("QEMU Standard PC"),
   "map_vmware": name("VMware, Inc. VMware Virtual Platform"),
   "map_real":   name("Dell Inc. PowerEdge R640"),
+  # A host that cannot report -- TrueNAS runs no collector -- answered from
+  # config instead, and the source says so.
+  "cfg_virt":   ov("none", None), "cfg_src": ovs("none", None),
+  "cfg_is_vm":  ovm("none", None),
+  # An override also wins over a reading, which is how a wrong DMI heuristic
+  # gets corrected without touching the collector.
+  "cfg_beats":  ov("none", "kvm"), "cfg_beats_src": ovs("none", "kvm"),
+  # With no override the host's own answer stands, and is labelled as its own.
+  "host_wins":  ov(None, "bhyve"), "host_src": ovs(None, "bhyve"),
 }))
 PY
 ) || J=''
@@ -913,6 +937,14 @@ PY
   # because DMI was readable at all.
   check "a real hardware vendor matches no hypervisor" \
         "assert d['map_real']=='', d" "$J"
+  # TrueNAS is polled over its API and runs no collector, so config is the only
+  # place its answer can come from.
+  check "a config entry answers for a host that cannot report" \
+        "assert (d['cfg_virt'],d['cfg_src'],d['cfg_is_vm'])==('none','config',False), d" "$J"
+  check "an override beats the collector, and says so" \
+        "assert (d['cfg_beats'],d['cfg_beats_src'])==('none','config'), d" "$J"
+  check "without an override the host's own answer stands" \
+        "assert (d['host_wins'],d['host_src'])==('bhyve','host'), d" "$J"
 fi
 
 echo

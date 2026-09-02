@@ -238,6 +238,15 @@ function eolBadge(e) {
   return b;
 }
 
+/* How a host's virtualisation reads in prose, including where the answer came
+   from. A value set in server.json is not the same claim as one the machine
+   made about itself, and the difference should be visible rather than buried. */
+function virtLabel(h) {
+  if (!h.virt) return 'virtualisation not reported';
+  var base = h.virt === 'none' ? 'bare metal' : 'guest on ' + h.virt;
+  return base + (h.virt_source === 'config' ? ' (set in server.json)' : '');
+}
+
 /* ---------- compact row ----------
    Built for density: forty hosts on one screen means roughly 30px each, so
    everything here is a glyph, a short number or nothing. No bars -- a meter
@@ -256,8 +265,7 @@ function compactRow(h) {
 
   var name = el('span', 'cname', h.host);
   name.title = [h.os || 'unknown os', fmtUptime(h.uptime_seconds),
-                h.virt && h.virt !== 'none' ? 'on ' + h.virt : 'bare metal']
-               .filter(Boolean).join(' · ');
+                virtLabel(h)].filter(Boolean).join(' · ');
   a.appendChild(name);
 
   /* Three numbers, each coloured by its own status. Tabular figures so the
@@ -364,7 +372,7 @@ function renderOverview(data, tab) {
     var os = [h.os || 'unknown os', fmtUptime(h.uptime_seconds),
               h.virt && h.virt !== 'none' ? h.virt : null].filter(Boolean).join(' · ');
     var osEl = el('div', 'os', os);
-    osEl.title = os;
+    osEl.title = os + ' · ' + virtLabel(h);
     a.appendChild(osEl);
 
     a.appendChild(meter('CPU', h.cpu.pct, h.cpu.status));

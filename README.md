@@ -51,7 +51,7 @@ instructions.
 | `patch_stale_hours` | a patch check older than this shows as **unknown**, not OK |
 | `eol` | end-of-life lookups via endoflife.date (see below) |
 | `thresholds` | warn/crit percentages per metric |
-| `hosts` | per-host threshold and staleness overrides (see below) |
+| `hosts` | per-host thresholds, staleness and `virt` overrides (see below) |
 | `truenas` | API polling for the NAS (see below) |
 
 ### Thresholds
@@ -84,7 +84,8 @@ per-host settings, keyed by the name the collector reports:
 ```json
 "hosts": {
   "netbsd11dot0": { "thresholds": { "mem": { "warn": 92 } } },
-  "argon":        { "stale_after_seconds": 900 }
+  "argon":        { "stale_after_seconds": 900 },
+  "truenas-core": { "virt": "none" }
 }
 ```
 
@@ -352,6 +353,18 @@ answer nobody checked.
 It detects the hypervisor *type*, not which machine is running it. Two `bhyve`
 guests may be on different hosts, so this does not give you a topology.
 
+Some hosts can never answer. TrueNAS is polled over its API and runs no
+collector at all, and on OpenBSD and NetBSD the detection is a DMI heuristic you
+may simply know better than. A per-host `virt` in the config settles it:
+
+```json
+"hosts": { "truenas-core": { "virt": "none" } }
+```
+
+Config wins over the collector, and `virt_source` in the API reports which
+answered — `"config"` or `"host"` — so a value someone typed is never
+indistinguishable from one a machine measured. The card's hover says so too.
+
 ## Tabs
 
 - **All** — one line per host, sized so roughly forty fit on a screen without
@@ -469,7 +482,7 @@ sh tests/run.sh              # everything
 sh tests/run.sh openbsd      # just the cases matching a name
 ```
 
-105 cases, no network, no root, nothing installed — `sh`, `awk` and `python3`.
+108 cases, no network, no root, nothing installed — `sh`, `awk` and `python3`.
 The BSD and macOS cases run the real collector end to end against mocked
 `sysctl`/`df`/`mount`/`vmstat`; the Linux cases drive its awk programs directly,
 since `/proc` reads cannot be intercepted through `PATH`.
