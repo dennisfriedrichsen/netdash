@@ -868,6 +868,53 @@ PY
         "assert d['reported']=={'warn':92,'crit':95}, d" "$J"
 fi
 
+if want virt; then
+  echo "virt (unknown must not read as bare metal)"
+  J=$(python3 - "$ROOT" <<'PY'
+import re,sys,json,subprocess,time; sys.path.insert(0,f"{sys.argv[1]}/server")
+root=sys.argv[1]
+import app
+app.CFG={"thresholds":{"cpu":{"warn":80,"crit":95},"mem":{"warn":85,"crit":95},
+                       "disk":{"warn":85,"crit":95}},
+         "stale_after_seconds":180,"patch_stale_hours":48,
+         "eol":{"enabled":False},"hosts":{}}
+now=time.time()
+def s(virt):
+    row={"host":"h","ts":now,"os":"x","cpu_pct":None,"mem_used_bytes":None,
+         "mem_total_bytes":None,"uptime_seconds":1,"disks":[],"virt":virt,
+         "patch_security":None,"patch_other":None,"patch_checked_at":None,
+         "patch_source":None,"patch_detail":None,"patch_reboot":None,
+         "patch_packages":None,"collector_version":None}
+    return app.summarize(row, now)["is_vm"]
+
+# The vendor mapping is a shell case statement; run the shipped one.
+src=open(f"{root}/collectors/bsd/netdash-collector.sh").read()
+fn=re.search(r"(virt_name\(\) \{.*?\n\})", src, re.S).group(1)
+def name(v):
+    return subprocess.run(["sh","-c",fn+'\nvirt_name "$1"',"sh",v],
+                          capture_output=True,text=True).stdout.strip()
+print(json.dumps({
+  "none": s("none"), "bhyve": s("bhyve"), "missing": s(None), "empty": s(""),
+  "map_bhyve":  name("FreeBSD BHYVE"),
+  "map_qemu":   name("QEMU Standard PC"),
+  "map_vmware": name("VMware, Inc. VMware Virtual Platform"),
+  "map_real":   name("Dell Inc. PowerEdge R640"),
+}))
+PY
+) || J=''
+  # Tri-state on purpose: a host that cannot answer is not a bare-metal host.
+  # Collapsing null to false would file every pre-0.4.0 collector under "bare
+  # metal", which is the one answer nobody checked.
+  check "is_vm is true, false or null -- never a guess" \
+        "assert (d['none'],d['bhyve'],d['missing'],d['empty'])==(False,True,None,None), d" "$J"
+  check "known hypervisor vendors are named from their DMI strings" \
+        "assert (d['map_bhyve'],d['map_qemu'],d['map_vmware'])==('bhyve','kvm','vmware'), d" "$J"
+  # Real hardware matches nothing, and the caller turns that into "none" only
+  # because DMI was readable at all.
+  check "a real hardware vendor matches no hypervisor" \
+        "assert d['map_real']=='', d" "$J"
+fi
+
 echo
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]

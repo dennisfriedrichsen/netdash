@@ -253,6 +253,11 @@ def summarize(sample, now=None):
         "eol": (eol.lookup(sample.get("os"), CFG["eol"])
                 if CFG["eol"].get("enabled") else eol._unknown()),
         "collector_version": sample.get("collector_version"),
+        # "none", a hypervisor name, or None when the host cannot tell.
+        # is_vm is deliberately tri-state: unknown must not read as bare metal.
+        "virt": sample.get("virt"),
+        "is_vm": (None if not sample.get("virt")
+                  else sample["virt"] != "none"),
         "status": overall,
     }
 

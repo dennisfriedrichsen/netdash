@@ -30,7 +30,10 @@ CREATE TABLE IF NOT EXISTS samples (
     patch_packages     TEXT,
     -- Which netdash-collector produced this sample, for spotting hosts left
     -- behind on an old one. NULL for TrueNAS, which has no collector.
-    collector_version  TEXT
+    collector_version  TEXT,
+    -- "none" for bare metal, else the hypervisor ("bhyve", "kvm", ...).
+    -- NULL means the host could not tell, which is not the same as bare metal.
+    virt               TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_samples_host_ts ON samples(host, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples(ts);
@@ -58,6 +61,7 @@ _ADDED_COLUMNS = {
         ("patch_reboot", "INTEGER"),
         ("patch_packages", "TEXT"),
         ("collector_version", "TEXT"),
+        ("virt", "TEXT"),
     ],
 }
 
@@ -98,8 +102,8 @@ def insert_sample(conn, payload, source="push"):
         """INSERT INTO samples
              (host, ts, os, source, cpu_pct, mem_used_bytes, mem_total_bytes, uptime_seconds,
               patch_security, patch_other, patch_checked_at, patch_source, patch_detail,
-              patch_reboot, patch_packages, collector_version)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+              patch_reboot, patch_packages, collector_version, virt)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             payload["host"],
             ts,
@@ -117,6 +121,7 @@ def insert_sample(conn, payload, source="push"):
             None if p.get("reboot_required") is None else int(bool(p["reboot_required"])),
             p.get("packages") or None,
             payload.get("collector_version"),
+            payload.get("virt"),
         ),
     )
     sid = cur.lastrowid

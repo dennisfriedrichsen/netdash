@@ -5,7 +5,7 @@
 set -eu
 
 # Kept in sync with the repository VERSION file by tests/run.sh.
-NETDASH_VERSION="0.3.2"
+NETDASH_VERSION="0.4.0"
 
 MODE="${1:-}"
 
@@ -161,6 +161,45 @@ if [ -n "$BOOT" ]; then UPTIME=$(( $(date +%s) - BOOT )); else UPTIME=0; fi
 OS="$(uname -sr)"
 ARCH=$(uname -m)
 
+# ---- Virtualisation ----
+# FreeBSD answers directly. OpenBSD and NetBSD have no equivalent sysctl, so
+# the DMI strings are matched instead: a recognised hypervisor vendor names it,
+# a real hardware vendor means bare metal, and nothing readable means null
+# rather than a guess. Verified: kern.vm_guest reads "none" on the bare-metal
+# FreeBSD host.
+VIRT=null
+virt_name() {
+  case "$1" in
+    *BHYVE*|*bhyve*)        echo bhyve ;;
+    *QEMU*|*qemu*)          echo kvm ;;
+    *VMware*|*vmware*)      echo vmware ;;
+    *innotek*|*VirtualBox*) echo oracle ;;
+    *Microsoft*|*Hyper-V*)  echo microsoft ;;
+    *Xen*|*xen*)            echo xen ;;
+    *Parallels*)            echo parallels ;;
+    *)                      echo "" ;;
+  esac
+}
+case "$OSNAME" in
+FreeBSD)
+  V=$(sysctl_n kern.vm_guest)
+  [ -n "$V" ] && VIRT="\"$V\""
+  ;;
+OpenBSD|NetBSD)
+  HWV=""
+  for k in hw.vendor hw.product machdep.dmi.system-vendor machdep.dmi.system-product; do
+    HWV="$HWV $(sysctl_n "$k")"
+  done
+  V=$(virt_name "$HWV")
+  if [ -n "$V" ]; then
+    VIRT="\"$V\""
+  elif [ -n "$(printf '%s' "$HWV" | tr -d ' ')" ]; then
+    # DMI readable and no hypervisor vendor in it: real hardware.
+    VIRT='"none"'
+  fi
+  ;;
+esac
+
 # ---- Patch status ----
 # Read back from whatever netdash-patchcheck last wrote on its own daily
 # schedule. This stays a file read on purpose: syspatch -c fetches from the
@@ -182,8 +221,8 @@ for f in $PATCH_FILES; do
   case "$P" in '{'*'}') PATCHES="$P"; break ;; esac
 done
 
-JSON=$(printf '{"host":"%s","os":"%s (%s)","cpu_pct":%s,"mem_used_bytes":%s,"mem_total_bytes":%s,"uptime_seconds":%d,"disks":[%s],"patches":%s,"collector_version":"%s"}' \
-  "$HOST" "$OS" "$ARCH" "$CPU" "$MEM_USED" "$MEM_TOTAL" "$UPTIME" "$DISKS" "$PATCHES" "$NETDASH_VERSION")
+JSON=$(printf '{"host":"%s","os":"%s (%s)","cpu_pct":%s,"mem_used_bytes":%s,"mem_total_bytes":%s,"uptime_seconds":%d,"disks":[%s],"patches":%s,"virt":%s,"collector_version":"%s"}' \
+  "$HOST" "$OS" "$ARCH" "$CPU" "$MEM_USED" "$MEM_TOTAL" "$UPTIME" "$DISKS" "$PATCHES" "$VIRT" "$NETDASH_VERSION")
 
 if [ "$MODE" = "--print" ]; then printf '%s\n' "$JSON"; exit 0; fi
 

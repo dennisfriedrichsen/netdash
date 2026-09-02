@@ -322,6 +322,42 @@ cache, so a slow or unreachable endoflife.date can never delay the dashboard —
 it just leaves the badge unknown. A failed refresh keeps the previous cache;
 release dates move on the scale of months, so yesterday's copy is still right.
 
+## Bare metal or VM
+
+Each collector reports whether it is virtualised, and the dashboard splits the
+fleet on it.
+
+| platform | how |
+|---|---|
+| Linux (systemd) | `systemd-detect-virt` — prints `none` and exits **1** on bare metal, so the word is the signal, not the status |
+| Linux (no systemd) | the CPUID hypervisor flag, then DMI `sys_vendor`/`product_name` for the name |
+| FreeBSD / TrueNAS | `sysctl -n kern.vm_guest` |
+| OpenBSD / NetBSD | DMI strings via sysctl, matched against known hypervisor vendors |
+| macOS | `sysctl -n kern.hv_vmm_present` |
+
+`virt` is `"none"`, a hypervisor name (`bhyve`, `kvm`, `vmware`, …), or **null**
+when the host cannot tell. `is_vm` is tri-state for the same reason everything
+else here is: a host that cannot answer is not a bare-metal host, and collapsing
+null to false would file every pre-0.4.0 collector under "bare metal" — the one
+answer nobody checked.
+
+It detects the hypervisor *type*, not which machine is running it. Two `bhyve`
+guests may be on different hosts, so this does not give you a topology.
+
+## Tabs
+
+- **All** — one line per host, sized so roughly forty fit on a screen without
+  scrolling. Colour carries urgency, the number carries the value, and hovering
+  carries everything else. No meters: a bar needs vertical space to read, and at
+  this density the number *is* the signal.
+- **Bare metal** / **VMs** — the full cards, filtered. These lists are short
+  enough to afford the detail, and they are where you go to look at a machine
+  rather than scan for the one that is wrong.
+
+Hosts that cannot report virtualisation appear under **All** only, with the
+count called out beside the tabs. Guessing would file them under the wrong tab;
+a host missing from a list is easier to notice than one silently misfiled.
+
 ## Collector versions
 
 Each collector reports its own version, and `/api/overview` returns the highest
@@ -425,7 +461,7 @@ sh tests/run.sh              # everything
 sh tests/run.sh openbsd      # just the cases matching a name
 ```
 
-102 cases, no network, no root, nothing installed — `sh`, `awk` and `python3`.
+105 cases, no network, no root, nothing installed — `sh`, `awk` and `python3`.
 The BSD and macOS cases run the real collector end to end against mocked
 `sysctl`/`df`/`mount`/`vmstat`; the Linux cases drive its awk programs directly,
 since `/proc` reads cannot be intercepted through `PATH`.

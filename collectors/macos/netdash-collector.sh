@@ -4,7 +4,7 @@
 set -eu
 
 # Kept in sync with the repository VERSION file by tests/run.sh.
-NETDASH_VERSION="0.3.2"
+NETDASH_VERSION="0.4.0"
 
 MODE="${1:-}"
 
@@ -114,6 +114,17 @@ UPTIME=$(( $(date +%s) - ${BOOT:-0} ))
 OS="$(sw_vers -productName 2>/dev/null || echo macOS) $(sw_vers -productVersion 2>/dev/null || echo '')"
 ARCH=$(uname -m)
 
+# ---- Virtualisation ----
+# kern.hv_vmm_present is 1 when macOS is running under a hypervisor. It does not
+# name which, so a guest reports the generic "vmm". An older macOS without the
+# sysctl reports null rather than claiming bare metal.
+VIRT=null
+HV=$(sysctl -n kern.hv_vmm_present 2>/dev/null || true)
+case "$HV" in
+  1) VIRT='"vmm"' ;;
+  0) VIRT='"none"' ;;
+esac
+
 # ---- Patch status ----
 # Read back from whatever netdash-patchcheck last wrote on its own daily
 # schedule. This stays a file read on purpose: `softwareupdate -l` triggers a
@@ -135,8 +146,8 @@ for f in $PATCH_FILES; do
   case "$P" in '{'*'}') PATCHES="$P"; break ;; esac
 done
 
-JSON=$(printf '{"host":"%s","os":"%s (%s)","cpu_pct":%s,"mem_used_bytes":%s,"mem_total_bytes":%s,"uptime_seconds":%d,"disks":[%s],"patches":%s,"collector_version":"%s"}' \
-  "$HOST" "$OS" "$ARCH" "$CPU" "$MEM_USED" "$MEM_TOTAL" "$UPTIME" "$DISKS" "$PATCHES" "$NETDASH_VERSION")
+JSON=$(printf '{"host":"%s","os":"%s (%s)","cpu_pct":%s,"mem_used_bytes":%s,"mem_total_bytes":%s,"uptime_seconds":%d,"disks":[%s],"patches":%s,"virt":%s,"collector_version":"%s"}' \
+  "$HOST" "$OS" "$ARCH" "$CPU" "$MEM_USED" "$MEM_TOTAL" "$UPTIME" "$DISKS" "$PATCHES" "$VIRT" "$NETDASH_VERSION")
 
 if [ "$MODE" = "--print" ]; then printf '%s\n' "$JSON"; exit 0; fi
 

@@ -62,6 +62,64 @@ button.link {
 }
 button.link:hover { color: var(--text-1); }
 
+/* ---------- tabs ---------- */
+.tabs {
+  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+  padding: 0 22px 10px; border-bottom: 1px solid var(--border); margin-bottom: 12px;
+}
+.tab {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 6px 12px; border-radius: 8px 8px 0 0;
+  color: var(--text-2); text-decoration: none; font-size: 14px;
+  border: 1px solid transparent; border-bottom: none; margin-bottom: -1px;
+}
+.tab:hover { color: var(--text-1); background: var(--surface-1); }
+.tab.on {
+  color: var(--text-1); background: var(--surface-1);
+  border-color: var(--border); font-weight: 650;
+}
+.tab .tabn {
+  font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums;
+  background: var(--grid); border-radius: 9px; padding: 0 7px;
+}
+.tabnote { margin-left: auto; color: var(--muted); font-size: 12px; }
+
+/* ---------- compact list ----------
+   The density view: one line per host, sized so ~40 fit on a 1080p screen
+   without scrolling. Columns are fixed-width and figures tabular so the
+   numbers form readable columns down the whole grid -- scanning for the one
+   bad value is the entire job here, and ragged columns defeat it. */
+.compact {
+  display: grid; gap: 2px 14px; padding: 0 22px 24px;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  align-content: start;
+}
+.crow {
+  display: grid; align-items: center; gap: 8px;
+  grid-template-columns: 9px 16px minmax(0, 1fr) 3.2em 3.2em 3.2em auto;
+  padding: 4px 8px; border-radius: 6px;
+  text-decoration: none; color: inherit; font-size: 13px; line-height: 1.3;
+}
+.crow:hover { background: var(--surface-1); }
+.crow .cdot {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: var(--st, var(--st-none));
+}
+.crow .cicon { width: 16px; height: 16px; color: var(--muted); }
+.crow .cname {
+  font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.crow .cnum {
+  text-align: right; font-variant-numeric: tabular-nums; font-size: 12px;
+}
+.crow .cflags { display: inline-flex; gap: 4px; min-width: 2.4em; }
+.crow .cflag { font-size: 12px; line-height: 1; }
+
+@media (min-width: 1500px) {
+  .compact { grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); }
+  .crow { font-size: 14px; }
+}
+
 /* ---------- overview grid ---------- */
 .grid {
   display: grid; gap: 14px; padding: 8px 22px 28px;

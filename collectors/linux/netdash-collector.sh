@@ -5,7 +5,7 @@
 set -eu
 
 # Kept in sync with the repository VERSION file by tests/run.sh.
-NETDASH_VERSION="0.3.2"
+NETDASH_VERSION="0.4.0"
 
 MODE="${1:-}"   # capture before `set --` below reuses the positional params
 
@@ -118,6 +118,41 @@ for f in /proc/device-tree/model /sys/firmware/devicetree/base/model; do
 done
 [ -n "$MODEL" ] && OS="$OS - $MODEL"
 
+# ---- Virtualisation ----
+# systemd-detect-virt is the canonical answer where it exists: it prints "none"
+# and exits 1 on bare metal, so the exit status is not the signal -- the word is.
+# Absent (Alpine, which has no systemd), the CPUID hypervisor flag says whether
+# this is a guest at all, and DMI says whose. A host that can answer neither
+# reports null rather than guessing at "none": claiming bare metal is a claim.
+VIRT=null
+detect_virt() {
+  if command -v systemd-detect-virt >/dev/null 2>&1; then
+    systemd-detect-virt 2>/dev/null || true
+    return
+  fi
+  if ! grep -qm1 '^flags.*[[:space:]]hypervisor\([[:space:]]\|$\)' /proc/cpuinfo 2>/dev/null; then
+    # No hypervisor bit. Only call it bare metal if DMI is actually readable;
+    # an unreadable DMI on an unknown platform is not evidence of anything.
+    [ -r /sys/class/dmi/id/sys_vendor ] && echo none
+    return
+  fi
+  V=$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null || true)
+  P=$(cat /sys/class/dmi/id/product_name 2>/dev/null || true)
+  case "$V $P" in
+    *BHYVE*|*bhyve*)              echo bhyve ;;
+    *QEMU*|*qemu*)                echo kvm ;;
+    *VMware*|*vmware*)            echo vmware ;;
+    *innotek*|*VirtualBox*)       echo oracle ;;
+    *Microsoft*|*Hyper-V*)        echo microsoft ;;
+    *Xen*|*xen*)                  echo xen ;;
+    *"Amazon EC2"*)               echo amazon ;;
+    *Parallels*)                  echo parallels ;;
+    *)                            echo vm ;;   # a guest, vendor unrecognised
+  esac
+}
+V=$(detect_virt)
+[ -n "$V" ] && VIRT="\"$V\""
+
 # ---- Patch status ----
 # Read back from whatever netdash-patchcheck last wrote on its own daily
 # schedule. This stays a file read on purpose: every mechanism that can answer
@@ -139,8 +174,8 @@ for f in $PATCH_FILES; do
   case "$P" in '{'*'}') PATCHES="$P"; break ;; esac
 done
 
-JSON=$(printf '{"host":"%s","os":"%s (%s)","cpu_pct":%s,"mem_used_bytes":%s,"mem_total_bytes":%s,"uptime_seconds":%d,"disks":[%s],"patches":%s,"collector_version":"%s"}' \
-  "$HOST" "$OS" "$ARCH" "$CPU" "$MEM_USED" "$MEM_TOTAL" "$UPTIME" "$DISKS" "$PATCHES" "$NETDASH_VERSION")
+JSON=$(printf '{"host":"%s","os":"%s (%s)","cpu_pct":%s,"mem_used_bytes":%s,"mem_total_bytes":%s,"uptime_seconds":%d,"disks":[%s],"patches":%s,"virt":%s,"collector_version":"%s"}' \
+  "$HOST" "$OS" "$ARCH" "$CPU" "$MEM_USED" "$MEM_TOTAL" "$UPTIME" "$DISKS" "$PATCHES" "$VIRT" "$NETDASH_VERSION")
 
 if [ "$MODE" = "--print" ]; then printf '%s\n' "$JSON"; exit 0; fi
 

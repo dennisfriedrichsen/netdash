@@ -238,9 +238,65 @@ function eolBadge(e) {
   return b;
 }
 
+/* ---------- compact row ----------
+   Built for density: forty hosts on one screen means roughly 30px each, so
+   everything here is a glyph, a short number or nothing. No bars -- a meter
+   track needs vertical space to read, and at this size the number IS the
+   signal. Colour carries urgency, the number carries the value, and the title
+   attribute carries the detail you would otherwise scroll for. */
+function compactRow(h) {
+  var s = st(h.status);
+  var a = el('a', 'crow');
+  a.href = '#/host/' + encodeURIComponent(h.host);
+  a.style.setProperty('--st', s.css);
+
+  a.appendChild(el('span', 'cdot'));
+  var ic = osIcon(h.os); ic.classList.add('cicon');
+  a.appendChild(ic);
+
+  var name = el('span', 'cname', h.host);
+  name.title = [h.os || 'unknown os', fmtUptime(h.uptime_seconds),
+                h.virt && h.virt !== 'none' ? 'on ' + h.virt : 'bare metal']
+               .filter(Boolean).join(' · ');
+  a.appendChild(name);
+
+  /* Three numbers, each coloured by its own status. Tabular figures so the
+     columns line up down the whole grid rather than jittering per row. */
+  ['cpu', 'mem', 'disk'].forEach(function (k) {
+    var m = k === 'disk' ? { pct: h.disk.worst_pct, status: h.disk.status } : h[k];
+    var v = el('span', 'cnum', fmtPct(m.pct));
+    v.style.color = m.status === 'ok' ? 'var(--text-2)' : st(m.status).css;
+    v.title = k.toUpperCase() + ' ' + fmtPct(m.pct);
+    a.appendChild(v);
+  });
+
+  var flags = el('span', 'cflags');
+  var p = h.patches || {};
+  var ps = PATCH[p.status || 'unknown'] || PATCH.unknown;
+  var pg = el('span', 'cflag', ps.glyph);
+  pg.style.color = p.status === 'ok' ? 'var(--muted)' : ps.css;
+  pg.title = 'Patches: ' + patchText(p) + '\n' + patchTitle(p);
+  flags.appendChild(pg);
+
+  if (h.eol && (h.eol.status === 'eol' || h.eol.status === 'eol_soon')) {
+    var e = el('span', 'cflag', '\u26A0');
+    e.style.color = h.eol.status === 'eol' ? 'var(--st-crit)' : 'var(--st-warn)';
+    e.title = h.eol.status === 'eol' ? 'Past end of life' : 'EOL ' + h.eol.eol_date;
+    flags.appendChild(e);
+  }
+  if (h.collector_outdated) {
+    var c = el('span', 'cflag', 'v');
+    c.style.color = 'var(--st-warn)';
+    c.title = 'Collector v' + h.collector_version + ', older than v' + '';
+    flags.appendChild(c);
+  }
+  a.appendChild(flags);
+  return a;
+}
+
 /* ---------- overview ---------- */
 
-function renderOverview(data) {
+function renderOverview(data, tab) {
   titleEl.textContent = 'Home network';
   var frag = document.createDocumentFragment();
 
@@ -253,18 +309,39 @@ function renderOverview(data) {
   var bad = data.hosts.filter(function (h) {
     return h.status === 'critical' || h.status === 'warning' || h.status === 'stale';
   }).length;
-  var behind = data.hosts.filter(function (h) { return h.collector_outdated; }).length;
   var eolCount = data.hosts.filter(function (h) {
     return h.eol && h.eol.status === 'eol';
   }).length;
+  var behind = data.hosts.filter(function (h) { return h.collector_outdated; }).length;
   metaEl.textContent = data.hosts.length + ' hosts · ' +
     (bad ? bad + ' need attention' : 'all clear') +
     (eolCount ? ' · ' + eolCount + ' past EOL' : '') +
     (behind ? ' · ' + behind + ' on an old collector' : '') + ' · ' +
     new Date(data.now * 1000).toLocaleTimeString();
 
+  frag.appendChild(renderTabs(data, tab));
+
+  var hosts = tabHosts(data.hosts, tab);
+  if (!hosts.length) {
+    frag.appendChild(el('div', 'empty',
+      'No hosts here yet — virtualisation is only reported by collector 0.4.0 and later.'));
+    root.replaceChildren(frag);
+    return;
+  }
+
+  /* All hosts get the dense one-line view; the filtered tabs are small enough
+     to afford the full cards, and that is where you go to actually look at a
+     machine rather than scan for the one that is wrong. */
+  if (tab === '') {
+    var list = el('div', 'compact');
+    hosts.forEach(function (h) { list.appendChild(compactRow(h)); });
+    frag.appendChild(list);
+    root.replaceChildren(frag);
+    return;
+  }
+
   var grid = el('div', 'grid');
-  data.hosts.forEach(function (h) {
+  hosts.forEach(function (h) {
     var s = st(h.status);
     var a = el('a', 'card');
     a.href = '#/host/' + encodeURIComponent(h.host);
@@ -282,9 +359,10 @@ function renderOverview(data) {
     row.appendChild(chip);
     a.appendChild(row);
 
-    var os = [h.os || 'unknown os', fmtUptime(h.uptime_seconds)].filter(Boolean).join(' · ');
+    var os = [h.os || 'unknown os', fmtUptime(h.uptime_seconds),
+              h.virt && h.virt !== 'none' ? h.virt : null].filter(Boolean).join(' · ');
     var osEl = el('div', 'os', os);
-    osEl.title = os;            /* truncated by CSS; full text on hover */
+    osEl.title = os;
     a.appendChild(osEl);
 
     a.appendChild(meter('CPU', h.cpu.pct, h.cpu.status));
@@ -304,9 +382,6 @@ function renderOverview(data) {
 
     var sub = el('div', 'sub', (h.stale ? 'last seen ' : 'updated ') + fmtAge(h.age_seconds) +
       (h.source === 'truenas' ? ' · via API' : ''));
-    /* Version only earns card space when it is the odd one out. Printing it on
-       every card at fleet scale is noise; printing it on the three that are
-       behind is the whole point. */
     if (h.collector_version) {
       var v = el('span', h.collector_outdated ? 'ver old' : 'ver', ' · v' + h.collector_version);
       if (h.collector_outdated) {
@@ -534,9 +609,48 @@ function renderDetail(host, data) {
 
 /* ---------- routing + polling ---------- */
 
+var TABS = [
+  { id: '',      label: 'All',        title: 'Every host, one line each' },
+  { id: 'bare',  label: 'Bare metal', title: 'Hosts reporting no hypervisor' },
+  { id: 'vms',   label: 'VMs',        title: 'Hosts reporting a hypervisor' }
+];
+
 function currentRoute() {
-  var m = (location.hash || '#/').match(/^#\/host\/(.+)$/);
-  return m ? { view: 'host', host: decodeURIComponent(m[1]) } : { view: 'overview' };
+  var h = location.hash || '#/';
+  var m = h.match(/^#\/host\/(.+)$/);
+  if (m) return { view: 'host', host: decodeURIComponent(m[1]) };
+  m = h.match(/^#\/(bare|vms)$/);
+  return { view: 'overview', tab: m ? m[1] : '' };
+}
+
+/* Hosts that cannot tell whether they are virtualised appear in neither
+   filtered tab. Guessing would put them in the wrong one, and a host missing
+   from a list is easier to notice than one silently misfiled -- the All tab
+   shows everything and says "?" for them. */
+function tabHosts(hosts, tab) {
+  if (tab === 'bare') return hosts.filter(function (h) { return h.is_vm === false; });
+  if (tab === 'vms')  return hosts.filter(function (h) { return h.is_vm === true; });
+  return hosts;
+}
+
+function renderTabs(data, active) {
+  var nav = el('nav', 'tabs');
+  TABS.forEach(function (t) {
+    var a = el('a', 'tab' + (t.id === active ? ' on' : ''));
+    a.href = '#/' + t.id;
+    a.title = t.title;
+    a.appendChild(el('span', null, t.label));
+    var n = tabHosts(data.hosts, t.id).length;
+    a.appendChild(el('span', 'tabn', String(n)));
+    nav.appendChild(a);
+  });
+  var unknown = data.hosts.filter(function (h) { return h.is_vm === null; }).length;
+  if (unknown) {
+    var note = el('span', 'tabnote', unknown + ' cannot report virtualisation');
+    note.title = 'These appear only under All. Re-run install.sh to collect it.';
+    nav.appendChild(note);
+  }
+  return nav;
 }
 
 function fail(msg) {
@@ -555,7 +669,7 @@ function tick() {
       return res.json();
     })
     .then(function (data) {
-      if (r.view === 'host') renderDetail(r.host, data); else renderOverview(data);
+      if (r.view === 'host') renderDetail(r.host, data); else renderOverview(data, r.tab);
     })
     .catch(function (e) { fail('Cannot reach the netdash server (' + e.message + ').'); });
 }
