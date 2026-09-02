@@ -234,10 +234,18 @@ freebsd-update branch is skipped, with the source reported as
 `pkg-audit-pkgbase` to say so.
 
 If neither scheduled job is enabled on a given host, both reads still answer,
-just from an ageing database — which is exactly what `checked_at` is for. One
-caveat there: `pkg audit -F` may leave `vuln.xml`'s mtime untouched when the
-remote copy is unchanged, so `checked_at` can lag the actual check. That errs
-toward *unknown*, the safe direction, and VuXML changes most days in practice.
+just from an ageing database — which is exactly what `checked_at` is for.
+
+**Judge the fetch by stderr, not by exit status.** `pkg audit -F` exits 1 both
+when the fetch failed and when it succeeded and found vulnerable packages; on
+the test host it exits 1 with nine vulnerable packages and prints *nothing* to
+stderr. Since pkg also leaves `vuln.xml`'s mtime untouched when the remote copy
+is unchanged, dating the reading to that file alone drifts behind the real
+check — the host read 250 minutes old immediately after one, and on a quiet
+VuXML week that would cross `patch_stale_hours` and show *unknown* on a host
+checking daily. Silence on stderr therefore means the fetch worked and
+`checked_at` is now; any output falls back to the mtime, which errs toward
+unknown.
 
 ### OpenBSD — **verified** on OpenBSD 7.9
 

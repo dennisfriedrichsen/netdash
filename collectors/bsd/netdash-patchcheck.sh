@@ -60,12 +60,23 @@ FreeBSD)
   # that is switched off.
   #
   # Its exit status is NOT a refresh signal: pkg audit exits 1 both when the
-  # fetch failed and when it succeeded and found vulnerable packages. The
-  # honest freshness signal is vuln.xml's own mtime, which a failed fetch
-  # leaves untouched -- so a host that loses network ages into "unknown"
-  # rather than reporting a stale count as current.
-  [ "$REFRESH" = yes ] && run pkg audit -F -q >/dev/null
-  [ "$REFRESH" = yes ] && run pkg update -q >/dev/null
+  # fetch failed and when it succeeded and found vulnerable packages. Verified
+  # on the test host, which exits 1 with nine vulnerable packages and prints
+  # nothing at all to stderr. So the fetch is judged by stderr instead: silence
+  # means it worked.
+  #
+  # This matters because pkg leaves vuln.xml's mtime untouched when the remote
+  # copy is unchanged, so dating the reading to that file alone drifts behind
+  # the actual check -- the test host read 250 minutes old immediately after
+  # one -- and on a quiet VuXML week would cross patch_stale_hours and show
+  # "unknown" on a host checking daily. Any output on stderr falls back to the
+  # mtime, which is the previous behaviour and errs toward unknown.
+  FETCHED=0
+  if [ "$REFRESH" = yes ]; then
+    FERR=$(pkg audit -F -q 2>&1 >/dev/null || true)
+    [ -z "$FERR" ] && FETCHED=1
+    run pkg update -q >/dev/null
+  fi
 
   # pkg audit ends with an authoritative summary:
   #   14 problem(s) in 9 package(s) found.
@@ -83,7 +94,11 @@ FreeBSD)
   # can be behind with no advisory against it.
   OTH=$(run pkg version -vRL= | grep -c . || true)
 
-  CHECKED=$(mtime /var/db/pkg/vuln.xml)
+  if [ "$FETCHED" -eq 1 ]; then
+    CHECKED=$NOW
+  else
+    CHECKED=$(mtime /var/db/pkg/vuln.xml)
+  fi
 
   # Base system. On a pkgbase host the base IS packages -- FreeBSD-runtime and
   # friends -- so pkg audit and pkg version above already cover it, and

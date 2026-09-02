@@ -335,6 +335,10 @@ probs=subprocess.run(["sed","-n",r"s/^\([0-9][0-9]*\) problem(s).*/\1/p"],
 print(json.dumps({
   "packages": int(pkgs or 0), "headers": hdrs, "problems": int(probs or 0),
   "pkgbase_detected": "pkg info -e FreeBSD-runtime" in src,
+  # pkg audit exits 1 for BOTH "fetch failed" and "found vulnerable packages",
+  # so the fetch has to be judged by stderr, never by exit status.
+  "fetch_by_stderr": bool(re.search(r'FERR=\$\(pkg audit -F -q 2>&1 >/dev/null', src)),
+  "no_exit_status_gate": "pkg audit -F -q >/dev/null 2>&1 &&" not in src,
 }))
 PY
 )
@@ -350,6 +354,10 @@ PY
   # for a base it does not manage.
   check "pkgbase is detected so freebsd-update is skipped there" \
         "assert d['pkgbase_detected'], d" "$J"
+  # The captured host exits 1 with nine vulnerable packages and an empty stderr,
+  # so a successful fetch is indistinguishable from a failed one by status alone.
+  check "the vuln.xml fetch is judged by stderr, not by exit status" \
+        "assert d['fetch_by_stderr'] and d['no_exit_status_gate'], d" "$J"
 fi
 
 if want patches-macos; then
