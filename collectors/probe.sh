@@ -44,6 +44,14 @@ try sysctl -n vm.stats.vm.v_page_size
 try sysctl -n vm.stats.vm.v_free_count
 try sysctl -n vm.stats.vm.v_inactive_count
 
+# OpenBSD refuses vm.uvmexp through sysctl and says to use vmstat; NetBSD is
+# expected to be the same shape. These are the fields the collector parses.
+try vmstat
+try vmstat -s
+try top -b
+printf '\n--- $ sysctl -a | grep -i uvm (available uvm nodes)\n'
+sysctl -a 2>/dev/null | grep -i uvm | head -30 || echo "(none)"
+
 sec "uptime / boottime"
 try cat /proc/uptime
 try sysctl -n kern.boottime
