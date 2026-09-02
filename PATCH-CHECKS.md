@@ -532,8 +532,15 @@ Two gates matter:
 
 - On Debian, `/run/reboot-required` is written by **`update-notifier-common`,
   not by apt**. Its absence on a host without that package says nothing, so
-  `false` is reported only once the package is confirmed installed. The Debian
-  test host does not have it, and correctly reports `null`.
+  `false` is reported only once the package is confirmed installed.
+
+  This splits the fleet cleanly, and the split is verified across seven hosts:
+  **Ubuntu ships `update-notifier-common` and reports `false`; Debian does not
+  and reports `null`.** Three Debian hosts (Trixie on x86_64 and aarch64, plus
+  Raspbian) all report null; four Ubuntu hosts (22.04, 24.04 ×2, 26.04) all
+  report false. Nothing is wrong on the Debian side — it is the honest answer to
+  a question that host cannot answer. `apt install update-notifier-common` is
+  what turns it into a real one.
 - On openSUSE it is **not a zypper subcommand at all**. The
   `zypper-needs-restarting` package ships exactly two files:
 
