@@ -104,6 +104,15 @@ container's total but only its own used. rhenium showed `/System/Volumes/Data` a
 83% while the container was really 90% full, because `/`, Preboot, VM and Update
 draw on the same pool. One entry per container now, `total - available`.
 
+A container is then reported only if you could actually free space on it — it
+must have at least one read-write volume *and* at least one non-`nobrowse` one.
+Xcode's CoreSimulator runtimes are read-only APFS images, permanently ~97% full
+because that is what a packed image is; Apple's xarts/iSCPreboot/Hardware
+container is read-write but entirely `nobrowse`. Both tests are needed: `Data` is
+`nobrowse` and `/` is read-only, so each is rescued by the other volume in its
+container. If `mount` returns nothing, every container is reported rather than
+none.
+
 On ZFS hosts one entry is reported **per pool**, not per dataset — datasets
 share their pool's free space, so listing them all reports the same pool many
 times over (cerium has 40). The figure is `used + available`, the usable view,

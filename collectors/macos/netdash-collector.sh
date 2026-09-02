@@ -38,32 +38,57 @@ MEM_USED=$(vm_stat | awk '
 # APFS volumes in a container share its free space: every volume reports the
 # container's total but only its own Used, so no single volume's used/total is
 # the disk's fullness. On rhenium the boot container showed Data at 83% while
-# the container was really 90% full, because /, Preboot, VM and Update draw on
-# the same free space.
+# the container was really 90% full. So group by container (disk3s1s1 and
+# disk3s5 are both disk3) and report used = total - available -- the same
+# treatment ZFS pools get on FreeBSD and TrueNAS.
 #
-# So: group by container (/dev/disk1s5s1 and /dev/disk1s1 are both disk1) and
-# report used = total - available, which is what "how full is this disk" means
-# when siblings share the pool. Same treatment ZFS pools get on FreeBSD and
-# TrueNAS. Single-volume containers are unaffected -- total-available and used
-# agree there to within a rounding error.
+# Containers are then dropped unless they hold storage you could actually free:
+#   * every volume read-only  -> a mounted image. Xcode's CoreSimulator runtimes
+#     are read-only APFS images, permanently ~97% full because that is what a
+#     packed image is. They made argon read CRITICAL forever.
+#   * every volume nobrowse   -> Apple's own "not user-facing" marker. Catches
+#     the xarts/iSCPreboot/Hardware container, which is read-WRITE and so not
+#     caught by the rule above.
+# Neither test alone is sufficient: Data is nobrowse, and "/" is read-only, so
+# each is rescued by the other volume in its container. Enumerating Apple's
+# synthetic volume names was the previous approach and it broke the moment
+# argon (Apple Silicon, macOS 26) showed a set rhenium (Intel) does not have.
 #
-# -l keeps this to local filesystems: an SMB or NFS mount of the NAS is storage
-# the NAS already reports. (The /dev/ test would drop them anyway.)
-DISKS=$(df -k -l 2>/dev/null | awk '
-  NR>1 && $1 ~ /^\/dev\// && $2+0 > 0 {
-    dev=$1; sub(/^\/dev\//,"",dev); sub(/s[0-9]+.*$/,"",dev)
-    mp=$9; for(i=10;i<=NF;i++) mp=mp" "$i
-    if ($2+0 > tot[dev]) tot[dev]=$2+0
-    if (!(dev in av) || $4+0 < av[dev]) av[dev]=$4+0
-    # Label the container by its most meaningful mount: "/" wins outright,
-    # otherwise anything beats a /System/Volumes helper.
-    if (mp == "/") lbl[dev]="/"
-    else if (!(dev in lbl)) lbl[dev]=mp
-    else if (lbl[dev] != "/" && lbl[dev] ~ /^\/System\/Volumes\//) lbl[dev]=mp
-    seen[dev]=1
+# -l keeps this to local filesystems: the NAS is storage the NAS reports.
+DISKS=$( { mount 2>/dev/null; printf '@@DF@@\n'; df -k -l 2>/dev/null; } | awk '
+  /^@@DF@@$/ { indf=1; next }
+
+  # --- mount(8): collect per-container flags ---
+  !indf {
+    if ($1 !~ /^\/dev\//) next
+    d=$1; sub(/^\/dev\//,"",d); sub(/s[0-9]+.*$/,"",d)
+    seenmount=1
+    if (match($0, /\([^)]*\)$/)) {
+      f=substr($0, RSTART+1, RLENGTH-2)
+      if (f !~ /read-only/) rw[d]=1      # container has a writable volume
+      if (f !~ /nobrowse/)  br[d]=1      # container has a user-visible volume
+    } else { rw[d]=1; br[d]=1 }
+    next
   }
+
+  # --- df -k -l ---
+  $1 == "Filesystem" { next }
+  $1 ~ /^\/dev\// && $2+0 > 0 {
+    d=$1; sub(/^\/dev\//,"",d); sub(/s[0-9]+.*$/,"",d)
+    mp=$9; for(i=10;i<=NF;i++) mp=mp" "$i
+    if ($2+0 > tot[d]) tot[d]=$2+0
+    if (!(d in av) || $4+0 < av[d]) av[d]=$4+0
+    if (mp == "/") lbl[d]="/"
+    else if (!(d in lbl)) lbl[d]=mp
+    else if (lbl[d] != "/" && lbl[d] ~ /^\/System\/Volumes\//) lbl[d]=mp
+    seen[d]=1
+  }
+
   END {
     for (d in seen) {
+      # If mount(8) gave us nothing, report everything rather than nothing --
+      # filtering on absent data would silently drop every disk.
+      if (seenmount && (!(d in rw) || !(d in br))) continue
       u = tot[d] - av[d]; if (u < 0) u = 0
       mp = lbl[d]
       gsub(/\\/,"\\\\",mp); gsub(/"/,"\\\"",mp)
