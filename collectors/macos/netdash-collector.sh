@@ -44,7 +44,10 @@ DISKS=$(df -k 2>/dev/null | awk '
     printf "%s{\"mount\":\"%s\",\"used_bytes\":%.0f,\"total_bytes\":%.0f}", (n++?",":""), mp, $3*1024, $2*1024
   }')
 
-BOOT=$(sysctl -n kern.boottime | sed -n 's/.*sec *= *\([0-9]*\).*/\1/p')
+# kern.boottime reads '{ sec = N, usec = M } ...'. Anchor on the leading brace:
+# a greedy .* before 'sec' happily runs past the 'u' in 'usec' and captures the
+# microseconds instead, which reads as ~20000 days of uptime.
+BOOT=$(sysctl -n kern.boottime | sed -n 's/^{ *sec *= *\([0-9][0-9]*\).*/\1/p')
 UPTIME=$(( $(date +%s) - ${BOOT:-0} ))
 OS="$(sw_vers -productName 2>/dev/null || echo macOS) $(sw_vers -productVersion 2>/dev/null || echo '')"
 ARCH=$(uname -m)

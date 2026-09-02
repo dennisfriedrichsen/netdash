@@ -31,18 +31,38 @@ PS=$(sysctl -n vm.stats.vm.v_page_size)
 FREE=$(sysctl -n vm.stats.vm.v_free_count)
 INACT=$(sysctl -n vm.stats.vm.v_inactive_count)
 LAUND=$(sysctl -n vm.stats.vm.v_laundry_count 2>/dev/null || echo 0)
-MEM_USED=$(awk -v t="$MEM_TOTAL" -v ps="$PS" -v f="$FREE" -v i="$INACT" -v l="$LAUND" 'BEGIN{
-  u = t - (f+i+l)*ps; if (u<0) u=0; printf "%.0f", u }')
+# The ZFS ARC is counted as wired but is reclaimable cache, so subtract it --
+# same reasoning as the Linux collector's use of MemAvailable and the TrueNAS
+# poller. Without this a ZFS box drifts toward 100% as the ARC grows.
+ARC=$(sysctl -n kstat.zfs.misc.arcstats.size 2>/dev/null || echo 0)
+MEM_USED=$(awk -v t="$MEM_TOTAL" -v ps="$PS" -v f="$FREE" -v i="$INACT" -v l="$LAUND" -v a="$ARC" 'BEGIN{
+  u = t - (f+i+l)*ps - a; if (u<0) u=0; printf "%.0f", u }')
 
-# ---- Disk: real filesystems (UFS/ZFS); skip pseudo-filesystems ----
-DISKS=$(df -k -t noprocfs,nodevfs,nofdescfs,notmpfs,nolinprocfs,nolinsysfs 2>/dev/null | awk '
-  NR>1 && $2+0 > 0 {
-    mp=$6; for(i=7;i<=NF;i++) mp=mp" "$i
+# ---- Disk ----
+# One entry per ZFS pool, not per dataset: datasets share their pool's free
+# space, so listing all of them reports the same pool dozens of times (cerium
+# has 40). used+available is the *usable* view, matching how TrueNAS pools are
+# reported, rather than zpool's raw size which counts raidz parity.
+ZPOOLS=""
+if command -v zfs >/dev/null 2>&1; then
+  ZPOOLS=$(zfs list -Hp -d 0 -o name,used,avail 2>/dev/null | awk '
+    { total=$2+$3
+      if (total > 0) printf "%s{\"mount\":\"%s\",\"used_bytes\":%.0f,\"total_bytes\":%.0f}", (n++?",":""), $1, $2, total }')
+fi
+
+# Real non-ZFS filesystems (UFS, the EFI partition, ...). df -T puts the type in
+# $2; filtering on it is reliable, whereas `df -t no<type>` is not on FreeBSD.
+OTHER=$(df -k -T 2>/dev/null | awk '
+  NR>1 && $3+0 > 0 && $2 !~ /^(zfs|devfs|procfs|fdescfs|tmpfs|linprocfs|linsysfs|nullfs|cd9660|fusefs)$/ {
+    mp=$7; for(i=8;i<=NF;i++) mp=mp" "$i
     gsub(/\\/,"\\\\",mp); gsub(/"/,"\\\"",mp)
-    printf "%s{\"mount\":\"%s\",\"used_bytes\":%.0f,\"total_bytes\":%.0f}", (n++?",":""), mp, $3*1024, $2*1024
+    printf "%s{\"mount\":\"%s\",\"used_bytes\":%.0f,\"total_bytes\":%.0f}", (n++?",":""), mp, $4*1024, $3*1024
   }')
 
-BOOT=$(sysctl -n kern.boottime | sed -n 's/.*sec *= *\([0-9]*\).*/\1/p')
+if [ -n "$ZPOOLS" ] && [ -n "$OTHER" ]; then DISKS="$ZPOOLS,$OTHER"
+else DISKS="$ZPOOLS$OTHER"; fi
+
+BOOT=$(sysctl -n kern.boottime | sed -n 's/^{ *sec *= *\([0-9][0-9]*\).*/\1/p')
 UPTIME=$(( $(date +%s) - ${BOOT:-0} ))
 OS="$(uname -sr)"
 ARCH=$(uname -m)

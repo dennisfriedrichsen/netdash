@@ -15,7 +15,7 @@ Network throughput is deliberately not collected — that lives in the Unifi con
 server/       central service + dashboard UI (runs on 10.0.0.3)
 collectors/   per-OS collector scripts
   linux/      /proc/stat, /proc/meminfo, df
-  freebsd/    sysctl, df
+  freebsd/    sysctl, zfs list, df
   macos/      top, vm_stat, sysctl, df
   install.sh  installer for Linux + FreeBSD hosts
 homebrew/     Homebrew formula for the macOS hosts
@@ -93,6 +93,16 @@ keeps the existing config. `sudo ./uninstall.sh` removes it.
 
 Config lives at `/etc/netdash/collector.conf` (Linux) or
 `/usr/local/etc/netdash/collector.conf` (FreeBSD), mode 600.
+
+### What counts as a disk
+
+On ZFS hosts one entry is reported **per pool**, not per dataset — datasets
+share their pool's free space, so listing them all reports the same pool many
+times over (cerium has 40). The figure is `used + available`, the usable view,
+which is also how the TrueNAS pools are reported.
+
+Memory excludes reclaimable cache on every platform, so the hosts read alike:
+`MemAvailable` on Linux, and the ZFS ARC subtracted on FreeBSD and TrueNAS.
 
 ### Failure behaviour
 
