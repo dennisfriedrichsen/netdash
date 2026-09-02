@@ -86,6 +86,16 @@ var OS_ICONS = {
         ['circle', { cx: 12, cy: 13.6, r: 6.2, fill: 'none', 'stroke-width': 1.8 }],
         ['circle', { cx: 9.7, cy: 12.6, r: 1.1 }],
         ['circle', { cx: 14.3, cy: 12.6, r: 1.1 }]],
+  /* Puffy, drawn as a plain spiky fish: at 19px a literal pufferfish turns to
+     mush, so it is body + four spines + tail + eye and nothing else. */
+  openbsd: [['circle', { cx: 10.8, cy: 12.6, r: 5.2, fill: 'none', 'stroke-width': 1.7 }],
+            ['path', { d: 'M10.8 7.4V5.4M14.5 8.9l1.8-1.8M7.1 8.9L5.3 7.1M10.8 17.8v2', fill: 'none', 'stroke-width': 1.5 }],
+            ['path', { d: 'M16.4 12.6l4.1-2.7v5.4z' }],
+            ['circle', { cx: 8.7, cy: 11.5, r: 1.05 }]],
+  /* NetBSD's flag. The swallowtail notch is what separates it from a plain
+     rectangle at icon size. */
+  netbsd: [['path', { d: 'M6.2 3.4v17.2', fill: 'none', 'stroke-width': 1.8 }],
+           ['path', { d: 'M7.3 4.7h12.4l-3.1 3.5 3.1 3.5H7.3z' }]],
   nas: [['rect', { x: 3.6, y: 4.8, width: 16.8, height: 4.4, rx: 1.3, fill: 'none', 'stroke-width': 1.6 }],
         ['rect', { x: 3.6, y: 14.8, width: 16.8, height: 4.4, rx: 1.3, fill: 'none', 'stroke-width': 1.6 }],
         ['circle', { cx: 7, cy: 7, r: 1 }],
@@ -108,8 +118,15 @@ function osFamily(os) {
   if (s.indexOf('raspbian') > -1 || s.indexOf('raspberry') > -1) return 'raspberry';
   if (s.indexOf('ubuntu') > -1) return 'ubuntu';
   if (s.indexOf('debian') > -1) return 'debian';
+  /* Both must precede the generic 'bsd' test below, which would otherwise claim
+     them and render every BSD as the FreeBSD daemon. */
+  if (s.indexOf('openbsd') > -1) return 'openbsd';
+  if (s.indexOf('netbsd') > -1) return 'netbsd';
   if (s.indexOf('bsd') > -1) return 'bsd';
-  if (s.indexOf('linux') > -1 || s.indexOf('alpine') > -1) return 'linux';
+  /* 'suse' is here because openSUSE is the one distro whose PRETTY_NAME carries
+     no 'Linux' -- "openSUSE Tumbleweed", "openSUSE Leap 15.6" -- so it fell
+     through to the question mark. */
+  if (s.indexOf('linux') > -1 || s.indexOf('alpine') > -1 || s.indexOf('suse') > -1) return 'linux';
   return 'unknown';
 }
 
