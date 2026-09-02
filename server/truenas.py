@@ -25,6 +25,7 @@ import base64
 import json
 import re
 import ssl
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -153,7 +154,7 @@ def _pools(cfg):
 # its own slow interval rather than at the metric rate. The last good answer is
 # kept across metric polls; when the call fails it is returned unchanged and
 # ages out into "unknown" on the dashboard rather than flipping to a wrong value.
-_PATCH_CACHE = {"ts": 0.0, "value": None}
+_PATCH_CACHE = {"ts": 0.0, "value": None, "error": None}
 
 
 def _patches(cfg):
@@ -168,13 +169,28 @@ def _patches(cfg):
     """
     now = time.time()
     interval = int(cfg.get("patch_poll_seconds") or 3600)
-    if _PATCH_CACHE["value"] and now - _PATCH_CACHE["ts"] < interval:
+    # Gate on the last ATTEMPT, not the last success. Gating on a cached value
+    # meant a box that could never answer -- CORE 13 cannot reach
+    # update-master.ixsystems.com -- was retried on every 60s metric poll
+    # instead of hourly, and made the NAS attempt an internet round trip each
+    # time. Recording the attempt first is what makes the interval real.
+    if now - _PATCH_CACHE["ts"] < interval:
         return _PATCH_CACHE["value"]
+    _PATCH_CACHE["ts"] = now
 
     try:
         r = _request(cfg, "/update/check_available", "POST", {}) or {}
-    except TrueNASError:
+    except TrueNASError as e:
+        # Said once, and again only when the error changes. This runs forever on
+        # a schedule into a journal nothing rotates, so repeating an unchanging
+        # failure hourly would bury everything else -- but staying silent leaves
+        # a permanently "unknown" badge with no explanation anywhere.
+        msg = str(e)[:200]
+        if msg != _PATCH_CACHE["error"]:
+            sys.stderr.write("truenas update check unavailable: %s\n" % msg)
+            _PATCH_CACHE["error"] = msg
         return _PATCH_CACHE["value"]
+    _PATCH_CACHE["error"] = None
 
     status = str(r.get("status") or "").upper()
     if status not in ("AVAILABLE", "UNAVAILABLE"):

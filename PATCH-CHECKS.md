@@ -452,7 +452,7 @@ not reported, as are `--include-config-data` items (XProtect and friends),
 which macOS installs silently and never shows in the Software Update pane —
 reporting something the user cannot act on is noise.
 
-### TrueNAS CORE
+### TrueNAS CORE — **verified**, and it cannot answer
 
 Polled server-side like every other TrueNAS metric, so there is no collector
 involved. `POST /api/v2.0/update/check_available` returns:
@@ -465,6 +465,28 @@ involved. `POST /api/v2.0/update/check_available` returns:
 security classification, and it contacts the update server, so it is polled on
 its own slow interval (`patch_poll_seconds`, default hourly) rather than at the
 metric poll rate.
+
+On the live CORE 13.0-U6.8 box the call returns **HTTP 500**:
+
+```
+Unable to connect to url https://update-master.ixsystems.com/TrueNAS/trains.txt
+UpdateNetworkConnectionException
+```
+
+`check_available` asks the NAS to fetch iXsystems' train list, so it needs the
+NAS to reach the internet and that update server to still be answering — and
+CORE is end-of-life. The badge therefore reads *unknown*, which is the correct
+outcome: netdash does not know whether the NAS is current, and says so rather
+than guessing.
+
+Two things that failure exposed in the poller, both fixed:
+
+- The interval gated on the last *success*, so a box that can never answer was
+  retried on every 60-second metric poll instead of hourly — and made the NAS
+  attempt an internet round trip each time. It now gates on the last **attempt**.
+- The failure was swallowed entirely: no log line anywhere, just a permanently
+  unknown badge. It is now reported once, and again only when the error text
+  changes, since this runs forever into a journal nothing rotates.
 
 Worth knowing for later: `update.check_available` was **removed in TrueNAS 25.x**
 in favour of `update.status`. CORE 13 is unaffected, but this call is the reason
