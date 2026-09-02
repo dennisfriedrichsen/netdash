@@ -312,19 +312,24 @@ if want patches-macos; then
 import re,subprocess,sys,json
 root=sys.argv[1]
 src=open(f"{root}/collectors/macos/netdash-patchcheck.sh").read()
+# Pull the live patterns out of the script so the test cannot drift from it.
 clear=re.search(r"grep -q '([^']*No new software[^']*)'", src).group(1)
-entry=re.search(r"grep -c '(\^\[\[:space:\]\]\*[^']*)'", src).group(1)
-rec=re.search(r"grep -c '(Recommended:[^']*)'", src).group(1)
+entry=re.search(r"grep -c '(\^\[\*-\][^']*)'", src).group(1)
+rec=re.search(r"grep -Ec '(Recommended:[^']*)'", src).group(1)
 
 def probe(text):
-    def g(flag,pat):
-        r=subprocess.run(["grep",flag,pat],input=text,capture_output=True,text=True)
-        return r.returncode==0 if flag=="-q" else int(r.stdout.strip() or 0)
-    return {"allclear": g("-q",clear), "entries": g("-c",entry), "recommended": g("-c",rec)}
+    def g(flags,pat):
+        r=subprocess.run(["grep"]+flags+[pat],input=text,capture_output=True,text=True)
+        return r.returncode==0 if "-q" in flags else int(r.stdout.strip() or 0)
+    return {"allclear":    g(["-q"],  clear),
+            "entries":     g(["-c"],  entry),
+            "recommended": g(["-Ec"], rec)}
 
 none=open(f"{root}/tests/fixtures/macos/softwareupdate-none.txt").read()
-print(json.dumps({"none": probe(none), "empty": probe(""),
-                  "counters_referenced": bool(re.search(r"^\s*(REC|ALL)=\$\(sud ", src, re.M))}))
+banner=open(f"{root}/tests/fixtures/macos/softwareupdate-stdout-only.txt").read()
+print(json.dumps({"none": probe(none), "empty": probe(""), "banner": probe(banner),
+                  "counters_referenced": bool(re.search(r"^\s*(REC|ALL)=\$\(sud ", src, re.M)),
+                  "captures_stderr": "softwareupdate --list --no-scan 2>&1" in src}))
 PY
 )
   check "a Mac with nothing pending reports the all-clear string" \
@@ -338,6 +343,13 @@ PY
   # said was fully up to date, even after a forced fresh scan. Nothing resets it.
   check "the unreliable plist counters are not used for the counts" \
         "assert not d['counters_referenced'], d" "$J"
+  # softwareupdate puts its banner on stdout and "No new software available."
+  # on stderr, so 2>/dev/null leaves a lone banner -- no all-clear string and no
+  # entries, which is the unparseable case rather than a clean bill of health.
+  check "the banner alone is not an all-clear" \
+        "assert not d['banner']['allclear'] and d['banner']['entries']==0, d" "$J"
+  check "stderr is captured, or every Mac reads as unparseable" \
+        "assert d['captures_stderr'], d" "$J"
 fi
 
 if want patches-stale; then

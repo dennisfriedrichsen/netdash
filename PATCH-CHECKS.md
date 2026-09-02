@@ -335,9 +335,30 @@ A neglected Mac is therefore caught twice over: the forced rescan tries to fix
 it, and if that fails `checked_at` stops advancing and the badge ages into
 *unknown* rather than reporting a confident zero.
 
-`Recommended: YES` on an entry is the closest thing to a security
-classification; Rapid Security Responses appear in the same list. Entries are
-counted from lines beginning `* Label:`.
+**Capture both streams.** `softwareupdate` splits its output: only the
+`Software Update Tool` banner goes to stdout, while `No new software
+available.` — and the update list — arrive on **stderr**. Redirecting stderr to
+/dev/null leaves a lone banner, which is neither an all-clear nor a parseable
+entry, so every Mac in the fleet read as *unknown*. Found because the check
+refused to report a zero it could not justify, which is the guard below working
+exactly as intended.
+
+**The prefix is the classification.** From softwareupdate(8): recommended
+updates are *"prefixed with a `*` character"*, non-recommended ones *"with a
+`-` character"*. An earlier version counted only `*`-prefixed lines, which
+hides every non-recommended update and would have pinned `other` at 0 forever.
+Entries are counted with `^[*-][[:space:]]`; the `Title:`/`Version:`
+continuation lines are tab-indented and cannot be mistaken for entries.
+
+`Recommended: YES` is the security marker on modern releases; older ones tag
+the title line `[recommended]` instead, and if neither marker is present the
+count falls back to the `*` prefix. Rapid Security Responses appear in the same
+list.
+
+**The populated-output parse is still unverified.** Both Macs in the fleet are
+fully patched, so no capture of a real pending update exists; only the
+all-clear path has been exercised on hardware. The shape above is from
+softwareupdate(8) rather than from a host.
 
 Output that is neither the all-clear string nor a single parseable entry is
 reported as *unknown*, not zero: both cases count zero entries, so the count

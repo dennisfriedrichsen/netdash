@@ -68,7 +68,13 @@ read_su
 #
 # --no-scan reads the cache the system already refreshed, so this is cheap;
 # the forced scan below is the only thing here that touches the network.
-su_list() { softwareupdate --list --no-scan 2>/dev/null || true; }
+#
+# 2>&1, not 2>/dev/null: softwareupdate splits its output across both streams.
+# Only the "Software Update Tool" banner goes to stdout -- "No new software
+# available." arrives on stderr, so discarding it left a lone banner, which is
+# precisely the unparseable case. Verified on macOS 26: the check correctly
+# refused to report a zero it could not justify, which is how this was found.
+su_list() { softwareupdate --list --no-scan 2>&1 || true; }
 
 # Whether to force a scan. `softwareupdate -l` costs tens of seconds and a
 # network round trip, so it runs only when there is no usable cached answer.
@@ -106,10 +112,25 @@ if printf '%s' "$LIST" | grep -q 'No new software available'; then
   SEC=0
   OTH=0
 else
-  # Each entry begins with "* Label: ...", and carries "Recommended: YES" when
-  # Apple considers it important.
-  TOT=$(printf '%s\n' "$LIST" | grep -c '^[[:space:]]*\*' || true)
-  SEC=$(printf '%s\n' "$LIST" | grep -c 'Recommended:[[:space:]]*YES' || true)
+  # One line per update, and the PREFIX is the classification --
+  # softwareupdate(8): recommended updates are "prefixed with a * character",
+  # non-recommended ones "with a - character". Matching only '*' hides every
+  # non-recommended update, which would have made `other` permanently 0.
+  # Continuation lines (Title:, Version:, ...) are tab-indented, so anchoring
+  # on the prefix cannot pick them up.
+  TOT=$(printf '%s\n' "$LIST" | grep -c '^[*-][[:space:]]' || true)
+
+  # Modern releases spell it "Recommended: YES"; older ones tag the title line
+  # "[recommended]" instead.
+  SEC=$(printf '%s\n' "$LIST" | grep -Ec 'Recommended:[[:space:]]*YES|\[recommended\]' || true)
+  # Should a release carry neither marker, fall back to the prefix, which is
+  # the documented classification. Safe when there are genuinely no recommended
+  # updates: nothing is prefixed '*' and the fallback also yields zero.
+  if [ "$SEC" -eq 0 ]; then
+    SEC=$(printf '%s\n' "$LIST" | grep -c '^\*[[:space:]]' || true)
+  fi
+  [ "$SEC" -le "$TOT" ] || SEC=$TOT
+
   # Neither the all-clear string nor a single parseable entry: the output is
   # something this does not understand. Report nothing rather than zero --
   # zero here would paint an unexamined Mac green.
