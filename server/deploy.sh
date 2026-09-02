@@ -23,6 +23,12 @@ chown -R netdash:netdash /var/lib/netdash
 
 install -m 644 "$SRC/netdash.service" /etc/systemd/system/netdash.service
 systemctl daemon-reload
-systemctl enable --now netdash.service
+systemctl enable netdash.service
+# restart, not `enable --now`: --now only *starts* the unit, which is a no-op
+# when it is already running, so re-running this script left the old code in
+# memory. Static files are read per request and so landed anyway -- a .py change
+# silently did not. restart also starts the unit if it is stopped, which covers
+# the first install too.
+systemctl restart netdash.service
 sleep 1
 systemctl --no-pager --lines=5 status netdash.service || true

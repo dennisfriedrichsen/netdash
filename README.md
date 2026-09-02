@@ -30,7 +30,8 @@ sudo server/deploy.sh          # install/refresh + enable systemd unit
 
 Copies the code to `/opt/netdash`, config to `/etc/netdash/server.json`, database
 to `/var/lib/netdash/netdash.db`, and runs it as the `netdash` system user.
-Re-running `deploy.sh` is the upgrade path; it never overwrites an existing config.
+Re-running `deploy.sh` is the upgrade path: it copies the new code and restarts
+the service, and it never overwrites an existing config.
 
 See [INSTALL.md](INSTALL.md) for server setup and platform-specific collector
 instructions.
