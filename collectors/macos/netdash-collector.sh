@@ -34,16 +34,41 @@ MEM_USED=$(vm_stat | awk '
   /^Pages occupied by compressor/  { gsub(/\./,"",$5); comp=$5 }
   END { if (!ps) ps=4096; printf "%.0f", (active+wired+comp)*ps }')
 
-# ---- Disk: real volumes; skip APFS synthetic/system helper mounts ----
+# ---- Disk: one entry per APFS container ----
+# APFS volumes in a container share its free space: every volume reports the
+# container's total but only its own Used, so no single volume's used/total is
+# the disk's fullness. On rhenium the boot container showed Data at 83% while
+# the container was really 90% full, because /, Preboot, VM and Update draw on
+# the same free space.
+#
+# So: group by container (/dev/disk1s5s1 and /dev/disk1s1 are both disk1) and
+# report used = total - available, which is what "how full is this disk" means
+# when siblings share the pool. Same treatment ZFS pools get on FreeBSD and
+# TrueNAS. Single-volume containers are unaffected -- total-available and used
+# agree there to within a rounding error.
+#
 # -l keeps this to local filesystems: an SMB or NFS mount of the NAS is storage
-# the NAS already reports. (The /dev/ test below would drop them anyway.)
+# the NAS already reports. (The /dev/ test would drop them anyway.)
 DISKS=$(df -k -l 2>/dev/null | awk '
   NR>1 && $1 ~ /^\/dev\// && $2+0 > 0 {
+    dev=$1; sub(/^\/dev\//,"",dev); sub(/s[0-9]+.*$/,"",dev)
     mp=$9; for(i=10;i<=NF;i++) mp=mp" "$i
-    if (mp ~ /^\/System\/Volumes\/(VM|Preboot|Update|xarts|iSCPreboot|Hardware|Recovery)/) next
-    if (mp ~ /^\/private\/var\/vm/) next
-    gsub(/\\/,"\\\\",mp); gsub(/"/,"\\\"",mp)
-    printf "%s{\"mount\":\"%s\",\"used_bytes\":%.0f,\"total_bytes\":%.0f}", (n++?",":""), mp, $3*1024, $2*1024
+    if ($2+0 > tot[dev]) tot[dev]=$2+0
+    if (!(dev in av) || $4+0 < av[dev]) av[dev]=$4+0
+    # Label the container by its most meaningful mount: "/" wins outright,
+    # otherwise anything beats a /System/Volumes helper.
+    if (mp == "/") lbl[dev]="/"
+    else if (!(dev in lbl)) lbl[dev]=mp
+    else if (lbl[dev] != "/" && lbl[dev] ~ /^\/System\/Volumes\//) lbl[dev]=mp
+    seen[dev]=1
+  }
+  END {
+    for (d in seen) {
+      u = tot[d] - av[d]; if (u < 0) u = 0
+      mp = lbl[d]
+      gsub(/\\/,"\\\\",mp); gsub(/"/,"\\\"",mp)
+      printf "%s{\"mount\":\"%s\",\"used_bytes\":%.0f,\"total_bytes\":%.0f}", (n++?",":""), mp, u*1024, tot[d]*1024
+    }
   }')
 
 # kern.boottime reads '{ sec = N, usec = M } ...'. Anchor on the leading brace:

@@ -96,6 +96,14 @@ Config lives at `/etc/netdash/collector.conf` (Linux) or
 
 ### What counts as a disk
 
+Filesystems that share free space are reported per *pool*, not per filesystem —
+otherwise no single number is the disk's fullness.
+
+On **macOS**, APFS volumes in a container share its free space: each reports the
+container's total but only its own used. rhenium showed `/System/Volumes/Data` at
+83% while the container was really 90% full, because `/`, Preboot, VM and Update
+draw on the same pool. One entry per container now, `total - available`.
+
 On ZFS hosts one entry is reported **per pool**, not per dataset — datasets
 share their pool's free space, so listing them all reports the same pool many
 times over (cerium has 40). The figure is `used + available`, the usable view,
