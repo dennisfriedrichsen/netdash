@@ -78,7 +78,7 @@ Payload shape:
 ## Collectors — Linux and FreeBSD
 
 ```sh
-git clone <repo> netdash && cd netdash/collectors
+git clone https://github.com/dennisfriedrichsen/netdash.git netdash && cd netdash/collectors
 sudo ./install.sh --url http://10.0.0.3:8080/api/ingest --token <TOKEN>
 ```
 
@@ -99,7 +99,7 @@ Config lives at `/etc/netdash/collector.conf` (Linux) or
 Via Homebrew (see `homebrew/netdash-collector.rb`):
 
 ```sh
-brew install <tap>/netdash-collector
+brew install dennisfriedrichsen/tap/netdash-collector
 $EDITOR $(brew --prefix)/etc/netdash/collector.conf   # set URL + token
 brew services start netdash-collector                 # launchd, every 60s
 ```

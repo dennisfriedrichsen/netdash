@@ -1,18 +1,17 @@
 # Homebrew formula for the netdash macOS collector.
 #
-# PLACEHOLDERS -- fill these in before publishing to the tap:
-#   * homepage / url    -> your GitHub repo and release tarball
-#   * sha256            -> shasum -a 256 of that tarball
-#   * the tap itself    -> e.g. homebrew-tap repo, installed as <user>/tap/netdash-collector
+# Tap:  https://github.com/dennisfriedrichsen/homebrew-tap
+# Ships as: brew install dennisfriedrichsen/tap/netdash-collector
 #
-# Publish flow once the repo exists:
-#   git tag v0.1.0 && git push --tags
-#   curl -sL https://github.com/<user>/<repo>/archive/refs/tags/v0.1.0.tar.gz | shasum -a 256
-#   ...paste that sha256 below, commit this file into the tap repo as Formula/netdash-collector.rb
+# Publish flow (the sha256 below is the ONE value still to fill in -- it cannot
+# exist until the v0.1.0 tag is pushed, since it hashes that exact tarball):
+#   git tag v0.1.0 && git push origin v0.1.0
+#   curl -sL https://github.com/dennisfriedrichsen/netdash/archive/refs/tags/v0.1.0.tar.gz | shasum -a 256
+#   ...paste it below, then commit this file to the tap repo as Formula/netdash-collector.rb
 class NetdashCollector < Formula
   desc "Pushes CPU, memory and disk metrics to a netdash server"
-  homepage "https://github.com/USER/REPO"
-  url "https://github.com/USER/REPO/archive/refs/tags/v0.1.0.tar.gz"
+  homepage "https://github.com/dennisfriedrichsen/netdash"
+  url "https://github.com/dennisfriedrichsen/netdash/archive/refs/tags/v0.1.0.tar.gz"
   sha256 "REPLACE_WITH_TARBALL_SHA256"
   license "MIT"
 

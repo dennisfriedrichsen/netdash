@@ -4,14 +4,23 @@ Auth: API keys authenticate as `Authorization: Bearer <key>` (the box's own Open
 document only advertises HTTP basic, but Bearer is what GUI-created API keys use on
 CORE 13.x). We send Bearer and fall back to basic if the box rejects it.
 
-Endpoints used (all confirmed present in 10.0.0.2's own /api/v2.0/ OpenAPI document):
+Endpoints (verified live against 10.0.0.2, TrueNAS CORE 13.0-U6.8):
   GET  /system/info        -> physmem, uptime_seconds, version
-  POST /reporting/get_data -> cpu + memory time series
-  GET  /pool/dataset       -> per-pool used/available (root datasets only)
+  POST /reporting/get_data -> cpu / memory / arcsize series
+  GET  /pool/dataset       -> per-pool used+available (root datasets only)
+
+Quirks this module works around, all confirmed on the live box:
+  * `reporting_query.unit` accepts only HOUR/DAY/WEEK/MONTH/YEAR -- not MINUTE.
+  * A data row has NO leading timestamp: row[i] pairs with legend[i].
+  * The CPU graph is a *cumulative* percentage stack (idle is the last series and
+    is always exactly 100), so busy% is the cumulative value just before idle.
+  * Memory legend entries are decorated: `memory-active_value`, not `active`.
+  * The final row of every graph is all zeros (the not-yet-filled RRD bucket).
 """
 
 import base64
 import json
+import re
 import ssl
 import time
 import urllib.error
@@ -23,11 +32,10 @@ class TrueNASError(Exception):
 
 
 def _ctx(verify_tls):
-    if verify_tls:
-        return ssl.create_default_context()
     c = ssl.create_default_context()
-    c.check_hostname = False
-    c.verify_mode = ssl.CERT_NONE
+    if not verify_tls:
+        c.check_hostname = False
+        c.verify_mode = ssl.CERT_NONE
     return c
 
 
@@ -40,8 +48,8 @@ def _request(cfg, path, method="GET", body=None, timeout=15, auth="bearer"):
     if auth == "bearer":
         req.add_header("Authorization", "Bearer " + key)
     else:
-        raw = base64.b64encode(key.encode()).decode()
-        req.add_header("Authorization", "Basic " + raw)
+        req.add_header("Authorization",
+                       "Basic " + base64.b64encode(key.encode()).decode())
     try:
         with urllib.request.urlopen(req, timeout=timeout,
                                     context=_ctx(cfg.get("verify_tls", False))) as r:
@@ -50,76 +58,81 @@ def _request(cfg, path, method="GET", body=None, timeout=15, auth="bearer"):
         if e.code == 401 and auth == "bearer":
             return _request(cfg, path, method, body, timeout, auth="basic")
         raise TrueNASError("%s %s -> HTTP %s: %s"
-                           % (method, path, e.code, e.read()[:200].decode("utf-8", "replace")))
+                           % (method, path, e.code,
+                              e.read()[:200].decode("utf-8", "replace")))
     except Exception as e:
         raise TrueNASError("%s %s -> %s" % (method, path, e))
 
 
-def _latest_row(graph_result):
-    """reporting/get_data returns {name, legend, start, end, step, data:[[ts,v,...]]}.
-    Return (legend, last row with any non-null value)."""
-    legend = graph_result.get("legend") or []
-    for row in reversed(graph_result.get("data") or []):
-        if any(v is not None for v in row[1:]):
-            return legend, row
-    return legend, None
+def _graphs(cfg, names):
+    return _request(cfg, "/reporting/get_data", "POST", {
+        "graphs": [{"name": n} for n in names],
+        "reporting_query": {"unit": "HOUR", "page": 1},
+    }) or []
 
 
-def _cpu_pct(cfg):
-    """CPU busy % = 100 - idle, from the 'cpu' reporting graph."""
-    res = _request(cfg, "/reporting/get_data", "POST", {
-        "graphs": [{"name": "cpu"}],
-        "reporting_query": {"unit": "MINUTE", "page": 1},
-    })
-    if not res:
-        return None
-    legend, row = _latest_row(res[0])
-    if not row:
-        return None
-    # legend[0] corresponds to row[1]; find the idle series.
-    for i, name in enumerate(legend):
-        if str(name).lower().strip() == "idle":
-            idle = row[i + 1]
-            if idle is not None:
-                return max(0.0, min(100.0, 100.0 - float(idle)))
-    # No idle series -> sum the busy series instead.
-    busy = [v for v in row[1:] if v is not None]
-    return max(0.0, min(100.0, sum(float(v) for v in busy))) if busy else None
+def _norm(label):
+    """'memory-active_value' -> 'active';  'idle' -> 'idle'."""
+    s = re.sub(r"_value$", "", str(label))
+    return s.split("-", 1)[1] if "-" in s else s
 
 
-def _memory(cfg, physmem):
-    """Used bytes from the 'memory' graph; free/cache/inactive are not 'used'."""
-    try:
-        res = _request(cfg, "/reporting/get_data", "POST", {
-            "graphs": [{"name": "memory"}],
-            "reporting_query": {"unit": "MINUTE", "page": 1},
-        })
-    except TrueNASError:
+def _last_row(graph):
+    """Newest row carrying real data. The trailing RRD bucket is all zeros."""
+    for row in reversed(graph.get("data") or []):
+        if any(v not in (None, 0, 0.0) for v in row):
+            return dict(zip([_norm(x) for x in graph.get("legend") or []], row))
+    return None
+
+
+def _cpu_pct(graph):
+    vals = _last_row(graph)
+    if not vals or vals.get("idle") is None:
         return None
-    if not res:
+    legend = [_norm(x) for x in graph.get("legend") or []]
+    series = [vals.get(k) for k in legend]
+    idle_at = legend.index("idle")
+
+    # Cumulative stack: values never decrease and idle caps at 100.
+    ordered = [v for v in series if v is not None]
+    cumulative = (abs(float(vals["idle"]) - 100.0) < 0.01
+                  and all(a <= b + 1e-9 for a, b in zip(ordered, ordered[1:])))
+    if cumulative and idle_at > 0:
+        busy = series[idle_at - 1]
+    else:
+        busy = 100.0 - float(vals["idle"])
+    if busy is None:
         return None
-    legend, row = _latest_row(res[0])
-    if not row:
+    return round(max(0.0, min(100.0, float(busy))), 1)
+
+
+def _mem_used(graph, arc_graph, physmem):
+    """Used = active + wired + laundry, minus the ZFS ARC.
+
+    ARC lives in wired but is reclaimable cache, so counting it would push a
+    healthy NAS to ~100% as ARC grows to fill RAM. Excluding it matches what the
+    Linux collector does with MemAvailable (which also excludes reclaimable cache),
+    so the two read the same way on the dashboard.
+    """
+    vals = _last_row(graph)
+    if not vals:
         return None
-    vals = {str(n).lower().strip(): row[i + 1] for i, n in enumerate(legend)}
-    # FreeBSD memory graph series: free, active, inactive, cache, wired, laundry
-    free_like = sum(float(vals[k]) for k in ("free", "cache", "inactive")
-                    if vals.get(k) is not None)
-    if free_like and physmem:
-        return max(0, int(physmem - free_like))
-    used_like = sum(float(vals[k]) for k in ("active", "wired", "laundry")
-                    if vals.get(k) is not None)
-    return int(used_like) or None
+    used = sum(float(vals[k]) for k in ("active", "wired", "laundry")
+               if vals.get(k) is not None)
+    if not used:
+        return None
+    arc = _last_row(arc_graph) if arc_graph else None
+    if arc and arc.get("arc") is not None:
+        used -= float(arc["arc"])
+    if physmem:
+        used = min(used, float(physmem))
+    return max(0, int(used))
 
 
 def _pools(cfg):
     """Root datasets == one entry per pool, with used/available in bytes."""
     out = []
-    try:
-        datasets = _request(cfg, "/pool/dataset")
-    except TrueNASError:
-        return out
-    for ds in datasets or []:
+    for ds in _request(cfg, "/pool/dataset") or []:
         name = ds.get("name") or ""
         if "/" in name:            # child dataset, not a pool root
             continue
@@ -127,11 +140,9 @@ def _pools(cfg):
         avail = (ds.get("available") or {}).get("parsed")
         if used is None or avail is None:
             continue
-        out.append({
-            "mount": name,
-            "used_bytes": int(used),
-            "total_bytes": int(used) + int(avail),
-        })
+        out.append({"mount": name,
+                    "used_bytes": int(used),
+                    "total_bytes": int(used) + int(avail)})
     return out
 
 
@@ -143,17 +154,23 @@ def collect(cfg):
     info = _request(cfg, "/system/info") or {}
     physmem = info.get("physmem")
 
+    cpu = mem = None
     try:
-        cpu = _cpu_pct(cfg)
+        gs = {g.get("name"): g for g in _graphs(cfg, ["cpu", "memory", "arcsize"])}
+        if gs.get("cpu"):
+            cpu = _cpu_pct(gs["cpu"])
+        if gs.get("memory"):
+            mem = _mem_used(gs["memory"], gs.get("arcsize"), physmem)
     except TrueNASError:
-        cpu = None
+        pass   # metrics are best-effort; pools and uptime still report
 
+    version = (info.get("version") or "").replace("TrueNAS-", "").replace("-", " ", 1)
     return {
         "host": cfg.get("display_name") or cfg["host"],
         "ts": int(time.time()),
-        "os": "TrueNAS CORE %s" % (info.get("version") or "").replace("TrueNAS-", ""),
+        "os": ("TrueNAS CORE %s" % version).strip(),
         "cpu_pct": cpu,
-        "mem_used_bytes": _memory(cfg, physmem),
+        "mem_used_bytes": mem,
         "mem_total_bytes": physmem,
         "uptime_seconds": int(info["uptime_seconds"]) if info.get("uptime_seconds") else None,
         "disks": _pools(cfg),
@@ -161,10 +178,8 @@ def collect(cfg):
 
 
 if __name__ == "__main__":
-    # Self-test: python3 truenas.py [config.json]  -- prints what the NAS returns.
     import os
     import sys
     path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "config.json")
-    tn = json.load(open(path))["truenas"]
-    print(json.dumps(collect(tn), indent=2))
+    print(json.dumps(collect(json.load(open(path))["truenas"]), indent=2))
