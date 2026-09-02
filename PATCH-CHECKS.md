@@ -534,13 +534,28 @@ Two gates matter:
   not by apt**. Its absence on a host without that package says nothing, so
   `false` is reported only once the package is confirmed installed.
 
-  This splits the fleet cleanly, and the split is verified across seven hosts:
-  **Ubuntu ships `update-notifier-common` and reports `false`; Debian does not
-  and reports `null`.** Three Debian hosts (Trixie on x86_64 and aarch64, plus
-  Raspbian) all report null; four Ubuntu hosts (22.04, 24.04 ×2, 26.04) all
-  report false. Nothing is wrong on the Debian side — it is the honest answer to
-  a question that host cannot answer. `apt install update-notifier-common` is
-  what turns it into a real one.
+  **The package differs by distribution, so the gate tests the script.**
+  `update-notifier-common` ships it on Ubuntu; on Debian 13 that package no
+  longer exists at all — `apt-config-auto-update` replaces only its APT config
+  half — and `reboot-notifier` ships the same
+  `/usr/share/update-notifier/notify-reboot-required` path instead. Testing for
+  the file covers both and survives the next rename.
+
+  Where no such helper is installed, the running kernel is compared against the
+  newest one in `/boot`, which needs no package at all:
+
+  ```
+  running : 6.12.107+deb13-amd64
+  /boot   : 6.12.107+deb13-amd64  6.12.94+deb13-amd64
+  ```
+
+  Sorted with `sort -V`, not `sort` — as text `6.12.94` comes after `6.12.107`,
+  which would call a freshly booted host stale on every Debian point release.
+
+  That fallback may only ever report **true**. An unchanged kernel says nothing
+  about an openssl update wanting its services restarted, so it stays null
+  rather than claiming false: a weaker signal must not masquerade as the
+  complete one.
 - On openSUSE it is **not a zypper subcommand at all**. The
   `zypper-needs-restarting` package ships exactly two files:
 

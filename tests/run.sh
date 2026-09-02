@@ -718,6 +718,47 @@ PY
         "assert d['uncached_prod']=='opensuse', d" "$J"
 fi
 
+if want reboot-kernel; then
+  echo "reboot-kernel (Debian 13 has no flag mechanism; compare kernels instead)"
+  J=$(python3 - "$ROOT" <<'PY'
+import re,sys,json,subprocess
+root=sys.argv[1]
+src=open(f"{root}/collectors/linux/netdash-patchcheck.sh").read()
+sortcmd=re.search(r"KNEW=\$\(ls /boot/vmlinuz-\* 2>/dev/null \| ([^)]*)\)", src).group(1)
+boot="6.12.107+deb13-amd64\n6.12.94+deb13-amd64\n"
+def newest(cmd):
+    return subprocess.run(["sh","-c","sed 's|.*/vmlinuz-||' | "+cmd],
+                          input=boot,capture_output=True,text=True).stdout.strip()
+print(json.dumps({
+  "uses_version_sort": "sort -V" in sortcmd,
+  "newest": newest(sortcmd),
+  "plain_sort_would_say": newest("sort | tail -1"),
+  # The gate tests the script both packages ship, not either package name.
+  "gates_on_script": "/usr/share/update-notifier/notify-reboot-required" in src,
+  # The old gate queried dpkg for a package that does not exist on Debian 13.
+  # Mentioning it in a comment is fine; gating on it is not.
+  "no_package_gate": "dpkg-query" not in src,
+  # The kernel fallback may only ever prove true; an unchanged kernel cannot
+  # rule out an openssl update wanting a restart.
+  "fallback_sets_only_true": bool(re.search(
+      r'\[ "\$KNEW" != "\$KRUN" \]; then\n\s*REBOOT=true', src)),
+}))
+PY
+)
+  # 6.12.94 sorts after 6.12.107 as text, so a plain sort calls a freshly booted
+  # Debian host stale on every point release.
+  check "kernels compare by version, not as strings" \
+        "assert d['uses_version_sort'] and d['newest'].endswith('107+deb13-amd64'), d" "$J"
+  check "a plain sort would pick the older kernel" \
+        "assert d['plain_sort_would_say'].endswith('94+deb13-amd64'), d" "$J"
+  # update-notifier-common does not exist on Debian 13; reboot-notifier ships
+  # the same script there. Testing for the script covers both.
+  check "the flag mechanism is detected by its script, not by a package name" \
+        "assert d['gates_on_script'] and d['no_package_gate'], d" "$J"
+  check "the kernel fallback can only report true, never false" \
+        "assert d['fallback_sets_only_true'], d" "$J"
+fi
+
 echo
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]

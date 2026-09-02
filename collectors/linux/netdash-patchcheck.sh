@@ -224,14 +224,36 @@ fi
 REBOOT=null
 case "$SRC" in
 apt)
-  # /run/reboot-required is created by update-notifier-common, NOT by apt, so
-  # its absence on a host without that package says nothing at all. Report
-  # false only once the mechanism is known to be installed.
+  # /run/reboot-required is created by a helper script, NOT by apt, so its
+  # absence on a host without that helper says nothing at all.
   if [ -e /run/reboot-required ] || [ -e /var/run/reboot-required ]; then
     REBOOT=true
-  elif dpkg-query -W -f='${Status}' update-notifier-common 2>/dev/null \
-       | grep -q 'ok installed'; then
+
+  # Test for the SCRIPT, not a package name: it comes from
+  # update-notifier-common on Ubuntu and from reboot-notifier on Debian 13,
+  # which dropped update-notifier-common entirely (apt-config-auto-update
+  # replaces only its APT config half, not this). Same path either way.
+  elif [ -x /usr/share/update-notifier/notify-reboot-required ]; then
     REBOOT=false
+
+  else
+    # No flag mechanism installed. The running kernel can still be compared
+    # against the newest one on disk, which needs no package at all and catches
+    # the case that matters most.
+    #
+    # sort -V, not sort: 6.12.94 sorts AFTER 6.12.107 as text, which would call
+    # a freshly-booted host stale on every Debian point release.
+    #
+    # This can only prove a reboot IS needed. An unchanged kernel says nothing
+    # about an openssl update wanting its services restarted, so it stays null
+    # rather than claiming false -- a weaker signal must not masquerade as the
+    # complete one above.
+    KRUN=$(uname -r)
+    KNEW=$(ls /boot/vmlinuz-* 2>/dev/null | sed 's|.*/vmlinuz-||' | sort -V | tail -1)
+    if [ -n "$KNEW" ] && [ "$KNEW" != "$KRUN" ]; then
+      REBOOT=true
+      DET="${DET:+$DET; }running kernel $KRUN, newest installed $KNEW"
+    fi
   fi
   ;;
 dnf5|dnf)
