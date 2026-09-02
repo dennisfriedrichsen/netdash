@@ -27,6 +27,8 @@ numbers are untouched.
 | `freebsd/zfs-list.txt`, `netbsd/zfs-list.txt` | — | `zfs list -Hp -d 0` pool roots |
 | `freebsd/cp_time.txt` | FreeBSD 15.1 | five fields, space-separated |
 | `linux/apt-dist-upgrade.txt` | Debian 13 | the security origin sits *inside* the parentheses |
+| `linux/zypper-list-updates-tumbleweed.txt` | openSUSE Tumbleweed | 23 real pending updates; header and `---+---` separator must not count |
+| `linux/zypper-patch-check-tumbleweed.txt` | openSUSE Tumbleweed | the same host answering *"0 patches needed"* |
 
 `apt-dist-upgrade.txt` is real `apt-get --just-print` output, captured with
 `-o Dir::State::status=/dev/null` because the host had nothing pending — that
@@ -35,6 +37,13 @@ their origin annotations are exactly what a real pending upgrade produces. It
 deliberately includes `debian-security-support`, a genuine package whose *name*
 contains `-security` but which ships from the plain archive: a naive whole-line
 match counts 4 security updates where there are 3.
+
+The two `zypper-*-tumbleweed.txt` files are one capture from one host at one
+moment, and they only mean anything as a pair: `patch-check` says 0 patches and
+0 security patches while `list-updates` lists 23, including `kernel-default`.
+Tumbleweed ships no patch metadata, so the zero is an absence of data rather
+than a clean bill of health. Routing a rolling release through the patch-check
+branch would report that host as up to date.
 
 `cp_time.txt` holds two lines: two successive reads, so the mock can return a
 delta rather than a single sample.

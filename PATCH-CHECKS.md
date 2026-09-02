@@ -71,7 +71,7 @@ nothing.
 | Debian / Ubuntu / Raspbian | `apt-get --just-print upgrade` | `apt-get update` | only with `unattended-upgrades` |
 | Fedora | `dnf5 check-update --security` | `dnf5 makecache` | dnf4 yes; dnf5 **check the host** |
 | Arch | — | `checkupdates`, `arch-audit` | no |
-| openSUSE Tumbleweed | `zypper --no-refresh list-updates` | `zypper refresh` | no |
+| openSUSE Tumbleweed | `zypper --no-refresh list-updates` **(verified)** | `zypper refresh` | no |
 | Alpine | `apk list --upgradable` | `apk update` | no |
 | FreeBSD | `pkg audit -q`, `freebsd-update updatesready` | none needed | **yes, both** |
 | OpenBSD | — | `syspatch -c` | no |
@@ -130,14 +130,40 @@ tools and neither is in base:
 Without `arch-audit` the host reports a count with no security figure, which is
 the honest reading rather than a zero.
 
-### openSUSE
+### openSUSE — **verified** on Tumbleweed
 
 On Leap or SLE, `zypper --no-refresh --quiet list-patches --category security`
 is the right query. On **Tumbleweed** — which is what is in the fleet — there
-are no patches to list, per the note above, so the check falls back to
-`zypper --no-refresh list-updates` and reports a count only.
+are no patches to list, so the check uses `zypper --no-refresh list-updates`
+and reports a count only.
 
-`--no-refresh` matters on both: without it every invocation hits the network.
+The captured host makes the trap concrete. It reports:
+
+```
+$ zypper --non-interactive --no-refresh patch-check
+0 patches needed (0 security patches)
+
+$ zypper --non-interactive --no-refresh --quiet list-patches --category security
+(nothing)
+```
+
+while `list-updates` on that same box lists **23 pending updates**, among them
+`kernel-default` and `libseccomp2`. Patch metadata is a Leap/SLE concept and
+Tumbleweed ships none, so `patch-check` answers 0 because there is nothing to
+count — not because the host is current. Believing it would paint the card
+green on a machine with a pending kernel update.
+
+This is why the branch is chosen by `ID` from `/etc/os-release`
+(`opensuse-tumbleweed`, `opensuse-slowroll`) rather than by whether
+`patch-check` produced any output: both a fully-patched Leap host and a badly
+out-of-date Tumbleweed host print exactly the same `0 patches needed`.
+`tests/run.sh patches-zypper` pins it against the real capture.
+
+Rows are counted with `$1=="v"`, which excludes the `S | Repository | ...`
+header and the `---+---------+---` separator; those made the naive count 25.
+
+`--no-refresh` matters on both spellings: without it every invocation hits the
+network.
 
 ### Alpine
 

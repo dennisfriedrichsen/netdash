@@ -235,6 +235,44 @@ PY
         "assert d['naive']==4 and d['security']==3, d" "$J"
 fi
 
+if want patches-zypper; then
+  echo "patches-zypper (Tumbleweed reports 0 patches needed while 23 updates wait)"
+  # As with linux-disks, these drive the shipped parsers rather than the whole
+  # script: the branch is chosen by reading /etc/os-release, which PATH cannot
+  # intercept.
+  J=$(python3 - "$ROOT" <<'PY'
+import re,subprocess,sys,json
+root=sys.argv[1]
+src=open(f"{root}/collectors/linux/netdash-patchcheck.sh").read()
+awkprog=re.search(r"list-updates \| awk '(.*?)'\)", src, re.S).group(1)
+totp,secp=re.findall(r"sed -n '([^']*)'", src)[:2]
+
+updates=open(f"{root}/tests/fixtures/linux/zypper-list-updates-tumbleweed.txt").read()
+check=open(f"{root}/tests/fixtures/linux/zypper-patch-check-tumbleweed.txt").read()
+
+def run(cmd,inp):
+    return subprocess.run(cmd,input=inp,capture_output=True,text=True).stdout.strip()
+
+print(json.dumps({
+  "rolling":  int(run(["awk",awkprog],updates) or 0),
+  "patch_total": run(["sed","-n",totp],check),
+  "patch_sec":   run(["sed","-n",secp],check),
+}))
+PY
+)
+  check "the rolling branch counts 23 pending updates" \
+        "assert d['rolling']==23, d" "$J"
+  check "the header row and the ---+--- separator are not counted" \
+        "assert d['rolling']==23, d" "$J"
+  # This is the whole reason Tumbleweed is routed by os-release ID rather than
+  # by whether patch-check produced output. On this real host patch-check says
+  # '0 patches needed (0 security patches)' while kernel-default and libseccomp2
+  # are among 23 waiting updates -- taking that branch would paint the card
+  # green. Patches are a Leap/SLE concept and Tumbleweed ships none.
+  check "patch-check reports 0/0 on the very same host: never route rolling here" \
+        "assert d['patch_total']=='0' and d['patch_sec']=='0', d" "$J"
+fi
+
 if want patches-stale; then
   echo "patches-stale (an old or missing check must read unknown, never ok)"
   J=$(python3 - "$ROOT" <<'PY'
