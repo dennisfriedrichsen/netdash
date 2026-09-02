@@ -1,25 +1,25 @@
 # netdash
 
-A small, self-hosted CPU / memory / disk dashboard for the home LAN. Collectors
+A small, self-hosted CPU / memory / disk dashboard for a trusted network. Collectors
 push JSON over HTTP; the server keeps a rolling window in SQLite and serves two
 views: an overview grid and a per-host detail page.
 
 No agents to compile, no third-party service, no node cap. Server is Python 3
 standard library only; collectors are POSIX `sh` plus the tools already on each OS.
 
-Network throughput is deliberately not collected — that lives in the Unifi console.
+Network throughput is deliberately not collected.
 
 ## Layout
 
 ```
-server/       central service + dashboard UI (runs on 10.0.0.3)
+server/       central service + dashboard UI
 collectors/   per-OS collector scripts
   linux/      /proc/stat, /proc/meminfo, /proc/mounts, df
   bsd/        sysctl, zfs list, df
   macos/      top, vm_stat, sysctl, df, mount
   install.sh  installer for Linux + BSD hosts
   probe.sh    read-only dump of what a new OS reports, for adding support
-homebrew/     Homebrew formula for the macOS hosts
+homebrew/     sample config packaged by the Homebrew formula
 ```
 
 ## Server
@@ -32,13 +32,14 @@ Copies the code to `/opt/netdash`, config to `/etc/netdash/server.json`, databas
 to `/var/lib/netdash/netdash.db`, and runs it as the `netdash` system user.
 Re-running `deploy.sh` is the upgrade path; it never overwrites an existing config.
 
-Dashboard: **http://10.0.0.3:8080/**
+See [INSTALL.md](INSTALL.md) for server setup and platform-specific collector
+instructions.
 
 ### Config (`/etc/netdash/server.json`)
 
 | key | meaning |
 |---|---|
-| `bind_host` / `bind_port` | listen address (LAN only — do not port-forward) |
+| `bind_host` / `bind_port` | listen address (trusted network only; do not expose directly) |
 | `ingest_token` | shared secret; collectors send it as `X-Netdash-Token` |
 | `retention_hours` | rolling window; older samples are pruned every 10 min |
 | `stale_after_seconds` | a host with no sample for this long shows as **Stale** |
@@ -71,7 +72,7 @@ threshold rather than lowering the sample interval.
 Payload shape:
 
 ```json
-{ "host": "hermes", "os": "Ubuntu 24.04 (x86_64)", "cpu_pct": 12.4,
+{ "host": "example-host", "os": "Ubuntu 24.04 (x86_64)", "cpu_pct": 12.4,
   "mem_used_bytes": 1234, "mem_total_bytes": 5678, "uptime_seconds": 99,
   "disks": [ { "mount": "/", "used_bytes": 1, "total_bytes": 2 } ] }
 ```
@@ -109,8 +110,8 @@ confirm before trusting the memory figures.
 ## Collectors — Linux and BSD
 
 ```sh
-git clone https://github.com/dennisfriedrichsen/netdash.git netdash && cd netdash/collectors
-sudo ./install.sh --url http://10.0.0.3:8080/api/ingest --token <TOKEN>
+git clone https://github.com/dennisfriedrichsen/netdash.git && cd netdash/collectors
+sudo ./install.sh --url https://netdash.example/api/ingest --token YOUR_INGEST_TOKEN
 ```
 
 The installer verifies the collector runs *and* that a real post succeeds before
@@ -139,9 +140,8 @@ Filesystems that share free space are reported per *pool*, not per filesystem �
 otherwise no single number is the disk's fullness.
 
 On **macOS**, APFS volumes in a container share its free space: each reports the
-container's total but only its own used. rhenium showed `/System/Volumes/Data` at
-83% while the container was really 90% full, because `/`, Preboot, VM and Update
-draw on the same pool. One entry per container now, `total - available`.
+container's total but only its own used. One entry per container is reported as
+`total - available`.
 
 A container is then reported only if you could actually free space on it — it
 must have at least one read-write volume *and* at least one non-`nobrowse` one.
@@ -154,14 +154,13 @@ none.
 
 On ZFS hosts one entry is reported **per pool**, not per dataset — datasets
 share their pool's free space, so listing them all reports the same pool many
-times over (cerium has 40). The figure is `used + available`, the usable view,
+times over. The figure is `used + available`, the usable view,
 which is also how the TrueNAS pools are reported.
 
 Only **local** filesystems are reported. An NFS or SMB mount is storage owned by
 another host, which already reports it — counting it on the client double-counts
 the same bytes on two cards, and lets a full fileserver show up as the *client*
-being critical while masking that client's real local disk pressure. cerium
-mounts three TrueNAS exports; they belong to `truenas-core`'s card, not cerium's.
+being critical while masking that client's real local disk pressure.
 
 Memory excludes reclaimable cache on every platform, so the hosts read alike:
 `MemAvailable` on Linux, and the ZFS ARC subtracted on FreeBSD and TrueNAS.
@@ -190,7 +189,7 @@ loud — install `curl` on any BSD host that changes networks.
 
 ## Collectors — macOS
 
-Via Homebrew (see `homebrew/netdash-collector.rb`):
+Via the [Homebrew tap](https://github.com/dennisfriedrichsen/homebrew-tap/blob/main/Formula/netdash-collector.rb):
 
 ```sh
 brew install dennisfriedrichsen/tap/netdash-collector
@@ -209,7 +208,7 @@ Create an API key in the TrueNAS UI (Settings → API Keys), then in
 `/etc/netdash/server.json`:
 
 ```json
-"truenas": { "enabled": true, "host": "10.0.0.2", "api_key": "1-xxxxx", "poll_seconds": 60 }
+"truenas": { "enabled": true, "host": "truenas.example", "api_key": "1-xxxxx", "poll_seconds": 60 }
 ```
 
 Check it before enabling:
@@ -227,7 +226,7 @@ systemctl status netdash                      # server
 journalctl -u netdash -n 50                   # server log
 systemctl list-timers netdash-collector.timer # collector schedule (Linux)
 netdash-collector --print                     # what this host would send
-curl -s http://10.0.0.3:8080/api/overview | python3 -m json.tool
+curl -s https://netdash.example/api/overview | python3 -m json.tool
 ```
 
 A host showing **Stale** is reachable-but-silent: its timer stopped, or the token
