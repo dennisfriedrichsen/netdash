@@ -11,7 +11,7 @@ class NetdashCollector < Formula
   homepage "https://github.com/dennisfriedrichsen/netdash"
   url "https://github.com/dennisfriedrichsen/netdash/archive/refs/tags/0.1.3.tar.gz"
   sha256 "c5ccfc0ed7a857f29fde630ae7f2b5da500ae804d3a33d5434efe1e88913d15a"
-  license "MIT"
+  license "BSD-2-Clause"
 
   def install
     bin.install "collectors/macos/netdash-collector.sh" => "netdash-collector"

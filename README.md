@@ -172,3 +172,7 @@ curl -s http://10.0.0.3:8080/api/overview | python3 -m json.tool
 
 A host showing **Stale** is reachable-but-silent: its timer stopped, or the token
 is wrong (the server answers 401 and the collector exits non-zero).
+
+## License
+
+BSD 2-Clause. See [LICENSE](LICENSE).
