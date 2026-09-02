@@ -242,11 +242,16 @@ dnf5|dnf)
   case "$rc" in 0) REBOOT=false ;; 1) REBOOT=true ;; esac
   ;;
 zypper-*)
-  # Same 0/1 convention, but the subcommand ships in a separate package. Gate
-  # on it being present: an unknown zypper subcommand also exits non-zero, and
-  # would otherwise read as "reboot required" on every host lacking it.
-  if zypper needs-restarting --help >/dev/null 2>&1; then
-    rc=0; zypper --non-interactive needs-restarting -r >/dev/null 2>&1 || rc=$?
+  # NOT `zypper needs-restarting`. The zypper-needs-restarting package ships a
+  # standalone /usr/bin/needs-restarting -- a dnf compatibility shim -- and no
+  # zypper subcommand at all, so `zypper needs-restarting` answers "Unknown
+  # command" even with the package installed. Verified on the Tumbleweed host,
+  # where rpm -ql lists exactly the binary and its man page.
+  #
+  # Being a dnf shim, it takes dnf's convention: -r exits 0 for "no reboot
+  # needed" and 1 for "reboot required". Any other status leaves this null.
+  if command -v needs-restarting >/dev/null 2>&1; then
+    rc=0; needs-restarting -r >/dev/null 2>&1 || rc=$?
     case "$rc" in 0) REBOOT=false ;; 1) REBOOT=true ;; esac
   fi
   ;;

@@ -523,7 +523,7 @@ state that ranks below `security` (where there is still work to do) and above
 |---|---|---|
 | Fedora / RHEL | `dnf needs-restarting -r`, exit 1 | **verified** |
 | Debian / Ubuntu / Raspbian | `/run/reboot-required` exists | gated, see below |
-| openSUSE | `zypper needs-restarting -r`, exit 1 | unverified |
+| openSUSE | `needs-restarting -r`, exit 1 | **verified present** |
 | FreeBSD | `freebsd-version -k` ≠ `uname -r` | unverified |
 | Arch, Alpine, OpenBSD, NetBSD, macOS | none | always `null` |
 
@@ -534,9 +534,23 @@ Two gates matter:
   not by apt**. Its absence on a host without that package says nothing, so
   `false` is reported only once the package is confirmed installed. The Debian
   test host does not have it, and correctly reports `null`.
-- `zypper needs-restarting` ships in a **separate package**, and an unknown
-  zypper subcommand also exits non-zero — which would read as "reboot required"
-  on every host lacking it. The subcommand's presence is checked first.
+- On openSUSE it is **not a zypper subcommand at all**. The
+  `zypper-needs-restarting` package ships exactly two files:
+
+  ```
+  $ rpm -ql zypper-needs-restarting
+  /usr/bin/needs-restarting
+  /usr/share/man/man1/needs-restarting.1.gz
+  ```
+
+  A standalone dnf compatibility shim. With the package installed,
+  `zypper needs-restarting` still answers *"Unknown command"* and exits 2, so
+  the original invocation could never have worked. `/usr/bin/needs-restarting`
+  is called directly instead, with dnf's `-r` convention. Note the exit code
+  that mistake produced was 2, not 1 — the `case` maps only 0 and 1, so it
+  reported *null* rather than a false "reboot required". Mapping specific
+  statuses rather than testing for non-zero is what made a wrong invocation
+  fail safe.
 
 macOS is genuinely not applicable: it installs updates during a reboot rather
 than leaving a booted system running stale code.
