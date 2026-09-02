@@ -595,6 +595,18 @@ pressure is live and self-clearing; pending patches sit amber for a week and
 train you to ignore amber. It renders as its own badge, and the "needs
 attention" count in the header stays a statement about CPU, memory and disk.
 
+## Not a patch check: end of life
+
+A separate question this file does not cover, handled server-side and described
+in the README. A host can be fully patched and still be running something
+upstream has abandoned — and it cannot tell you that about itself. TrueNAS CORE
+is the case that made it obvious: it will never report a pending update again
+because there will never be another one, so "0 pending" and "no longer
+maintained" are indistinguishable from inside the machine.
+
+The patch badge answers *are there fixes waiting?*; the EOL badge answers *will
+there ever be any?*
+
 ## Verifying on a real host
 
 Only the Debian path above has been run against real hardware. Everything else

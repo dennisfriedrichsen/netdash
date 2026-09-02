@@ -156,11 +156,36 @@ sudo python3 /opt/netdash/server/truenas.py /etc/netdash/server.json
 sudo systemctl restart netdash
 ```
 
+## Optional: end-of-life warnings
+
+The server can flag hosts whose OS release is past end of life, using
+[endoflife.date](https://endoflife.date). It is on by default, adds one outbound
+request per product per day, and sends nothing about your fleet. To turn it off,
+or to widen the warning window, edit `/etc/netdash/server.json`:
+
+```json
+"eol": { "enabled": true, "refresh_hours": 24, "warn_days": 30,
+         "overrides": { "TrueNAS CORE": true } }
+```
+
+`overrides` covers products endoflife.date does not track — its `truenas`
+product is SCALE-only, so CORE has to be stated here. The match is on the start
+of the reported OS string, and the value is either a date or `true`.
+
+Existing installations keep their config: `deploy.sh` never rewrites it, so this
+block is absent on an upgraded server and the defaults above apply silently. Add
+it only to change something, then restart:
+
+```sh
+sudo systemctl restart netdash
+```
+
 ## Verify and troubleshoot
 
 ```sh
 netdash-collector --print                         # payload without posting
 netdash-patchcheck --print                        # patch check, writing nothing
+curl -s localhost:8080/api/overview | python3 -m json.tool | grep -A6 '"eol"'
 systemctl list-timers netdash-collector.timer     # Linux schedule
 systemctl list-timers netdash-patchcheck.timer    # daily patch check
 crontab -l | grep netdash                         # BSD/Alpine schedule
