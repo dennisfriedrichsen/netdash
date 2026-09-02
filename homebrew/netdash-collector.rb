@@ -29,8 +29,15 @@ class NetdashCollector < Formula
 
   def caveats
     <<~EOS
-      Set the server URL and token before starting:
-        $EDITOR #{etc}/netdash/collector.conf
+      Set the server URL and token BEFORE starting the service:
+        nano #{etc}/netdash/collector.conf      (or any editor)
+
+      Do not rely on $EDITOR here -- if it is unset, the shell tries to execute
+      the config file and reports "permission denied" without opening it.
+
+      Check it took, before starting anything:
+        netdash-collector --print     # prints the JSON it would send
+        netdash-collector             # silent + exit 0 means the post worked
 
       Then start the launchd timer (Homebrew never auto-starts services on install):
         brew services start netdash-collector

@@ -82,5 +82,9 @@ case "$rc" in
 esac
 # Anything else (notably 22 = HTTP 4xx/5xx, i.e. a bad token) is a real
 # misconfiguration that will not fix itself. Say so.
-echo "netdash: post failed (curl $rc): $ERR" >&2
+if [ "$rc" -eq 22 ] && [ -z "$NETDASH_TOKEN" ]; then
+  echo "netdash: server rejected the post and NETDASH_TOKEN is empty in $CONF" >&2
+else
+  echo "netdash: post failed (curl $rc): $ERR" >&2
+fi
 exit "$rc"
