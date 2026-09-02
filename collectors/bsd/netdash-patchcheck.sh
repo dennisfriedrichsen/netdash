@@ -63,9 +63,17 @@ FreeBSD)
   [ "$REFRESH" = yes ] && run pkg audit -F -q >/dev/null
   [ "$REFRESH" = yes ] && run pkg update -q >/dev/null
 
-  # One "<pkg> is vulnerable:" header per affected package. Counting that
-  # marker rather than lines: each entry also prints its CVE and WWW lines.
-  SEC=$(run pkg audit | grep -c 'is vulnerable' || true)
+  # pkg audit ends with an authoritative summary:
+  #   14 problem(s) in 9 package(s) found.
+  # Take the PACKAGE count, not the problem count. One chromium carrying 300
+  # CVEs is a single upgrade, and counting advisories would let one busy package
+  # swamp the badge -- the verified host showed 14 problems across 9 packages.
+  AUDIT=$(run pkg audit)
+  SEC=$(printf '%s\n' "$AUDIT" \
+        | sed -n 's/^[0-9][0-9]* problem(s) in \([0-9][0-9]*\) package(s) found\..*/\1/p' | head -1)
+  # Fallback for a release that words the summary differently: one
+  # "<pkg> is vulnerable:" header is printed per affected package.
+  [ -n "$SEC" ] || SEC=$(printf '%s\n' "$AUDIT" | grep -c 'is vulnerable' || true)
 
   # Out-of-date packages, a different question from "vulnerable" -- a package
   # can be behind with no advisory against it.
@@ -73,9 +81,18 @@ FreeBSD)
 
   CHECKED=$(mtime /var/db/pkg/vuln.xml)
 
-  # Base system, entirely separate from packages. updatesready needs no network
-  # and exits 2 when nothing is staged, 0 when fetched updates are ready.
-  if command -v freebsd-update >/dev/null 2>&1; then
+  # Base system. On a pkgbase host the base IS packages -- FreeBSD-runtime and
+  # friends -- so pkg audit and pkg version above already cover it, and
+  # freebsd-update manages nothing here. Running its fetch would download
+  # binary patches for a base it does not own, so pkgbase is detected and that
+  # whole branch skipped. (Verified: the test host runs pkgbase.)
+  if pkg info -e FreeBSD-runtime >/dev/null 2>&1; then
+    DET="pkgbase host: base system is covered by pkg, not freebsd-update"
+    SRC="pkg-audit-pkgbase"
+
+  # Otherwise base is separate. updatesready needs no network and exits 2 when
+  # nothing is staged, 0 when fetched updates are ready.
+  elif command -v freebsd-update >/dev/null 2>&1; then
     if [ "$REFRESH" = yes ]; then
       # What `freebsd-update cron` does, minus its random 1-3600s sleep, which
       # exists to spread a fleet across the hour and is wrong for a job that is
@@ -149,8 +166,18 @@ NetBSD)
     exit 1
   fi
 
-  # Audits installed packages against that local file; no network.
-  SEC=$(run pkg_admin audit | grep -c 'vulnerability' || true)
+  # Audits installed packages against that local file; no network. One line per
+  # finding:
+  #   Package perl-5.42.3 has a symlink-attack vulnerability, see https://...
+  # Deduplicated by package name so this counts the same thing FreeBSD's
+  # "N package(s) found" does -- packages needing an upgrade, not advisories.
+  # A package carrying three CVEs is still one action, and on FreeBSD one
+  # chromium alone accounts for hundreds.
+  #
+  # Match on 'vulnerability' exactly. A lenient 'vulnerabilit' also matches
+  # pkg-vulnerabilities in the "Cannot open" error, turning a host with no
+  # database into a host with one finding.
+  SEC=$(run pkg_admin audit | awk '/vulnerability/ {print $2}' | sort -u | grep -c . || true)
 
   # NetBSD has no syspatch or freebsd-update equivalent: base security fixes
   # mean rebuilding from source or installing new sets. Saying so beats a

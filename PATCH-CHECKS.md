@@ -171,14 +171,28 @@ network.
 `secdb.alpinelinux.org`, but nothing in base consumes it, so there is no
 security classification available on the host. Count only.
 
-### FreeBSD
+### FreeBSD — **verified** on FreeBSD 15.1 (pkgbase)
 
 The best-behaved platform here: both reads are local, cheap, and fed by jobs
 the base system already schedules. netdash reads and schedules nothing.
 
-- `pkg audit -q` reads `/var/db/pkg/vuln.xml` with **no network** — `-F` is what
+- `pkg audit` reads `/var/db/pkg/vuln.xml` with **no network** — `-F` is what
   fetches, and running that from a 60s collector would hammer VuXML. Exit 0
   means clean, 1 means vulnerable packages were found.
+
+  It ends with an authoritative summary, and **the package count is the one to
+  take**:
+
+  ```
+  14 problem(s) in 9 package(s) found.
+  ```
+
+  Those were the real figures on the test host. Counting *problems* lets a
+  single package swamp the badge: one `chromium-151.0.7922.137_2` there carried
+  over 300 CVEs across three advisories, so "14 security" would have been driven
+  almost entirely by one browser. Nine is the number of upgrades to perform.
+  NetBSD's count is deduplicated by package name for the same reason, so the two
+  BSDs mean the same thing.
   `/usr/local/etc/periodic/security/410.pkg-audit` refreshes the database daily
   when `daily_status_security_pkgaudit_enable="YES"` in `periodic.conf`.
 - `freebsd-update updatesready` needs **no network** and exits 2 when nothing is
@@ -186,8 +200,19 @@ the base system already schedules. netdash reads and schedules nothing.
   `freebsd-update cron`, which is what belongs in nightly cron — its whole
   purpose is a random 1–3600s sleep so a fleet does not stampede the mirror.
 
+**pkgbase changes the picture.** On a host where the base system is itself
+packages — `FreeBSD-runtime` and friends, which is what the test host runs —
+`freebsd-update` manages nothing, and its `fetch` would pull binary patches for
+a base it does not own. `pkg audit` and `pkg version` already cover base there.
+So pkgbase is detected with `pkg info -e FreeBSD-runtime` and the whole
+freebsd-update branch is skipped, with the source reported as
+`pkg-audit-pkgbase` to say so.
+
 If neither scheduled job is enabled on a given host, both reads still answer,
-just from an ageing database — which is exactly what `checked_at` is for.
+just from an ageing database — which is exactly what `checked_at` is for. One
+caveat there: `pkg audit -F` may leave `vuln.xml`'s mtime untouched when the
+remote copy is unchanged, so `checked_at` can lag the actual check. That errs
+toward *unknown*, the safe direction, and VuXML changes most days in practice.
 
 ### OpenBSD — **verified** on OpenBSD 7.9
 

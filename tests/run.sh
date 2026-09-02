@@ -279,24 +279,36 @@ if want patches-netbsd; then
 import re,subprocess,sys,json
 root=sys.argv[1]
 src=open(f"{root}/collectors/bsd/netdash-patchcheck.sh").read()
-pat=re.search(r"pkg_admin audit \| grep -c '([^']*)'", src).group(1)
-def count(p,f):
-    out=subprocess.run(["grep","-c",p,f],capture_output=True,text=True).stdout.strip()
-    return int(out or 0)
-found=f"{root}/tests/fixtures/netbsd/pkg_admin-audit.txt"
-nodb=f"{root}/tests/fixtures/netbsd/pkg_admin-audit-nodb.txt"
+awkprog=re.search(r"pkg_admin audit \| awk '(.*?)' \| sort -u", src, re.S).group(1)
+pat=re.search(r"/(vulnerabilit\w*)/", awkprog).group(1)
+
+def count(text):
+    """The shipped pipeline: awk | sort -u | grep -c ."""
+    a=subprocess.run(["awk",awkprog],input=text,capture_output=True,text=True).stdout
+    u=subprocess.run(["sort","-u"],input=a,capture_output=True,text=True).stdout
+    return int(subprocess.run(["grep","-c","."],input=u,capture_output=True,text=True).stdout or 0)
+
+found=open(f"{root}/tests/fixtures/netbsd/pkg_admin-audit.txt").read()
+nodb=open(f"{root}/tests/fixtures/netbsd/pkg_admin-audit-nodb.txt").read()
+# Same package, two advisories: must count as one package to upgrade, matching
+# FreeBSD's "N package(s) found".
+twice=found + found.replace("symlink-attack","denial-of-service")
 print(json.dumps({
-  "pattern": pat,
-  "found":   count(pat, found),
-  "nodb":    count(pat, nodb),
+  "pattern": pat, "found": count(found), "nodb": count(nodb), "twice": count(twice),
   # A prefix match -- the obvious "be lenient about singular/plural" instinct --
   # matches the path in the error message instead.
-  "naive_nodb": count("vulnerabilit", nodb),
+  "naive_nodb": int(subprocess.run(["grep","-c","vulnerabilit"],input=nodb,
+                                   capture_output=True,text=True).stdout or 0),
 }))
 PY
 )
   check "one vulnerable package is counted once" \
         "assert d['found']==1, d" "$J"
+  # Deduplicated by package name so this means what FreeBSD's "N package(s)
+  # found" means: packages needing an upgrade. A package with three advisories
+  # is still one action.
+  check "two advisories against one package still count one package" \
+        "assert d['twice']==1, d" "$J"
   # 'Cannot open /usr/pkg/pkgdb/pkg-vulnerabilities' must count as zero, and
   # the surrounding script bails on the absent database before this ever runs.
   # If it did count, a host with no database would report a clean bill of health.
@@ -304,6 +316,40 @@ PY
         "assert d['nodb']==0, d" "$J"
   check "a lenient 'vulnerabilit' prefix would match the error path instead" \
         "assert d['naive_nodb']==1 and d['nodb']==0, d" "$J"
+fi
+
+if want patches-freebsd; then
+  echo "patches-freebsd (count packages to upgrade, not advisories against them)"
+  J=$(python3 - "$ROOT" <<'PY'
+import re,subprocess,sys,json
+root=sys.argv[1]
+src=open(f"{root}/collectors/bsd/netdash-patchcheck.sh").read()
+sed_expr=re.search(r"\| sed -n '([^']*package\(s\) found[^']*)'", src).group(1)
+fallback=re.search(r"\| grep -c '(is vulnerable)'", src).group(1)
+fx=open(f"{root}/tests/fixtures/freebsd/pkg-audit.txt").read()
+
+pkgs=subprocess.run(["sed","-n",sed_expr],input=fx,capture_output=True,text=True).stdout.strip()
+hdrs=int(subprocess.run(["grep","-c",fallback],input=fx,capture_output=True,text=True).stdout or 0)
+probs=subprocess.run(["sed","-n",r"s/^\([0-9][0-9]*\) problem(s).*/\1/p"],
+                     input=fx,capture_output=True,text=True).stdout.strip()
+print(json.dumps({
+  "packages": int(pkgs or 0), "headers": hdrs, "problems": int(probs or 0),
+  "pkgbase_detected": "pkg info -e FreeBSD-runtime" in src,
+}))
+PY
+)
+  # The captured host: 14 problems across 9 packages. One chromium carried 300+
+  # CVEs on its own, so counting advisories would let a single package swamp the
+  # badge. Nine is the number of upgrades to perform.
+  check "the summary line yields 9 packages, not 14 problems" \
+        "assert d['packages']==9 and d['problems']==14, d" "$J"
+  check "the 'is vulnerable' header fallback agrees at 9" \
+        "assert d['headers']==9, d" "$J"
+  # On a pkgbase host the base system IS packages, so pkg audit already covers
+  # it and freebsd-update owns nothing -- its fetch would pull binary patches
+  # for a base it does not manage.
+  check "pkgbase is detected so freebsd-update is skipped there" \
+        "assert d['pkgbase_detected'], d" "$J"
 fi
 
 if want patches-macos; then

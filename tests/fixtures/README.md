@@ -30,6 +30,7 @@ numbers are untouched.
 | `linux/zypper-list-updates-tumbleweed.txt` | openSUSE Tumbleweed | 23 real pending updates; header and `---+---` separator must not count |
 | `linux/zypper-patch-check-tumbleweed.txt` | openSUSE Tumbleweed | the same host answering *"0 patches needed"* |
 | `netbsd/pkg_admin-audit.txt` | NetBSD 11.0 | `Package X has a Y vulnerability, see URL` — one line per finding |
+| `freebsd/pkg-audit.txt` | FreeBSD 15.1 | `14 problem(s) in 9 package(s) found.` — the package count is the one to use |
 | `netbsd/pkg_admin-audit-nodb.txt` | NetBSD 11.0 | the same command with no database: must count zero, not one |
 | `macos/softwareupdate-none.txt` | macOS 26.6.2 | both streams combined: the all-clear string is what makes a zero safe to report |
 | `macos/softwareupdate-stdout-only.txt` | macOS 26.6.2 | the same command with stderr discarded — a lone banner, and not an all-clear |
@@ -48,6 +49,11 @@ moment, and they only mean anything as a pair: `patch-check` says 0 patches and
 Tumbleweed ships no patch metadata, so the zero is an absence of data rather
 than a clean bill of health. Routing a rolling release through the patch-check
 branch would report that host as up to date.
+
+`freebsd/pkg-audit.txt` is the real capture with its `CVE:` lines removed —
+one chromium entry alone listed over 300 of them, and nothing in the parse reads
+them. Every remaining line is verbatim, including all nine `is vulnerable`
+headers and the summary line the parse actually depends on.
 
 `cp_time.txt` holds two lines: two successive reads, so the mock can return a
 delta rather than a single sample.

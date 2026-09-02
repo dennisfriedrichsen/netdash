@@ -261,7 +261,7 @@ which commands are wrong in ways that fail silently — is in
 | openSUSE Leap | `zypper patch-check` | yes |
 | openSUSE Tumbleweed | `zypper list-updates` | **no — rolling, ships no patch metadata** |
 | Alpine | `apk list --upgradable` | **no — nothing on the host consumes secdb** |
-| FreeBSD | `pkg audit` + `freebsd-update updatesready` | yes, and base separately |
+| FreeBSD | `pkg audit`; `freebsd-update updatesready` unless pkgbase | yes, and base separately |
 | OpenBSD | `syspatch -c` (base only; packages need `PKG_PATH`) | yes, for base |
 | NetBSD | `pkg_admin audit` | yes for packages; **base has no patch mechanism** |
 | macOS | `softwareupdate --list --no-scan` | `Recommended: YES` |
@@ -317,7 +317,7 @@ sh tests/run.sh              # everything
 sh tests/run.sh openbsd      # just the cases matching a name
 ```
 
-57 cases, no network, no root, nothing installed — `sh`, `awk` and `python3`.
+61 cases, no network, no root, nothing installed — `sh`, `awk` and `python3`.
 The BSD and macOS cases run the real collector end to end against mocked
 `sysctl`/`df`/`mount`/`vmstat`; the Linux cases drive its awk programs directly,
 since `/proc` reads cannot be intercepted through `PATH`.
