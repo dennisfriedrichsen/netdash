@@ -1541,6 +1541,60 @@ if want render; then
   fi
 fi
 
+if want ingest-race; then
+  echo "ingest-race (two collectors posting at once must not swap disk rows)"
+  J=$(python3 - "$ROOT" <<'PYEOF'
+import sys,json,threading,tempfile,os; sys.path.insert(0,f"{sys.argv[1]}/server")
+import db
+tmp = os.path.join(tempfile.mkdtemp(), "t.db")
+conn = db.connect(tmp)
+
+# The shape that actually bit: every collector's cron fires on the same second,
+# so the server handles their posts on overlapping threads against one shared
+# sqlite connection. Each host here carries a mount list only it could have, so
+# a row landing on the wrong sample is visible by name, not merely by count.
+HOSTS = 24
+START = threading.Barrier(HOSTS)
+got, errs = {}, []
+def post(i):
+    payload = {"host": "h%02d" % i, "os": "test",
+               "disks": [{"mount": "/m%02d-%d" % (i, k),
+                          "used_bytes": 1, "total_bytes": 100} for k in range(3)]}
+    try:
+        START.wait()
+        got[i] = db.insert_sample(conn, payload)
+    except Exception as e:
+        errs.append(repr(e))
+
+ts = [threading.Thread(target=post, args=(i,)) for i in range(HOSTS)]
+for t in ts: t.start()
+for t in ts: t.join()
+
+wrong = []
+for i, sid in sorted(got.items()):
+    mounts = sorted(r["mount"] for r in
+                    conn.execute("SELECT mount FROM disks WHERE sample_id=?", (sid,)))
+    want = sorted("/m%02d-%d" % (i, k) for k in range(3))
+    if mounts != want:
+        wrong.append({"host": "h%02d" % i, "want": want, "got": mounts})
+
+orphans = conn.execute(
+    "SELECT COUNT(*) FROM disks WHERE sample_id NOT IN (SELECT id FROM samples)"
+).fetchone()[0]
+total = conn.execute("SELECT COUNT(*) FROM disks").fetchone()[0]
+
+print(json.dumps({"errs": errs, "inserted": len(got), "wrong": wrong,
+                  "orphans": orphans, "total": total}))
+PYEOF
+)
+  check "every post is stored" \
+        "assert not d['errs'] and d['inserted']==24, d" "$J"
+  check "no sample gets another host's mounts, or loses its own" \
+        "assert d['wrong']==[], d['wrong']" "$J"
+  check "and no disk row is left pointing at nothing" \
+        "assert d['orphans']==0 and d['total']==72, d" "$J"
+fi
+
 echo
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]

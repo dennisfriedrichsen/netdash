@@ -1,6 +1,7 @@
 """SQLite storage for netdash. Rolling window only -- no long-term retention."""
 
 import sqlite3
+import threading
 import time
 import os
 
@@ -114,6 +115,21 @@ def _migrate(conn):
                 conn.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, name, decl))
 
 
+# One connection is shared by every request thread (check_same_thread=False), so
+# a write that spans more than one statement has to be serialised by hand.
+# sqlite3's own locking makes each statement atomic, but nothing stops another
+# thread from slipping a statement between two of ours -- and insert_sample
+# reads lastrowid, a *connection*-level value, after its INSERT. Two collectors
+# posting in the same second (cron fires them all at :01) raced there: the
+# second INSERT moved lastrowid before the first thread had read it, so one
+# sample's disk rows were written against the other sample's id. The dashboard
+# showed "no mounts reported" for the robbed host and a doubled mount list for
+# the other. Held across the commit too: a commit from another thread would
+# otherwise end our transaction early, publishing a sample with only some of
+# its disks attached.
+_WRITE = threading.Lock()
+
+
 def connect(path):
     parent = os.path.dirname(path)
     if parent:
@@ -138,60 +154,62 @@ def insert_sample(conn, payload, source="push", peer=None):
     p = payload.get("patches") or {}
     if not isinstance(p, dict):
         p = {}
-    cur = conn.execute(
-        """INSERT INTO samples
-             (host, ts, os, source, cpu_pct, mem_used_bytes, mem_total_bytes, uptime_seconds,
-              patch_security, patch_other, patch_checked_at, patch_source, patch_detail,
-              patch_reboot, patch_packages, collector_version, virt, peer_addr)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (
-            payload["host"],
-            ts,
-            payload.get("os"),
-            source,
-            payload.get("cpu_pct"),
-            payload.get("mem_used_bytes"),
-            payload.get("mem_total_bytes"),
-            payload.get("uptime_seconds"),
-            p.get("security"),
-            p.get("other"),
-            p.get("checked_at"),
-            p.get("source"),
-            p.get("detail") or None,
-            None if p.get("reboot_required") is None else int(bool(p["reboot_required"])),
-            p.get("packages") or None,
-            payload.get("collector_version"),
-            payload.get("virt"),
-            peer,
-        ),
-    )
-    sid = cur.lastrowid
-    for d in payload.get("disks") or []:
-        conn.execute(
-            "INSERT INTO disks (sample_id, mount, used_bytes, total_bytes) VALUES (?,?,?,?)",
-            (sid, d.get("mount"), d.get("used_bytes"), d.get("total_bytes")),
+    with _WRITE:
+        cur = conn.execute(
+            """INSERT INTO samples
+                 (host, ts, os, source, cpu_pct, mem_used_bytes, mem_total_bytes, uptime_seconds,
+                  patch_security, patch_other, patch_checked_at, patch_source, patch_detail,
+                  patch_reboot, patch_packages, collector_version, virt, peer_addr)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                payload["host"],
+                ts,
+                payload.get("os"),
+                source,
+                payload.get("cpu_pct"),
+                payload.get("mem_used_bytes"),
+                payload.get("mem_total_bytes"),
+                payload.get("uptime_seconds"),
+                p.get("security"),
+                p.get("other"),
+                p.get("checked_at"),
+                p.get("source"),
+                p.get("detail") or None,
+                None if p.get("reboot_required") is None else int(bool(p["reboot_required"])),
+                p.get("packages") or None,
+                payload.get("collector_version"),
+                payload.get("virt"),
+                peer,
+            ),
         )
-    conn.commit()
-    return sid
+        sid = cur.lastrowid
+        for d in payload.get("disks") or []:
+            conn.execute(
+                "INSERT INTO disks (sample_id, mount, used_bytes, total_bytes) VALUES (?,?,?,?)",
+                (sid, d.get("mount"), d.get("used_bytes"), d.get("total_bytes")),
+            )
+        conn.commit()
+        return sid
 
 
 def prune(conn, retention_hours):
-    cutoff = int(time.time()) - retention_hours * 3600
-    conn.execute(
-        "DELETE FROM disks WHERE sample_id IN (SELECT id FROM samples WHERE ts < ?)",
-        (cutoff,),
-    )
-    conn.execute("DELETE FROM samples WHERE ts < ?", (cutoff,))
-    # An ack for a host that has since aged out of the rolling window entirely
-    # is not "still silencing something", it is a leftover -- and if the name
-    # is ever reused, one that would misapply to whatever that new host reports.
-    conn.execute(
-        "DELETE FROM patch_acks WHERE host NOT IN (SELECT DISTINCT host FROM samples)"
-    )
-    conn.execute(
-        "DELETE FROM eol_acks WHERE host NOT IN (SELECT DISTINCT host FROM samples)"
-    )
-    conn.commit()
+    with _WRITE:
+        cutoff = int(time.time()) - retention_hours * 3600
+        conn.execute(
+            "DELETE FROM disks WHERE sample_id IN (SELECT id FROM samples WHERE ts < ?)",
+            (cutoff,),
+        )
+        conn.execute("DELETE FROM samples WHERE ts < ?", (cutoff,))
+        # An ack for a host that has since aged out of the rolling window entirely
+        # is not "still silencing something", it is a leftover -- and if the name
+        # is ever reused, one that would misapply to whatever that new host reports.
+        conn.execute(
+            "DELETE FROM patch_acks WHERE host NOT IN (SELECT DISTINCT host FROM samples)"
+        )
+        conn.execute(
+            "DELETE FROM eol_acks WHERE host NOT IN (SELECT DISTINCT host FROM samples)"
+        )
+        conn.commit()
 
 
 def latest_per_host(conn):
@@ -238,19 +256,21 @@ def get_patch_ack(conn, host):
 def ack_patch(conn, host, security, packages, now):
     """Silence the host's current patch-security state -- this exact count and
     package list, not "security issues" in general. See the note on the table."""
-    conn.execute(
-        """INSERT INTO patch_acks (host, security, packages, acked_at)
-             VALUES (?,?,?,?)
-           ON CONFLICT(host) DO UPDATE SET
-             security=excluded.security, packages=excluded.packages, acked_at=excluded.acked_at""",
-        (host, security, packages, now),
-    )
-    conn.commit()
+    with _WRITE:
+        conn.execute(
+            """INSERT INTO patch_acks (host, security, packages, acked_at)
+                 VALUES (?,?,?,?)
+               ON CONFLICT(host) DO UPDATE SET
+                 security=excluded.security, packages=excluded.packages, acked_at=excluded.acked_at""",
+            (host, security, packages, now),
+        )
+        conn.commit()
 
 
 def unack_patch(conn, host):
-    conn.execute("DELETE FROM patch_acks WHERE host=?", (host,))
-    conn.commit()
+    with _WRITE:
+        conn.execute("DELETE FROM patch_acks WHERE host=?", (host,))
+        conn.commit()
 
 
 def get_eol_ack(conn, host):
@@ -261,18 +281,20 @@ def get_eol_ack(conn, host):
 def ack_eol(conn, host, status, product, cycle, eol_date, now):
     """Silence the host's current end-of-life phase -- this phase, on this
     release, with this date. See the note on the table."""
-    conn.execute(
-        """INSERT INTO eol_acks (host, status, product, cycle, eol_date, acked_at)
-             VALUES (?,?,?,?,?,?)
-           ON CONFLICT(host) DO UPDATE SET
-             status=excluded.status, product=excluded.product,
-             cycle=excluded.cycle, eol_date=excluded.eol_date,
-             acked_at=excluded.acked_at""",
-        (host, status, product or "", cycle or "", eol_date or "", now),
-    )
-    conn.commit()
+    with _WRITE:
+        conn.execute(
+            """INSERT INTO eol_acks (host, status, product, cycle, eol_date, acked_at)
+                 VALUES (?,?,?,?,?,?)
+               ON CONFLICT(host) DO UPDATE SET
+                 status=excluded.status, product=excluded.product,
+                 cycle=excluded.cycle, eol_date=excluded.eol_date,
+                 acked_at=excluded.acked_at""",
+            (host, status, product or "", cycle or "", eol_date or "", now),
+        )
+        conn.commit()
 
 
 def unack_eol(conn, host):
-    conn.execute("DELETE FROM eol_acks WHERE host=?", (host,))
-    conn.commit()
+    with _WRITE:
+        conn.execute("DELETE FROM eol_acks WHERE host=?", (host,))
+        conn.commit()
