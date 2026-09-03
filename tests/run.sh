@@ -1203,6 +1203,82 @@ PYEOF
         "assert d['parse_tcp']==['tcp',22] and d['parse_icmp']==['icmp',None], d" "$J"
 fi
 
+if want compact-down; then
+  echo "compact-down (a red row must still say which host it is)"
+  J=$(python3 - "$ROOT" <<'PYEOF'
+import re,sys,json; root=sys.argv[1]
+js  = open(f"{root}/server/static/app.js").read()
+css = open(f"{root}/server/static/style.css").read()
+
+# The down branch of compactRow returns early with its own set of children,
+# so the row no longer matches the seven-column template the other rows use.
+branch = re.search(r"if \(h\.status === 'down'\) \{(.*?)\n  \}", js, re.S).group(1)
+# Children on a normal row: dot, icon, name, then whatever the branch adds.
+kids = 3 + len(re.findall(r"a\.appendChild", branch))
+
+tracks = re.search(r"\.crow\.isdown \{[^}]*grid-template-columns:([^;]+);", css).group(1)
+# Split on top-level spaces, keeping minmax(...) intact.
+cols = re.findall(r"minmax\([^)]*\)|\S+", tracks.strip())
+
+print(json.dumps({
+  "children": kids,
+  "tracks": len(cols),
+  "name_track": cols[2] if len(cols) > 2 else None,
+  "reason_track": cols[3] if len(cols) > 3 else None,
+  "name_rendered": "el('span', 'cname', h.host)" in js,
+  # The reason is abbreviated on this row; the sentence lives in the title.
+  "uses_short": "reachShort(h)" in branch,
+  "keeps_title": "w.title" in branch,
+}))
+PYEOF
+) || J=''
+  # The bug: .cdown spanned to the default template's trailing `auto` track,
+  # which sizes to its content's full untruncated width. A long reason grew it
+  # until the minmax(0, 1fr) name column was squeezed to zero and the row went
+  # out as a red bar with no hostname -- it told you something was down but
+  # not what, which is the one thing a row must never do.
+  check "the down row's template has one track per child" \
+        "assert d['children']==d['tracks']==4, d" "$J"
+  # Content-sized, so the name can never be the part that gets truncated.
+  check "the name track is content-sized, not a shrinkable fr" \
+        "assert 'auto' in d['name_track'] and 'fr' not in d['name_track'], d" "$J"
+  check "the reason track is the one that takes leftover space and ellipsizes" \
+        "assert 'fr' in d['reason_track'], d" "$J"
+  check "the row still renders the hostname" \
+        "assert d['name_rendered'] is True, d" "$J"
+  check "the row abbreviates and keeps the full reason on hover" \
+        "assert d['uses_short'] and d['keeps_title'], d" "$J"
+fi
+
+if want duration-wording; then
+  echo "duration-wording (a length of time is not a moment in the past)"
+  J=$(python3 - "$ROOT" <<'PYEOF'
+import re,sys,json; root=sys.argv[1]
+js = open(f"{root}/server/static/app.js").read()
+def body(name):
+    return re.search(r"function %s\(s\) \{(.*?)\n\}" % name, js, re.S).group(1)
+reach = re.search(r"function reachText\(h\) \{(.*?)\n\}", js, re.S).group(1)
+short = re.search(r"function reachShort\(h\) \{(.*?)\n\}", js, re.S).group(1)
+print(json.dumps({
+  "age_has_ago":  "ago" in body("fmtAge"),
+  "dur_has_ago":  "ago" in body("fmtDur"),
+  # "no sample for 3h ago" is not English. Anywhere a duration follows "for"
+  # or "silent", it has to be fmtDur.
+  "text_for_dur": "for ' + fmtDur" in reach,
+  "short_for_dur":"fmtDur" in short and "fmtAge" not in short,
+}))
+PYEOF
+) || J=''
+  check "fmtAge still says 'ago' -- it names a moment" \
+        "assert d['age_has_ago'] is True, d" "$J"
+  check "fmtDur does not, because it names a length" \
+        "assert d['dur_has_ago'] is False, d" "$J"
+  check "the down reason measures silence as a duration, not as 'Xh ago'" \
+        "assert d['text_for_dur'] is True, d" "$J"
+  check "the compact form does too" \
+        "assert d['short_for_dur'] is True, d" "$J"
+fi
+
 echo
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]

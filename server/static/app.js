@@ -29,6 +29,21 @@ var STATUS = {
 };
 function st(k) { return STATUS[k] || STATUS.unknown; }
 
+/* The compact row's version: a fragment, not a sentence. Forty hosts on one
+   screen means this shares a line with a name and a status dot, and the full
+   explanation is one hover or one click away on the card. */
+function reachShort(h) {
+  var r = h.reachability || {};
+  if (h.down_reason === 'unreachable') {
+    return 'no reply' + (r.address ? ' from ' + r.address : '');
+  }
+  if (h.down_reason === 'absent') {
+    return 'silent ' + fmtDur(h.age_seconds) + ', unconfirmed';
+  }
+  if (h.stale && r.state === 'up') return 'answering, not reporting';
+  return null;
+}
+
 /* Host-level status needs one thing the metric-level statuses do not: whether
    this host was ever expected to be reporting. Same 'stale' from the server,
    two different meanings on the wall. */
@@ -49,7 +64,7 @@ function reachText(h) {
     /* The clock got here, not a probe. Say so: "nothing has confirmed this"
        is a materially weaker claim than "it did not answer", and the
        difference changes what you go and check. */
-    return 'no sample for ' + fmtAge(h.age_seconds) + ' and nothing could ' +
+    return 'no sample for ' + fmtDur(h.age_seconds) + ' and nothing could ' +
            'confirm it — ' + (r.detail || 'not probed');
   }
   if (h.stale && r.state === 'up') {
@@ -174,6 +189,14 @@ function fmtAge(s) {
   if (s < 90) return s + 's ago';
   if (s < 5400) return Math.round(s / 60) + 'm ago';
   return Math.round(s / 3600) + 'h ago';
+}
+/* A length of time, not a moment in the past -- "silent for 3h", where
+   fmtAge's trailing " ago" would read as "silent for 3h ago". */
+function fmtDur(s) {
+  if (s === null || s === undefined) return '';
+  if (s < 90) return s + 's';
+  if (s < 5400) return Math.round(s / 60) + 'm';
+  return Math.round(s / 3600) + 'h';
 }
 function fmtUptime(s) {
   if (!s) return '';
@@ -356,8 +379,9 @@ function compactRow(h) {
      read it as current. The row says what is wrong instead. */
   var why = reachText(h);
   if (h.status === 'down') {
-    var w = el('span', 'cdown', s.label + ' · ' + why);
+    var w = el('span', 'cdown', s.label + ' · ' + reachShort(h));
     w.title = why;
+    name.title += '\n' + why;
     a.appendChild(w);
     return a;
   }

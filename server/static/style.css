@@ -116,11 +116,21 @@ button.link:hover { color: var(--text-1); }
 .crow .cflag { font-size: 12px; line-height: 1; }
 
 /* A down host's CPU/memory/disk figures are from before it stopped answering,
-   so the row drops them and spans the reason across those columns instead.
-   Showing last-known numbers next to a red dot invites reading them as
-   current, which is the specific mistake this whole state exists to prevent. */
+   so the row drops them and gives the space to the reason instead. Showing
+   last-known numbers next to a red dot invites reading them as current, which
+   is the specific mistake this whole state exists to prevent.
+
+   That leaves four children rather than seven, so the row needs a template of
+   its own. Spanning the default one's trailing `auto` track did not work: an
+   auto track sizes to its content's full untruncated width, so a long reason
+   grew it until the `minmax(0, 1fr)` name column was squeezed to nothing and
+   the row went out with no hostname on it at all -- a red bar that told you
+   something was down but not what. The name is the one thing a row cannot
+   omit, so here it is content-sized and the reason takes what is left and
+   ellipsizes there instead. */
+.crow.isdown { grid-template-columns: 9px 16px minmax(0, auto) minmax(0, 1fr); }
 .crow .cdown {
-  grid-column: 4 / -1; color: var(--st-crit); font-weight: 600;
+  min-width: 0; color: var(--st-crit); font-weight: 600;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 /* A wash, not a fill: enough to find the row from across the room without
