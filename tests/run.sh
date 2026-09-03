@@ -1279,6 +1279,98 @@ PYEOF
         "assert d['short_for_dur'] is True, d" "$J"
 fi
 
+if want wedged; then
+  echo "wedged (a kernel that answers is not a machine that works)"
+  J=$(python3 - "$ROOT" <<'PYEOF'
+import sys,json,socket,threading; sys.path.insert(0,f"{sys.argv[1]}/server")
+import reach
+
+def serve(mode):
+    """A listener on loopback. 'greet' writes a banner, 'mute' accepts and
+    never speaks -- which is what a host whose userspace has stopped being
+    scheduled looks like from outside: the kernel completes the handshake onto
+    the backlog all by itself."""
+    srv = socket.socket(); srv.bind(("127.0.0.1", 0)); srv.listen(8)
+    port = srv.getsockname()[1]
+    def run():
+        while True:
+            try: c, _ = srv.accept()
+            except OSError: return
+            if mode == "greet": c.sendall(b"SSH-2.0-OpenSSH_10.0p2 Debian-5\r\n")
+            if mode == "mute":  continue          # hold it open, say nothing
+            c.close()
+    threading.Thread(target=run, daemon=True).start()
+    return port
+
+greet, mute = serve("greet"), serve("mute")
+closed = socket.socket(); closed.bind(("127.0.0.1", 0))
+shut = closed.getsockname()[1]; closed.close()   # nothing listening here
+
+print(json.dumps({
+  "greet_banner":  reach.banner("127.0.0.1", greet, 2)[0],
+  "mute_banner":   reach.banner("127.0.0.1", mute, 2)[0],
+  "mute_detail":   reach.banner("127.0.0.1", mute, 2)[1],
+  # tcp cannot tell these apart -- that is the whole point.
+  "greet_tcp":     reach.tcp("127.0.0.1", greet, 2)[0],
+  "mute_tcp":      reach.tcp("127.0.0.1", mute, 2)[0],
+  "closed_banner": reach.banner("127.0.0.1", shut, 2)[0],
+  # Precedence: a service check that fails outranks kernel checks that pass.
+  "wedged_mixed":  reach.probe("127.0.0.1", ["icmp","tcp:%d" % mute,"banner:%d" % mute], 2)[0],
+  "wedged_via":    reach.probe("127.0.0.1", ["icmp","banner:%d" % mute], 2)[1],
+  "healthy_mixed": reach.probe("127.0.0.1", ["icmp","banner:%d" % greet], 2)[0],
+  # A host with no sshd must not be called down by a check that cannot answer.
+  "nosshd_mixed":  reach.probe("127.0.0.1", ["icmp","banner:%d" % shut], 2)[0],
+  "parse_banner":  list(reach.parse_check("banner:22")),
+  "levels":        [reach.LEVEL["icmp"], reach.LEVEL["tcp"], reach.LEVEL["banner"]],
+}))
+PYEOF
+) || J=''
+  # The outage that prompted all of this: a VM whose kernel still answers ICMP
+  # and still completes handshakes onto sshd's backlog, while sshd itself is
+  # never scheduled to accept them. Every kernel-level check calls it up.
+  check "a port that accepts and then says nothing reads down" \
+        "assert d['mute_banner']=='down', d" "$J"
+  check "and says why, in words that name the failure" \
+        "assert 'userspace wedged' in d['mute_detail'], d" "$J"
+  check "a service that greets reads up" \
+        "assert d['greet_banner']=='up', d" "$J"
+  # This is the flaw the banner check exists to cover.
+  check "tcp alone cannot tell a wedged host from a healthy one" \
+        "assert d['greet_tcp']==d['mute_tcp']=='up', d" "$J"
+  check "a failed service check outranks kernel checks that passed" \
+        "assert d['wedged_mixed']=='down', d" "$J"
+  check "and the verdict is attributed to the check that proved it" \
+        "assert d['wedged_via'].startswith('banner:'), d" "$J"
+  check "a healthy host is still up with the same check list" \
+        "assert d['healthy_mixed']=='up', d" "$J"
+  # A refusal means the check cannot answer, not that the host is broken --
+  # a machine with no sshd is not a machine that is down.
+  check "no listener means the service check abstains rather than fails" \
+        "assert d['closed_banner']=='error' and d['nosshd_mixed']=='up', d" "$J"
+  check "banner specs parse and carry the service level" \
+        "assert d['parse_banner']==['banner',22] and d['levels']==['kernel','kernel','service'], d" "$J"
+fi
+
+if want host-checks; then
+  echo "host-checks (the right probe is a property of the machine)"
+  J=$(python3 - "$ROOT" <<'PYEOF'
+import sys,json; sys.path.insert(0,f"{sys.argv[1]}/server")
+import app
+app.CFG={"reachability":{"checks":["icmp","tcp:22"]},
+         "hosts":{"hassium":{"checks":["icmp","banner:22"]},"plain":{}}}
+print(json.dumps({
+  "override": app.checks_for("hassium"),
+  "inherited": app.checks_for("plain"),
+  "unlisted": app.checks_for("nobody"),
+}))
+PYEOF
+) || J=''
+  check "a host can name its own checks" \
+        "assert d['override']==['icmp','banner:22'], d" "$J"
+  check "hosts without an override inherit the global list" \
+        "assert d['inherited']==d['unlisted']==['icmp','tcp:22'], d" "$J"
+fi
+
 echo
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]

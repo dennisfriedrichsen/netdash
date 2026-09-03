@@ -35,6 +35,13 @@ function st(k) { return STATUS[k] || STATUS.unknown; }
 function reachShort(h) {
   var r = h.reachability || {};
   if (h.down_reason === 'unreachable') {
+    /* A failed service check is a different diagnosis from silence, and a
+       far more actionable one: the machine is there, its kernel is answering,
+       and nothing on it is being scheduled. Read off `via` rather than
+       sniffing the detail string for words. */
+    if ((r.via || '').indexOf('banner:') === 0) {
+      return 'not scheduling — kernel up, userspace dead';
+    }
     return 'no reply' + (r.address ? ' from ' + r.address : '');
   }
   if (h.down_reason === 'absent') {

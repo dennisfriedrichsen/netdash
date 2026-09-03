@@ -655,6 +655,17 @@ def pruner():
             sys.stderr.write("prune error: %s\n" % e)
 
 
+def checks_for(host):
+    """Which probes to run against this host.
+
+    Overridable per host because the right check is a property of the machine,
+    not of the fleet: "banner:22" proves userspace is still being scheduled,
+    but only on a host that actually runs sshd and greets on connect.
+    """
+    ov = host_cfg(host).get("checks")
+    return ov or reach_cfg().get("checks") or ["icmp"]
+
+
 def _probe_one(host, sample, cfg, now):
     """Probe one host and fold the result into REACH."""
     addr, addr_source = address_for(host, sample)
@@ -662,7 +673,7 @@ def _probe_one(host, sample, cfg, now):
         state, via, detail = reach.ERROR, None, "no address: %s does not resolve" % host
     else:
         state, via, detail = reach.probe(
-            addr, cfg.get("checks") or ["icmp"], float(cfg.get("timeout_seconds") or 2)
+            addr, checks_for(host), float(cfg.get("timeout_seconds") or 2)
         )
 
     need = max(1, int(cfg.get("failures_before_down") or 2))

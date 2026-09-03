@@ -32,17 +32,39 @@ UP, DOWN, ERROR = "up", "down", "error"
 _PING = shutil.which("ping")
 
 
+# What a check actually proves, which is not the same for all of them.
+#
+# icmp and tcp are KERNEL checks. An echo reply and a completed handshake are
+# both produced by the network stack in softirq context, with no userspace
+# process involved -- the kernel accepts a connection onto a listening socket's
+# backlog whether or not anything ever calls accept() on it.
+#
+# banner is a SERVICE check. It requires a userspace process to be scheduled,
+# to accept the connection and to write to it.
+#
+# The distinction is not academic. A machine whose kernel is alive while
+# userspace has stopped being scheduled answers every kernel check and is
+# nonetheless completely useless -- which is exactly the outage this module was
+# written for, and which the kernel checks alone happily report as "up".
+KERNEL, SERVICE = "kernel", "service"
+
+
 def parse_check(spec):
-    """"icmp" or "tcp:22" -> ("icmp", None) / ("tcp", 22). Raises on nonsense."""
+    """"icmp" / "tcp:22" / "banner:22" -> (kind, port). Raises on nonsense."""
     spec = str(spec).strip().lower()
     if spec == "icmp":
         return ("icmp", None)
-    if spec.startswith("tcp:"):
-        port = int(spec[4:])
-        if not 1 <= port <= 65535:
-            raise ValueError("port out of range: %s" % spec)
-        return ("tcp", port)
-    raise ValueError('unknown check %r (want "icmp" or "tcp:<port>")' % spec)
+    for prefix, kind in (("tcp:", "tcp"), ("banner:", "banner")):
+        if spec.startswith(prefix):
+            port = int(spec[len(prefix):])
+            if not 1 <= port <= 65535:
+                raise ValueError("port out of range: %s" % spec)
+            return (kind, port)
+    raise ValueError(
+        'unknown check %r (want "icmp", "tcp:<port>" or "banner:<port>")' % spec)
+
+
+LEVEL = {"icmp": KERNEL, "tcp": KERNEL, "banner": SERVICE}
 
 
 def resolve(addr):
@@ -119,15 +141,75 @@ def icmp(addr, timeout):
     return DOWN, "no icmp reply"
 
 
-def probe(addr, checks, timeout):
-    """Run checks until one says UP. Returns (state, via, detail).
+def banner(addr, port, timeout):
+    """Connect and require the service to speak first.
 
-    Any single UP wins -- the checks are alternative ways of asking the same
-    question, and a host that answers one and ignores another is still up.
-    DOWN requires every check to have run cleanly and come back empty; if any
-    of them could not run, the verdict is ERROR, because a fleet-wide red
+    Only meaningful for protocols where the server greets -- SSH, SMTP, FTP,
+    IMAP. HTTP waits for a request and would time out here, which would read as
+    a dead host; that is why this is a separate check kind you opt into per
+    port rather than something tcp does automatically.
+
+    The case it exists for: a connection that is accepted and then silent. The
+    kernel completed that handshake on its own and parked it on sshd's backlog;
+    if no banner ever arrives, sshd is not being scheduled. Kernel alive,
+    userspace wedged -- a machine that answers every ping and cannot do a
+    single useful thing.
+    """
+    try:
+        s = socket.create_connection((addr, port), timeout)
+    except ConnectionRefusedError:
+        # Nothing is listening, so this check cannot answer the question it was
+        # asked. Not DOWN -- the host clearly has a kernel, and a host with no
+        # sshd is not a broken host. Let a kernel check speak instead.
+        return ERROR, "nothing listening on %d" % port
+    except ConnectionResetError:
+        return ERROR, "reset on %d before any banner" % port
+    except (socket.timeout, TimeoutError):
+        return DOWN, "no answer on %d in %gs" % (port, timeout)
+    except socket.gaierror:
+        return ERROR, "cannot resolve"
+    except OSError as e:
+        if e.errno in (errno.EHOSTUNREACH, errno.EHOSTDOWN):
+            return DOWN, "host unreachable"
+        return ERROR, "%s: %s" % (errno.errorcode.get(e.errno, e.errno), e)
+
+    try:
+        s.settimeout(timeout)
+        data = s.recv(128)
+    except (socket.timeout, TimeoutError):
+        return DOWN, ("port %d accepted the connection but sent nothing in %gs "
+                      "-- kernel alive, userspace wedged" % (port, timeout))
+    except OSError as e:
+        return ERROR, "%s reading from %d: %s" % (type(e).__name__, port, e)
+    finally:
+        s.close()
+
+    if not data:
+        return DOWN, ("port %d closed without a banner -- kernel alive, "
+                      "userspace wedged" % port)
+    text = data.decode("utf-8", "replace").splitlines()[0].strip()
+    return UP, "banner from %d: %s" % (port, text[:60])
+
+
+def probe(addr, checks, timeout):
+    """Weigh every check and return the strongest evidence. (state, via, detail).
+
+    Among checks at the same level these are alternatives, not a checklist: a
+    host that answers ICMP but refuses connections is up, so any single UP
+    wins. DOWN requires a check to have run cleanly and come back empty, and if
+    a check could not run at all the verdict is ERROR -- a fleet-wide red
     caused by this server losing its ping binary is worse than a fleet-wide
     grey caused by the same thing.
+
+    The one asymmetry: a SERVICE check that fails outranks a KERNEL check that
+    passes, because it proves strictly more. A completed handshake says the
+    network stack is running; a banner says a process was scheduled to write
+    it. When those two disagree, the machine is one whose kernel is up and
+    whose userspace is not, and reporting that as "up" because it answered a
+    ping is the false reassurance this whole module exists to prevent.
+
+    That asymmetry is also why this can no longer return early on the first UP:
+    a later service check may still overturn it.
     """
     ip = resolve(addr)
     if ip is None:
@@ -137,6 +219,8 @@ def probe(addr, checks, timeout):
     # precedence is not a severity ordering and collapsing them got it wrong:
     # any check that could not run outranks any that ran and failed, no matter
     # which came first in the list.
+    service_down = None
+    up = None
     err = None
     down = None
     for spec in checks:
@@ -145,12 +229,23 @@ def probe(addr, checks, timeout):
         except ValueError as e:
             err = err or (ERROR, spec, str(e))
             continue
-        state, detail = (icmp(ip, timeout) if kind == "icmp"
-                         else tcp(ip, port, timeout))
-        if state == UP:
-            return UP, spec, detail
-        if state == ERROR:
+        if kind == "icmp":
+            state, detail = icmp(ip, timeout)
+        elif kind == "tcp":
+            state, detail = tcp(ip, port, timeout)
+        else:
+            state, detail = banner(ip, port, timeout)
+
+        if state == DOWN and LEVEL[kind] == SERVICE:
+            service_down = service_down or (DOWN, spec, detail)
+        elif state == UP:
+            up = up or (UP, spec, detail)
+        elif state == ERROR:
             err = err or (ERROR, spec, detail)
-        elif down is None:
-            down = (DOWN, spec, detail)
-    return err or down or (ERROR, None, "no checks configured")
+        else:
+            down = down or (DOWN, spec, detail)
+
+    # Order is the precedence: proven-wedged, then any sign of life, then an
+    # inability to tell, then a plain no-answer.
+    return (service_down or up or err or down
+            or (ERROR, None, "no checks configured"))
