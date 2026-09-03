@@ -30,7 +30,9 @@ STATIC = os.path.join(HERE, "static")
 CFG = {}
 CONN = None
 
-_ACK_PATH = re.compile(r"^/api/host/([^/]+)/(ack|unack)$")
+# /api/host/<name>/ack keeps meaning patches, so links and muscle memory from
+# before end-of-life became acknowledgeable still work.
+_ACK_PATH = re.compile(r"^/api/host/([^/]+)/(?:(patches|eol)/)?(ack|unack)$")
 
 
 # Defaults for keys added after the first release. deploy.sh never overwrites an
@@ -310,6 +312,35 @@ def patch_summary(sample, now):
     }
 
 
+def eol_for(sample):
+    """The host's end-of-life state, with any acknowledgement folded in.
+
+    Acknowledging is only offered for the two states that are warnings. The
+    ack pins the phase as well as the release, which is the point: "Debian 12
+    goes EOL in three weeks" is a thing you can know and have a plan for, and
+    saying so is not consent to be silent on the day it actually goes
+    unsupported. That is a worse fact about the machine and gets to interrupt
+    again, on its own, with no action needed to un-silence it.
+    """
+    e = (eol.lookup(sample.get("os"), CFG["eol"])
+         if CFG["eol"].get("enabled") else eol._unknown())
+    out = dict(e)
+    ackable = e.get("status") in ("eol", "eol_soon")
+    ack = (db.get_eol_ack(CONN, sample["host"])
+           if ackable and CONN is not None and sample.get("host") else None)
+    acknowledged = bool(
+        ack
+        and ack["status"] == e["status"]
+        and (ack["product"] or "") == (e.get("product") or "")
+        and (ack["cycle"] or "") == (e.get("cycle") or "")
+        and (ack["eol_date"] or "") == (e.get("eol_date") or "")
+    )
+    out["ackable"] = ackable
+    out["acknowledged"] = acknowledged
+    out["acked_at"] = ack["acked_at"] if acknowledged else None
+    return out
+
+
 def summarize(sample, now=None):
     """Turn a raw sample row into the shape the UI consumes."""
     now = now or time.time()
@@ -414,8 +445,7 @@ def summarize(sample, now=None):
         # Derived from the OS string against a cached lookup, so it is computed
         # per request rather than stored per sample -- the answer changes with
         # the calendar, not with anything the host reports.
-        "eol": (eol.lookup(sample.get("os"), CFG["eol"])
-                if CFG["eol"].get("enabled") else eol._unknown()),
+        "eol": eol_for(sample),
         "collector_version": sample.get("collector_version"),
         # "none", a hypervisor name, or None when nothing can tell.
         #
@@ -483,7 +513,7 @@ class Handler(BaseHTTPRequestHandler):
 
         m = _ACK_PATH.match(path)
         if m:
-            return self._ack(m.group(1), m.group(2) == "ack")
+            return self._ack(m.group(1), m.group(2) or "patches", m.group(3) == "ack")
 
         if path != "/api/ingest":
             return self._json(404, {"error": "not found"})
@@ -514,12 +544,28 @@ class Handler(BaseHTTPRequestHandler):
     # other host-facing route (/api/overview, /api/host/<name>) already trusts
     # anyone who can reach this server -- see the "trusted network only" note
     # in the README.
-    def _ack(self, host, acknowledge):
+    def _ack(self, host, kind, acknowledge):
         try:
             samples = [s for s in db.latest_per_host(CONN) if s["host"] == host]
             if not samples:
                 return self._json(404, {"error": "unknown host"})
             sample = samples[0]
+
+            if kind == "eol":
+                if acknowledge:
+                    e = eol_for(sample)
+                    # Same rule as patches: re-read the state here rather than
+                    # trusting what the browser last rendered, so a page left
+                    # open across a release going properly EOL cannot silence
+                    # the red it has never shown.
+                    if not e["ackable"]:
+                        return self._json(
+                            400, {"error": "nothing to acknowledge: not near end of life"})
+                    db.ack_eol(CONN, host, e["status"], e.get("product"),
+                               e.get("cycle"), e.get("eol_date"), int(time.time()))
+                else:
+                    db.unack_eol(CONN, host)
+                return self._json(200, summarize(sample))
 
             if acknowledge:
                 pp = patch_summary(sample, time.time())

@@ -1371,6 +1371,129 @@ PYEOF
         "assert d['inherited']==d['unlisted']==['icmp','tcp:22'], d" "$J"
 fi
 
+if want eol-ack; then
+  echo "eol-ack (acknowledging a warning is not consent to be silent later)"
+  J=$(python3 - "$ROOT" <<'PYEOF'
+import sys,json,time,tempfile,os; sys.path.insert(0,f"{sys.argv[1]}/server")
+import app, db, eol
+tmp = os.path.join(tempfile.mkdtemp(), "t.db")
+app.CONN = db.connect(tmp)
+app.CFG={"thresholds":{"cpu":{"warn":80,"crit":95},"mem":{"warn":85,"crit":95},
+                       "disk":{"warn":85,"crit":95}},
+         "stale_after_seconds":180,"patch_stale_hours":48,
+         "reachability":{"enabled":False},"eol":{"enabled":True},"hosts":{}}
+now=time.time()
+
+STATE={}
+eol.lookup = lambda os_string, cfg: dict(STATE)          # drive it directly
+def sample():
+    return {"host":"box","ts":now,"os":"Debian GNU/Linux 12 (bookworm)","cpu_pct":1.0,
+            "mem_used_bytes":1,"mem_total_bytes":100,"uptime_seconds":1,"disks":[],
+            "virt":None,"patch_security":None,"patch_other":None,
+            "patch_checked_at":None,"patch_source":None,"patch_detail":None,
+            "patch_reboot":None,"patch_packages":None,"collector_version":None,
+            "peer_addr":None}
+db.insert_sample(app.CONN, {"host":"box","os":"Debian GNU/Linux 12 (bookworm)"})
+def st(**kw):
+    STATE.clear(); STATE.update(kw)
+    return app.eol_for(sample())
+def ack():
+    e = app.eol_for(sample())
+    db.ack_eol(app.CONN,"box",e["status"],e.get("product"),e.get("cycle"),
+               e.get("eol_date"),int(now))
+
+SOON=dict(status="eol_soon",source="endoflife.date",product="debian",
+          cycle="12",eol_date="2026-09-30",days_left=27)
+PAST=dict(SOON, status="eol", days_left=-1)
+
+before = st(**SOON)
+ack()
+after  = st(**SOON)
+# The transition the whole design turns on.
+now_past = st(**PAST)
+# A different release is a decision nobody made.
+upgraded = st(**dict(SOON, cycle="13", eol_date="2028-06-10"))
+# Upstream moving the date is new information about the old decision.
+moved    = st(**dict(SOON, eol_date="2027-01-15"))
+# Re-acknowledging the new phase silences the red too.
+st(**PAST); ack()
+past_acked = st(**PAST)
+db.unack_eol(app.CONN,"box")
+after_unack = st(**PAST)
+# Nothing to silence on a healthy release.
+supported = st(status="supported",source="endoflife.date",product="debian",
+               cycle="13",eol_date="2030-06-01",days_left=900)
+
+print(json.dumps({
+  "before":       [before["status"], before["acknowledged"], before["ackable"]],
+  "after":        [after["status"], after["acknowledged"]],
+  "now_past":     [now_past["status"], now_past["acknowledged"]],
+  "upgraded":     upgraded["acknowledged"],
+  "moved":        moved["acknowledged"],
+  "past_acked":   past_acked["acknowledged"],
+  "after_unack":  after_unack["acknowledged"],
+  "supported":    [supported["acknowledged"], supported["ackable"]],
+  "acked_at_set": past_acked["acked_at"] is not None,
+}))
+PYEOF
+) || J=''
+  check "an unacknowledged eol_soon reads as a live warning" \
+        "assert d['before']==['eol_soon',False,True], d" "$J"
+  check "acknowledging eol_soon silences it" \
+        "assert d['after']==['eol_soon',True], d" "$J"
+  # The rule the feature exists for. Acknowledging "goes EOL in three weeks"
+  # is a statement that you know and have a plan. It is not consent to be
+  # silent on the day the release actually stops getting fixes, which is a
+  # materially worse fact and gets to interrupt again with no action needed.
+  check "that ack does NOT carry over when the release goes properly past EOL" \
+        "assert d['now_past']==['eol',False], d" "$J"
+  check "past EOL can be acknowledged in its own right" \
+        "assert d['past_acked'] is True and d['acked_at_set'], d" "$J"
+  check "un-acknowledging brings the warning back" \
+        "assert d['after_unack'] is False, d" "$J"
+  # Same shape as the patch ack: the ack pins a state, not a host.
+  check "upgrading to another release un-silences it" \
+        "assert d['upgraded'] is False, d" "$J"
+  check "upstream moving the date un-silences it" \
+        "assert d['moved'] is False, d" "$J"
+  check "a supported release has nothing to acknowledge" \
+        "assert d['supported']==[False,False], d" "$J"
+fi
+
+if want eol-ack-ui; then
+  echo "eol-ack-ui (an acknowledged warning leaves the All view alone)"
+  J=$(python3 - "$ROOT" <<'PYEOF'
+import re,sys,json; root=sys.argv[1]
+js  = open(f"{root}/server/static/app.js").read()
+py  = open(f"{root}/server/app.py").read()
+row = re.search(r"function compactRow\(h\) \{(.*?)\n\}", js, re.S).group(1)
+badge = re.search(r"function eolBadge\(e\) \{(.*?)\n\}", js, re.S).group(1)
+ovr = re.search(r"var eolCount = .*?\}\)\.length;", js, re.S).group(0)
+print(json.dumps({
+  # The literal ask: no triangle on the All view once acknowledged.
+  "row_hides":    "!h.eol.acknowledged" in row,
+  # The card keeps the words and drops the colour, like an acked patch count.
+  "badge_mutes":  "e.acknowledged ? 'var(--st-none)'" in badge,
+  "badge_shows":  "return null" in badge,
+  "count_skips":  "!h.eol.acknowledged" in ovr,
+  # Old links must keep working.
+  "legacy_route": bool(re.search(r"host/\(\[\^/\]\+\)/\(\?:\(patches\|eol\)/\)\?", py)),
+  "kind_routed":  "m.group(2) or \"patches\"" in py,
+}))
+PYEOF
+) || J=''
+  check "the compact row drops the triangle when acknowledged" \
+        "assert d['row_hides'] is True, d" "$J"
+  # A muted triangle in a forty-row scan list is the worst of both: it still
+  # pulls the eye, just less well. The card has room to say "acknowledged".
+  check "the card badge mutes rather than vanishing" \
+        "assert d['badge_mutes'] and d['badge_shows'], d" "$J"
+  check "the header's past-EOL count skips acknowledged hosts" \
+        "assert d['count_skips'] is True, d" "$J"
+  check "/api/host/<name>/ack still means patches" \
+        "assert d['legacy_route'] and d['kind_routed'], d" "$J"
+fi
+
 echo
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]

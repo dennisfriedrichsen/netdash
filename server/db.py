@@ -63,6 +63,27 @@ CREATE TABLE IF NOT EXISTS patch_acks (
     packages  TEXT    NOT NULL,
     acked_at  INTEGER NOT NULL
 );
+
+-- A silenced end-of-life warning, one per host. Narrow in the same way and
+-- for the same reason as patch_acks, but the state it pins down is different:
+-- the phase, the release, and the date.
+--
+-- Recording the phase is what makes "EOL soon" and "past EOL" two separate
+-- decisions. Acknowledging "Debian 12 goes EOL in three weeks" is a statement
+-- that you know and have a plan; it is emphatically not consent to be silent
+-- on the day it actually goes unsupported, which is a materially worse fact
+-- about the machine and deserves to interrupt again. Recording the cycle and
+-- date covers the rest: an upgrade moves the host to a release nobody
+-- acknowledged, and upstream moving a date is new information about a
+-- decision that was made against the old one.
+CREATE TABLE IF NOT EXISTS eol_acks (
+    host      TEXT    PRIMARY KEY,
+    status    TEXT    NOT NULL,
+    product   TEXT    NOT NULL,
+    cycle     TEXT    NOT NULL,
+    eol_date  TEXT    NOT NULL,
+    acked_at  INTEGER NOT NULL
+);
 """
 
 
@@ -167,6 +188,9 @@ def prune(conn, retention_hours):
     conn.execute(
         "DELETE FROM patch_acks WHERE host NOT IN (SELECT DISTINCT host FROM samples)"
     )
+    conn.execute(
+        "DELETE FROM eol_acks WHERE host NOT IN (SELECT DISTINCT host FROM samples)"
+    )
     conn.commit()
 
 
@@ -226,4 +250,29 @@ def ack_patch(conn, host, security, packages, now):
 
 def unack_patch(conn, host):
     conn.execute("DELETE FROM patch_acks WHERE host=?", (host,))
+    conn.commit()
+
+
+def get_eol_ack(conn, host):
+    r = conn.execute("SELECT * FROM eol_acks WHERE host=?", (host,)).fetchone()
+    return dict(r) if r else None
+
+
+def ack_eol(conn, host, status, product, cycle, eol_date, now):
+    """Silence the host's current end-of-life phase -- this phase, on this
+    release, with this date. See the note on the table."""
+    conn.execute(
+        """INSERT INTO eol_acks (host, status, product, cycle, eol_date, acked_at)
+             VALUES (?,?,?,?,?,?)
+           ON CONFLICT(host) DO UPDATE SET
+             status=excluded.status, product=excluded.product,
+             cycle=excluded.cycle, eol_date=excluded.eol_date,
+             acked_at=excluded.acked_at""",
+        (host, status, product or "", cycle or "", eol_date or "", now),
+    )
+    conn.commit()
+
+
+def unack_eol(conn, host):
+    conn.execute("DELETE FROM eol_acks WHERE host=?", (host,))
     conn.commit()

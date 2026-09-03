@@ -163,10 +163,10 @@ function patchRow(p) {
 /* POSTs to /api/host/<name>/ack or /unack, then re-fetches so the button's
    own click is what makes the state it reads back consistent -- no separate
    client-side toggle to keep in sync with what the server actually stored. */
-function postAck(host, acknowledge, btn) {
+function postAck(host, kind, acknowledge, btn) {
   btn.disabled = true;
-  fetch('/api/host/' + encodeURIComponent(host) + '/' + (acknowledge ? 'ack' : 'unack'),
-        { method: 'POST' })
+  fetch('/api/host/' + encodeURIComponent(host) + '/' + kind + '/' +
+        (acknowledge ? 'ack' : 'unack'), { method: 'POST' })
     .then(function (res) {
       if (!res.ok) return res.json().then(function (b) { throw new Error(b.error || res.status); });
       return tick();
@@ -174,14 +174,33 @@ function postAck(host, acknowledge, btn) {
     .catch(function (e) { btn.disabled = false; alert('Could not update: ' + e.message); });
 }
 
-function ackButton(host, label, acknowledge) {
+var ACK_TITLE = {
+  patches: 'Silence this exact count and package list until either changes.',
+  /* Spelled out because the phase is the surprising half: acknowledging the
+     warning does not acknowledge the thing it was warning about. */
+  eol: 'Silence this warning until the release, the date or the phase changes' +
+       ' — going properly past EOL will show again on its own.'
+};
+
+function ackButton(host, kind, label, acknowledge) {
   var b = el('button', 'link', label);
   b.type = 'button';
-  b.title = acknowledge
-    ? 'Silence this exact count and package list until either changes.'
-    : 'Show this as pending again.';
-  b.onclick = function () { postAck(host, acknowledge, b); };
+  b.title = acknowledge ? ACK_TITLE[kind] : 'Show this as pending again.';
+  b.onclick = function () { postAck(host, kind, acknowledge, b); };
   return b;
+}
+
+/* "acknowledged 3h ago — un-acknowledge", or an "acknowledge" button. */
+function ackRow(host, kind, state) {
+  var row = el('div', 'sub ackrow');
+  if (state.acknowledged) {
+    row.appendChild(document.createTextNode(
+      'acknowledged ' + fmtAge(Math.floor(Date.now() / 1000) - state.acked_at) + ' — '));
+    row.appendChild(ackButton(host, kind, 'un-acknowledge', false));
+  } else {
+    row.appendChild(ackButton(host, kind, 'acknowledge', true));
+  }
+  return row;
 }
 
 function fmtBytes(b) {
@@ -341,13 +360,18 @@ function eolBadge(e) {
   if (!e || !EOL[e.status]) return null;
   var spec = EOL[e.status];
   var b = el('span', 'eolbadge', spec.label);
-  b.style.color = spec.css;
-  b.style.borderColor = spec.css;
+  /* Acknowledged drops the colour but keeps the words, exactly as an
+     acknowledged security count does: an ack is a statement that you know,
+     not a claim that the release is supported after all. */
+  var css = e.acknowledged ? 'var(--st-none)' : spec.css;
+  b.style.color = css;
+  b.style.borderColor = css;
   b.title = e.status === 'eol'
     ? ('This release is past end of life' + (e.eol_date ? ' (' + e.eol_date + ')' : '') +
        ' \u2014 upstream ships no further fixes' +
        (e.source === 'config' ? ', per server.json' : ', per endoflife.date') + '.')
     : ('End of life in ' + e.days_left + ' days, on ' + e.eol_date + ' (endoflife.date).');
+  if (e.acknowledged) b.title += ' Acknowledged.';
   return b;
 }
 
@@ -414,7 +438,13 @@ function compactRow(h) {
   pg.title = 'Patches: ' + patchText(p) + '\n' + patchTitle(p);
   flags.appendChild(pg);
 
-  if (h.eol && (h.eol.status === 'eol' || h.eol.status === 'eol_soon')) {
+  /* An acknowledged warning leaves no flag here at all. This row is a scan
+     target -- forty of them, read from across a room -- and the whole job of a
+     triangle in it is to pull the eye. A muted triangle would still do that,
+     just less well, which is the worst of both. The badge stays on the card
+     and the detail view, where there is room to say it is acknowledged; this
+     view is where you asked for it to be quiet. */
+  if (h.eol && EOL[h.eol.status] && !h.eol.acknowledged) {
     var e = el('span', 'cflag', '\u26A0');
     e.style.color = h.eol.status === 'eol' ? 'var(--st-crit)' : 'var(--st-warn)';
     e.title = h.eol.status === 'eol' ? 'Past end of life' : 'EOL ' + h.eol.eol_date;
@@ -448,7 +478,7 @@ function renderOverview(data, tab) {
            (h.status === 'stale' && h.expect_up);
   }).length;
   var eolCount = data.hosts.filter(function (h) {
-    return h.eol && h.eol.status === 'eol';
+    return h.eol && h.eol.status === 'eol' && !h.eol.acknowledged;
   }).length;
   var behind = data.hosts.filter(function (h) { return h.collector_outdated; }).length;
   /* Down leads. On a wall panel the headline is the only thing read from
@@ -861,9 +891,9 @@ function renderDetail(host, data) {
       if (pp.acknowledged) {
         ackRow.appendChild(document.createTextNode(
           'acknowledged ' + fmtAge(Math.floor(Date.now() / 1000) - pp.acked_at) + ' — '));
-        ackRow.appendChild(ackButton(host, 'un-acknowledge', false));
+        ackRow.appendChild(ackButton(host, 'patches', 'un-acknowledge', false));
       } else {
-        ackRow.appendChild(ackButton(host, 'acknowledge', true));
+        ackRow.appendChild(ackButton(host, 'patches', 'acknowledge', true));
       }
       p4.appendChild(ackRow);
     }
@@ -872,6 +902,39 @@ function renderDetail(host, data) {
       'No patch check has run on this host yet — run netdash-patchcheck.'));
   }
   panels.appendChild(p4);
+
+  /* Support status. Shown only when it is bad news and therefore only when
+     there is something to acknowledge -- a panel reading "supported" on every
+     other host is the noise the EOL badge already avoids. Kept separate from
+     the patch panel on purpose: pending updates are work you can do, and a
+     release nobody ships fixes for is not. */
+  var ee = c.eol;
+  if (ee && EOL[ee.status]) {
+    var p5 = el('div', 'panel');
+    p5.appendChild(el('h2', null, 'Support status'));
+    var eb = el('div', 'big', EOL[ee.status].label);
+    eb.style.color = ee.acknowledged ? 'var(--st-none)' : EOL[ee.status].css;
+    eb.style.fontSize = '26px';
+    p5.appendChild(eb);
+    p5.appendChild(el('div', 'sub',
+      (ee.product || 'unknown product') + (ee.cycle ? ' ' + ee.cycle : '') +
+      (ee.eol_date ? ' · end of life ' + ee.eol_date : '') +
+      (ee.status === 'eol_soon' && ee.days_left !== null
+        ? ' · ' + ee.days_left + ' days left' : '')));
+    p5.appendChild(el('div', 'sub', ee.status === 'eol'
+      ? 'Upstream ships no further fixes for this release.'
+      : 'Still supported, but not for much longer.'));
+    p5.appendChild(el('div', 'sub',
+      ee.source === 'config' ? 'per server.json' : 'per endoflife.date'));
+    if (ee.acknowledged && ee.status === 'eol_soon') {
+      /* The one thing worth promising in writing, since it is the whole
+         reason acknowledging this is safe to do. */
+      p5.appendChild(el('div', 'sub',
+        'Will show again by itself when this release goes properly past EOL.'));
+    }
+    if (ee.ackable) p5.appendChild(ackRow(host, 'eol', ee));
+    panels.appendChild(p5);
+  }
 
   frag.appendChild(panels);
   root.replaceChildren(frag);
