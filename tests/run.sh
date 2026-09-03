@@ -973,6 +973,64 @@ PY
         "assert (d['host_wins'],d['host_src'])==('bhyve','host'), d" "$J"
 fi
 
+if want patch-ack; then
+  echo "patch-ack (acknowledging silences one exact state, not the host)"
+  J=$(python3 - "$ROOT" <<'PY'
+import sys,json,time; sys.path.insert(0,f"{sys.argv[1]}/server")
+import app, db
+
+app.CONN = db.connect(":memory:")
+app.CFG = {"thresholds":{"cpu":{"warn":80,"crit":95},"mem":{"warn":85,"crit":95},
+                         "disk":{"warn":85,"crit":95}},
+           "stale_after_seconds":180,"patch_stale_hours":48,
+           "eol":{"enabled":False},"hosts":{}}
+now = time.time()
+HOST = "freebsd15dot1package"
+PKGS = "python312-3.12.14, giflib-6.1.3, py312-setuptools-63.1.0_3"
+
+def patches(sec, pkgs):
+    row = {"host":HOST,"ts":now,"os":"x","cpu_pct":None,"mem_used_bytes":None,
+           "mem_total_bytes":None,"uptime_seconds":1,
+           "patch_security":sec,"patch_other":0,"patch_checked_at":now,
+           "patch_source":"pkg-audit-pkgbase","patch_detail":None,"patch_reboot":False,
+           "patch_packages":pkgs,"collector_version":None,"disks":[]}
+    return app.summarize(row, now)["patches"]
+
+before = patches(3, PKGS)
+db.ack_patch(app.CONN, HOST, 3, PKGS, int(now))
+after_ack = patches(3, PKGS)
+# A different fix landing changes the package list -- must not stay silenced
+# under an ack that reviewed a different set of packages.
+fewer_pkgs = patches(2, "python312-3.12.14, giflib-6.1.3")
+# Same three packages shown, but a fourth became vulnerable without changing
+# which names are listed -- the count alone moving must also un-silence it.
+more_of_same = patches(4, PKGS)
+db.unack_patch(app.CONN, HOST)
+after_unack = patches(3, PKGS)
+
+print(json.dumps({
+  "before_status":    before["status"],
+  "before_acked":     before["acknowledged"],
+  "after_ack_status": after_ack["status"],
+  "after_ack_acked":  after_ack["acknowledged"],
+  "fewer_pkgs_acked": fewer_pkgs["acknowledged"],
+  "more_same_acked":  more_of_same["acknowledged"],
+  "after_unack_acked": after_unack["acknowledged"],
+}))
+PY
+) || J=''
+  check "an unacknowledged security state reads security, not acknowledged" \
+        "assert d['before_status']=='security' and d['before_acked'] is False, d" "$J"
+  check "acknowledging the exact current state silences it" \
+        "assert d['after_ack_status']=='security' and d['after_ack_acked'] is True, d" "$J"
+  check "a different package list un-silences it, even with fewer issues" \
+        "assert d['fewer_pkgs_acked'] is False, d" "$J"
+  check "the same package list but a different count also un-silences it" \
+        "assert d['more_same_acked'] is False, d" "$J"
+  check "un-acknowledging reverts to unsilenced even for the acked state" \
+        "assert d['after_unack_acked'] is False, d" "$J"
+fi
+
 echo
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]

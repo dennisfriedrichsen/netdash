@@ -33,6 +33,17 @@ var PATCH = {
   unknown:  { css: 'var(--st-none)', glyph: '–' }
 };
 
+/* An acknowledged security state keeps its glyph -- it is still that many
+   issues in those packages, an ack does not make that untrue -- but drops to
+   the same muted colour as 'unknown', since it no longer needs the eye. Only
+   'security' is ever acknowledged (see patch_summary in app.py), so nothing
+   else is affected. */
+function patchStyle(p) {
+  var s = PATCH[(p && p.status) || 'unknown'] || PATCH.unknown;
+  if (p && p.acknowledged) return { css: 'var(--st-none)', glyph: s.glyph };
+  return s;
+}
+
 function patchText(p) {
   if (!p) return 'not checked';
   if (p.status === 'security') return p.security + ' security';
@@ -64,11 +75,14 @@ function patchTitle(p) {
   bits.push('checked ' + fmtAge(p.age_seconds));
   if (p.source) bits.push('via ' + p.source);
   if (p.detail) bits.push(p.detail);
+  if (p.acknowledged) {
+    bits.push('acknowledged ' + fmtAge(Math.floor(Date.now() / 1000) - p.acked_at));
+  }
   return bits.join(' · ');
 }
 
 function patchRow(p) {
-  var s = PATCH[(p && p.status) || 'unknown'] || PATCH.unknown;
+  var s = patchStyle(p);
   var row = el('div', 'patch');
   row.style.setProperty('--st', s.css);
   row.appendChild(el('span', 'pdot'));
@@ -77,6 +91,30 @@ function patchRow(p) {
   row.appendChild(el('span', 'pval', patchText(p)));
   row.title = patchTitle(p);
   return row;
+}
+
+/* POSTs to /api/host/<name>/ack or /unack, then re-fetches so the button's
+   own click is what makes the state it reads back consistent -- no separate
+   client-side toggle to keep in sync with what the server actually stored. */
+function postAck(host, acknowledge, btn) {
+  btn.disabled = true;
+  fetch('/api/host/' + encodeURIComponent(host) + '/' + (acknowledge ? 'ack' : 'unack'),
+        { method: 'POST' })
+    .then(function (res) {
+      if (!res.ok) return res.json().then(function (b) { throw new Error(b.error || res.status); });
+      return tick();
+    })
+    .catch(function (e) { btn.disabled = false; alert('Could not update: ' + e.message); });
+}
+
+function ackButton(host, label, acknowledge) {
+  var b = el('button', 'link', label);
+  b.type = 'button';
+  b.title = acknowledge
+    ? 'Silence this exact count and package list until either changes.'
+    : 'Show this as pending again.';
+  b.onclick = function () { postAck(host, acknowledge, b); };
+  return b;
 }
 
 function fmtBytes(b) {
@@ -282,9 +320,9 @@ function compactRow(h) {
 
   var flags = el('span', 'cflags');
   var p = h.patches || {};
-  var ps = PATCH[p.status || 'unknown'] || PATCH.unknown;
+  var ps = patchStyle(p);
   var pg = el('span', 'cflag', ps.glyph);
-  pg.style.color = p.status === 'ok' ? 'var(--muted)' : ps.css;
+  pg.style.color = (p.status === 'ok' || p.acknowledged) ? 'var(--muted)' : ps.css;
   pg.title = 'Patches: ' + patchText(p) + '\n' + patchTitle(p);
   flags.appendChild(pg);
 
@@ -670,7 +708,7 @@ function renderDetail(host, data) {
   /* Patches -- no sparkline: this moves once a day, and a flat line for 23 of
      every 24 hours would say nothing a number does not. */
   var pp = c.patches || {};
-  var ps = PATCH[pp.status || 'unknown'] || PATCH.unknown;
+  var ps = patchStyle(pp);
   var p4 = el('div', 'panel');
   p4.appendChild(el('h2', null, 'Patch status'));
   var b4 = el('div', 'big');
@@ -693,6 +731,21 @@ function renderDetail(host, data) {
         'updates are installed but not running until this host reboots'));
     }
     if (pp.detail) p4.appendChild(el('div', 'sub', pp.detail));
+    /* Acknowledging silences this exact count and package list -- a pkg audit
+       hit with no upstream fix yet can otherwise sit red for months. It is
+       only offered for 'security': 'reboot' clears itself the moment the host
+       reboots, and everything else is not the thing this was asked for. */
+    if (pp.status === 'security') {
+      var ackRow = el('div', 'sub ackrow');
+      if (pp.acknowledged) {
+        ackRow.appendChild(document.createTextNode(
+          'acknowledged ' + fmtAge(Math.floor(Date.now() / 1000) - pp.acked_at) + ' — '));
+        ackRow.appendChild(ackButton(host, 'un-acknowledge', false));
+      } else {
+        ackRow.appendChild(ackButton(host, 'acknowledge', true));
+      }
+      p4.appendChild(ackRow);
+    }
   } else {
     p4.appendChild(el('div', 'sub',
       'No patch check has run on this host yet — run netdash-patchcheck.'));

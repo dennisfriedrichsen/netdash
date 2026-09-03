@@ -10,6 +10,7 @@ Routes:
 
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -26,6 +27,8 @@ STATIC = os.path.join(HERE, "static")
 
 CFG = {}
 CONN = None
+
+_ACK_PATH = re.compile(r"^/api/host/([^/]+)/(ack|unack)$")
 
 
 # Defaults for keys added after the first release. deploy.sh never overwrites an
@@ -170,6 +173,20 @@ def patch_summary(sample, now):
     else:
         status = "ok"
 
+    # An ack silences one exact state -- this security count against this
+    # package list -- not "security issues" on this host in general. A FreeBSD
+    # box can carry a pkg audit hit for months with no upstream fix yet; that
+    # is worth silencing once reviewed, but a *different* package turning up
+    # vulnerable next week is not the thing that got reviewed, so the ack must
+    # not cover it. Comparing both fields, not just the count, is what makes
+    # "shrank by one, grew by a different one" register as a change too.
+    packages = sample.get("patch_packages") or ""
+    ack = (db.get_patch_ack(CONN, sample["host"])
+           if status == "security" and CONN is not None and sample.get("host") else None)
+    acknowledged = bool(
+        ack and ack["security"] == sec and (ack["packages"] or "") == packages
+    )
+
     return {
         "status": status,
         "security": sec,
@@ -180,6 +197,8 @@ def patch_summary(sample, now):
         "source": sample.get("patch_source"),
         "detail": sample.get("patch_detail"),
         "packages": sample.get("patch_packages"),
+        "acknowledged": acknowledged,
+        "acked_at": ack["acked_at"] if acknowledged else None,
     }
 
 
@@ -318,9 +337,14 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, code, obj):
         self._send(code, json.dumps(obj))
 
-    # -- POST /api/ingest --
+    # -- POST /api/ingest, /api/host/<name>/ack, /api/host/<name>/unack --
     def do_POST(self):
         path = urlparse(self.path).path
+
+        m = _ACK_PATH.match(path)
+        if m:
+            return self._ack(m.group(1), m.group(2) == "ack")
+
         if path != "/api/ingest":
             return self._json(404, {"error": "not found"})
 
@@ -344,6 +368,35 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return self._fail(500, "ingest %s" % payload["host"], e)
         return self._json(200, {"ok": True, "host": payload["host"]})
+
+    # No auth beyond what the rest of the dashboard has: this is a
+    # click-a-button-on-the-page action, not a collector credential, and every
+    # other host-facing route (/api/overview, /api/host/<name>) already trusts
+    # anyone who can reach this server -- see the "trusted network only" note
+    # in the README.
+    def _ack(self, host, acknowledge):
+        try:
+            samples = [s for s in db.latest_per_host(CONN) if s["host"] == host]
+            if not samples:
+                return self._json(404, {"error": "unknown host"})
+            sample = samples[0]
+
+            if acknowledge:
+                pp = patch_summary(sample, time.time())
+                # Acknowledging is reviewing a specific pending state, not a
+                # standing "never tell me about this host's patches again" --
+                # there has to be something to review, and re-fetching it here
+                # rather than trusting whatever the browser last rendered means
+                # a stale page cannot ack a state that has since changed.
+                if pp["status"] != "security":
+                    return self._json(400, {"error": "nothing pending to acknowledge"})
+                db.ack_patch(CONN, host, pp["security"],
+                             sample.get("patch_packages") or "", int(time.time()))
+            else:
+                db.unack_patch(CONN, host)
+        except Exception as e:
+            return self._fail(500, "ack %s" % host, e)
+        return self._json(200, summarize(sample))
 
     # -- GET --
     def do_GET(self):

@@ -469,6 +469,24 @@ pressure is live and self-clearing; pending patches sit amber for a week and
 train you to ignore amber. The "needs attention" count in the header stays a
 statement about CPU, memory and disk.
 
+### Acknowledging a security state
+
+Not every red **security** badge is waiting on you: `pkg audit` on FreeBSD (and
+`arch-audit`, and others) can flag a package for months with no upstream fix
+yet, and the badge has no way to tell "not fixed" from "not looked at" apart.
+The host's detail page has an **acknowledge** button for exactly that case —
+it silences this security count against this exact package list, muting the
+badge to grey while leaving its glyph in place, since the issue is still real.
+
+It is *not* a snooze on the host. The ack is keyed to that count and that
+package list, both — a package on the list getting fixed, or a different one
+turning up vulnerable, changes one of them, and the badge reverts to red on
+its own at the next check. Nothing needs to notice the ack has gone stale and
+clear it by hand.
+
+Only offered for **security** — a **reboot required** badge clears itself the
+moment the host reboots, so there is nothing there worth silencing.
+
 ## TrueNAS
 
 Nothing is installed on the NAS. The server polls its REST API on a schedule.

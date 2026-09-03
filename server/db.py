@@ -45,6 +45,19 @@ CREATE TABLE IF NOT EXISTS disks (
     total_bytes INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_disks_sample ON disks(sample_id);
+
+-- A silenced patch-security state, one per host. Deliberately narrow: this
+-- acknowledges "N security issues in these packages", not the host in
+-- general, and only that exact state -- a security count or package list
+-- that no longer matches means new information arrived (a package was fixed,
+-- or a different one became vulnerable), and the ack stops applying on its
+-- own rather than silencing whatever replaced it.
+CREATE TABLE IF NOT EXISTS patch_acks (
+    host      TEXT    PRIMARY KEY,
+    security  INTEGER NOT NULL,
+    packages  TEXT    NOT NULL,
+    acked_at  INTEGER NOT NULL
+);
 """
 
 
@@ -141,6 +154,12 @@ def prune(conn, retention_hours):
         (cutoff,),
     )
     conn.execute("DELETE FROM samples WHERE ts < ?", (cutoff,))
+    # An ack for a host that has since aged out of the rolling window entirely
+    # is not "still silencing something", it is a leftover -- and if the name
+    # is ever reused, one that would misapply to whatever that new host reports.
+    conn.execute(
+        "DELETE FROM patch_acks WHERE host NOT IN (SELECT DISTINCT host FROM samples)"
+    )
     conn.commit()
 
 
@@ -178,3 +197,26 @@ def history(conn, host, since_seconds):
 
 def known_hosts(conn):
     return [r["host"] for r in conn.execute("SELECT DISTINCT host FROM samples ORDER BY host")]
+
+
+def get_patch_ack(conn, host):
+    r = conn.execute("SELECT * FROM patch_acks WHERE host=?", (host,)).fetchone()
+    return dict(r) if r else None
+
+
+def ack_patch(conn, host, security, packages, now):
+    """Silence the host's current patch-security state -- this exact count and
+    package list, not "security issues" in general. See the note on the table."""
+    conn.execute(
+        """INSERT INTO patch_acks (host, security, packages, acked_at)
+             VALUES (?,?,?,?)
+           ON CONFLICT(host) DO UPDATE SET
+             security=excluded.security, packages=excluded.packages, acked_at=excluded.acked_at""",
+        (host, security, packages, now),
+    )
+    conn.commit()
+
+
+def unack_patch(conn, host):
+    conn.execute("DELETE FROM patch_acks WHERE host=?", (host,))
+    conn.commit()
