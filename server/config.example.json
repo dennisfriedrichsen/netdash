@@ -6,6 +6,17 @@
   "retention_hours": 24,
   "stale_after_seconds": 180,
   "patch_stale_hours": 48,
+  "reachability": {
+    "enabled": true,
+    "checks": [
+      "icmp",
+      "tcp:22"
+    ],
+    "interval_seconds": 30,
+    "timeout_seconds": 2,
+    "failures_before_down": 2,
+    "down_after_seconds": 900
+  },
   "thresholds": {
     "cpu": {
       "warn": 80,
@@ -36,5 +47,13 @@
     "warn_days": 30,
     "overrides": {}
   },
-  "hosts": {}
+  "hosts": {
+    "laptop.example": {
+      "expect_up": false,
+      "stale_after_seconds": 900
+    },
+    "hassium.example": {
+      "address": "10.0.0.42"
+    }
+  }
 }

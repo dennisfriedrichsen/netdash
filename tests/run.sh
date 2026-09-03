@@ -1078,6 +1078,131 @@ PY
         "assert d['after_unack_acked'] is False, d" "$J"
 fi
 
+if want reachability; then
+  echo "reachability (a locked host must read down, not stale)"
+  J=$(python3 - "$ROOT" <<'PYEOF'
+import sys,json,time; sys.path.insert(0,f"{sys.argv[1]}/server")
+import app
+app.CFG={"thresholds":{"cpu":{"warn":80,"crit":95},"mem":{"warn":85,"crit":95},
+                       "disk":{"warn":85,"crit":95}},
+         "stale_after_seconds":180,"patch_stale_hours":48,
+         "eol":{"enabled":False},
+         "reachability":{"enabled":True,"checks":["icmp"],"failures_before_down":2,
+                         "down_after_seconds":900},
+         "hosts":{"thelaptop":{"expect_up":False}}}
+now=time.time()
+def s(host, age, reach=None):
+    app.REACH.clear()
+    if reach: app.REACH[host]=reach
+    row={"host":host,"ts":now-age,"os":"x","cpu_pct":10.0,"mem_used_bytes":10,
+         "mem_total_bytes":100,"uptime_seconds":1,"disks":[],"virt":None,
+         "patch_security":None,"patch_other":None,"patch_checked_at":None,
+         "patch_source":None,"patch_detail":None,"patch_reboot":None,
+         "patch_packages":None,"collector_version":None,"peer_addr":"10.0.0.9"}
+    return app.summarize(row, now)
+DOWN={"state":"down","probe":"down","failures":2,"detail":"no reply in 2s",
+      "address":"10.0.0.42","address_source":"config","via":"icmp","checked_at":now}
+UP  ={"state":"up","probe":"up","failures":0,"detail":"icmp reply",
+      "address":"10.0.0.42","address_source":"config","via":"icmp","checked_at":now}
+UNK ={"state":"unknown","probe":"error","failures":0,"detail":"cannot run ping",
+      "address":"10.0.0.42","address_source":"config","via":"icmp","checked_at":now}
+print(json.dumps({
+  "locked":        s("hassium", 600, DOWN)["status"],
+  "locked_reason": s("hassium", 600, DOWN)["down_reason"],
+  "fresh_nonreply":s("hassium",   5, DOWN)["status"],
+  "answering":     s("hassium", 600, UP)["status"],
+  "answering_long":s("hassium",4000, UP)["status"],
+  "unprobed":      s("hassium", 600)["status"],
+  "unprobed_long": s("hassium",4000)["status"],
+  "cant_probe":    s("hassium", 600, UNK)["status"],
+  "cant_probe_long":s("hassium",4000, UNK)["status"],
+  "laptop":        s("thelaptop", 4000, DOWN)["status"],
+  "laptop_expect": s("thelaptop", 4000, DOWN)["expect_up"],
+  "rank_vs_crit":  app._RANK["down"] > app._RANK["critical"],
+  "detail_exposed":s("hassium", 600, DOWN)["reachability"]["detail"],
+}))
+PYEOF
+) || J=''
+  # The bug this exists for: a VM whose CPUs stopped scheduling. Push-only
+  # monitoring sees the same silence as a broken cron entry and paints both a
+  # muted grey, which is the colour you scan past on a wall panel.
+  check "a stale host that does not answer reads down, not stale" \
+        "assert (d['locked'],d['locked_reason'])==('down','unreachable'), d" "$J"
+  # A failed probe against a host that reported seconds ago is far more likely
+  # to be our own hiccup than an outage. Staleness has to agree first.
+  check "a fresh host is never down, whatever a probe says" \
+        "assert d['fresh_nonreply']=='ok', d" "$J"
+  # The other half of the distinction, and the reason the probe is worth having
+  # at all: box alive, collector dead. Amber, and never red however long it
+  # lasts -- shouting DOWN at a machine you are talking to right now is how a
+  # dashboard trains you to ignore it.
+  check "a host that answers stays stale no matter how long it is silent" \
+        "assert (d['answering'],d['answering_long'])==('stale','stale'), d" "$J"
+  # The clock is the backstop for when probing cannot reach a verdict -- no
+  # route to that subnet, no ping binary, a host that answers nothing.
+  check "silence beyond down_after_seconds is down even with no probe verdict" \
+        "assert (d['unprobed'],d['unprobed_long'])==('stale','down'), d" "$J"
+  check "a probe that errored is treated as no verdict, not as a failure" \
+        "assert (d['cant_probe'],d['cant_probe_long'])==('stale','down'), d" "$J"
+  # A laptop that is closed for the night is not an outage.
+  check "expect_up:false keeps a host out of down entirely" \
+        "assert d['laptop']=='stale' and d['laptop_expect'] is False, d" "$J"
+  check "down outranks critical in the rollup" \
+        "assert d['rank_vs_crit'] is True, d" "$J"
+  # A red card has to be explainable from the API, not taken on faith.
+  check "the probe detail reaches the API" \
+        "assert d['detail_exposed']=='no reply in 2s', d" "$J"
+fi
+
+if want reach-probe; then
+  echo "reach-probe (a probe that cannot run is never evidence of down)"
+  J=$(python3 - "$ROOT" <<'PYEOF'
+import sys,json; sys.path.insert(0,f"{sys.argv[1]}/server")
+import reach
+# A closed port answers with a RST, and generating that RST is work the host's
+# kernel had to schedule -- so a refusal is proof of life, not a failure. This
+# is what makes tcp:22 a usable check on hosts with no sshd.
+refused = reach.tcp("127.0.0.1", 9, 1)
+print(json.dumps({
+  "refused":       refused[0],
+  "loopback_icmp": reach.icmp("127.0.0.1", 2)[0],
+  "blackhole":     reach.probe("192.0.2.99", ["icmp"], 1)[0],
+  "blackhole_tcp": reach.probe("192.0.2.99", ["tcp:22"], 1)[0],
+  "unresolvable":  reach.probe("no.such.host.invalid", ["icmp"], 1)[0],
+  "no_checks":     reach.probe("127.0.0.1", [], 1)[0],
+  "bad_check":     reach.probe("127.0.0.1", ["ftp"], 1)[0],
+  # One check answering is enough; they are alternative ways of asking, not a
+  # checklist a host has to pass.
+  "any_success":   reach.probe("127.0.0.1", ["tcp:9"], 1)[0],
+  "error_beats_down": reach.probe("192.0.2.99", ["tcp:22","ftp"], 1)[0],
+  "parse_tcp":     list(reach.parse_check("tcp:22")),
+  "parse_icmp":    list(reach.parse_check("icmp")),
+}))
+PYEOF
+) || J=''
+  check "a refused connection counts as up -- the host's kernel answered" \
+        "assert d['refused']=='up', d" "$J"
+  check "loopback answers icmp" \
+        "assert d['loopback_icmp']=='up', d" "$J"
+  check "a black-holed address is down by both icmp and tcp" \
+        "assert (d['blackhole'],d['blackhole_tcp'])==('down','down'), d" "$J"
+  # Every one of these is a fact about this server, not the host being probed.
+  # A monitor that paints hosts red because of its own broken plumbing is one
+  # you learn to stop believing.
+  check "an unresolvable name is an error, never down" \
+        "assert d['unresolvable']=='error', d" "$J"
+  check "no checks configured is an error, never down" \
+        "assert d['no_checks']=='error', d" "$J"
+  check "a malformed check is an error, never down" \
+        "assert d['bad_check']=='error', d" "$J"
+  check "one check answering is enough" \
+        "assert d['any_success']=='up', d" "$J"
+  check "a broken check outweighs a failed one in the verdict" \
+        "assert d['error_beats_down']=='error', d" "$J"
+  check "check specs parse" \
+        "assert d['parse_tcp']==['tcp',22] and d['parse_icmp']==['icmp',None], d" "$J"
+fi
+
 echo
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]

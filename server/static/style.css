@@ -115,6 +115,19 @@ button.link:hover { color: var(--text-1); }
 .crow .cflags { display: inline-flex; gap: 4px; min-width: 2.4em; }
 .crow .cflag { font-size: 12px; line-height: 1; }
 
+/* A down host's CPU/memory/disk figures are from before it stopped answering,
+   so the row drops them and spans the reason across those columns instead.
+   Showing last-known numbers next to a red dot invites reading them as
+   current, which is the specific mistake this whole state exists to prevent. */
+.crow .cdown {
+  grid-column: 4 / -1; color: var(--st-crit); font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* A wash, not a fill: enough to find the row from across the room without
+   fighting the text contrast. */
+.crow.isdown { background: color-mix(in srgb, var(--st-crit) 12%, transparent); }
+.crow.isdown:hover { background: color-mix(in srgb, var(--st-crit) 20%, transparent); }
+
 @media (min-width: 1500px) {
   .compact { grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); }
   .crow { font-size: 14px; }
@@ -132,6 +145,18 @@ button.link:hover { color: var(--text-1); }
   border-left: 4px solid var(--st, var(--st-none));
 }
 .card:hover { border-color: var(--baseline); }
+.card.isdown { background: color-mix(in srgb, var(--st-crit) 10%, var(--surface-1)); }
+.card .why { margin-top: 2px; white-space: normal; }
+
+/* Detail view: the readings below are all from before the outage, and that
+   needs saying once at the top rather than being inferred from a timestamp. */
+.why-banner {
+  margin: 0 22px 14px; padding: 10px 14px; border-radius: var(--radius);
+  border-left: 4px solid var(--st, var(--st-none));
+  background: color-mix(in srgb, var(--st, var(--st-none)) 10%, var(--surface-1));
+  color: var(--text-1); font-weight: 600; font-size: 14px;
+}
+.why-sub { font-weight: 400; color: var(--text-2); font-size: 13px; margin-top: 3px; }
 .card .row1 { display: flex; align-items: center; gap: 9px; margin-bottom: 2px; }
 
 /* OS icon: identity by shape, in muted ink -- never a brand colour, so it

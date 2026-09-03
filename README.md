@@ -50,9 +50,10 @@ an LLM agent instead of doing it by hand.
 | `retention_hours` | rolling window; older samples are pruned every 10 min |
 | `stale_after_seconds` | a host with no sample for this long shows as **Stale** |
 | `patch_stale_hours` | a patch check older than this shows as **unknown**, not OK |
+| `reachability` | probing that turns silence into **DOWN** (see below) |
 | `eol` | end-of-life lookups via endoflife.date (see below) |
 | `thresholds` | warn/crit percentages per metric |
-| `hosts` | per-host thresholds, staleness and `virt` overrides (see below) |
+| `hosts` | per-host thresholds, staleness, address and `virt` overrides (see below) |
 | `truenas` | API polling for the NAS (see below) |
 
 ### Thresholds
@@ -85,7 +86,8 @@ per-host settings, keyed by the name the collector reports:
 ```json
 "hosts": {
   "netbsd11dot0": { "thresholds": { "mem": { "warn": 92 } } },
-  "argon":        { "stale_after_seconds": 900 },
+  "argon":        { "stale_after_seconds": 900, "expect_up": false },
+  "hassium":      { "address": "10.0.0.42" },
   "truenas-core": { "virt": "none" }
 }
 ```
@@ -101,11 +103,95 @@ the same workload — raising the warn threshold there is more honest than
 pretending the number means something different. And a laptop that leaves the
 LAN is not stale at 180 seconds; it is asleep.
 
-`stale_after_seconds` is overridable the same way. The effective values come
+`stale_after_seconds`, `expect_up`, `address` and `down_after_seconds` are
+overridable the same way. The effective values come
 back per host in `/api/overview`, so a card being a colour you did not expect is
 explainable without guessing, and the server logs at startup any configured host
 that has never reported — a typo'd hostname otherwise does nothing, silently and
 indistinguishably from a host not installed yet.
+
+### Down, stale and away
+
+A push-only dashboard has one blind spot, and it is the outage you most need to
+see. Nothing arrives from a host whose kernel has stopped scheduling, and
+nothing arrives from a host whose collector was never installed properly. Both
+are the same silence. Both used to read as the same muted grey **Stale** — the
+colour you scan past — so a hard-locked VM sat on the wall panel looking exactly
+like a machine nobody had finished setting up.
+
+Silence is now three states, not one:
+
+| state | colour | means |
+|---|---|---|
+| **Stale** | amber | expected to report, and has not. Something is wrong; we do not yet know what |
+| **DOWN** | red | confirmed not answering, or absent far past any innocent explanation |
+| **Away** | grey | `expect_up: false` — a laptop that is closed for the night |
+
+**DOWN** outranks **Crit** in the rollup: a host at 99% disk is a problem you can
+still log in and fix, and a host that is not answering is not.
+
+Two independent routes reach it, so neither is a single point of failure:
+
+- **the probe** — the server tries the host's own address and gets a clean
+  no-answer. Fast and specific: red within a sweep of going stale.
+- **the clock** — absence beyond `down_after_seconds`, for when the probe cannot
+  reach a verdict at all: no route to that subnet, no `ping` binary, a host that
+  answers nothing by design.
+
+A probe that *answers* vetoes the clock. That case is the other half of what
+this buys you: the box is fine and its collector is broken, which stays amber
+and says so — `host answers (icmp) but is not reporting`. Shouting DOWN at a
+machine you are currently talking to is how a dashboard loses its credibility.
+
+```json
+"reachability": {
+  "enabled": true,
+  "checks": ["icmp", "tcp:22"],
+  "interval_seconds": 30,
+  "timeout_seconds": 2,
+  "failures_before_down": 2,
+  "down_after_seconds": 900
+}
+```
+
+Checks are alternatives, not a checklist: any one answering means up. ICMP
+covers hosts that refuse connections, and a TCP port covers hosts that drop
+ICMP. Port 22 is the pragmatic default because **a refused connection counts as
+up** — generating that RST is work the host's kernel had to schedule — so it
+works even where nothing is listening on it.
+
+Only hosts that have gone quiet are probed, starting at half the staleness
+window so the verdict is in hand the moment a host crosses into stale. A host
+that reported four seconds ago is up, and no ping makes that truer.
+
+**A probe that cannot run is never evidence of down.** A missing `ping`, an
+unresolvable name, a firewall blocking the server's own outbound traffic — all
+of those are facts about the server, not about the host, and they leave the
+host amber rather than painting it red. A monitor that goes red because of its
+own broken plumbing is one you learn to stop believing. The server says at
+startup if ICMP probes are unusable, rather than leaving it to be discovered
+during an outage.
+
+The address is chosen in this order, and reported in `/api/overview` as
+`reachability.address_source` so the choice is auditable rather than inferred:
+
+1. `address` in the host's config block
+2. the reported hostname, if it resolves on the server
+3. the address the collector's own pushes came from
+
+Third is a last resort on purpose: behind any NAT that is a gateway, and a
+gateway answers a probe cheerfully while the host behind it is dead. A false
+green is the one answer a down-detector must never give.
+
+ICMP uses the system `ping`, which needs either setuid (BSD) or file
+capabilities (Linux). The shipped systemd unit sets `NoNewPrivileges=yes`,
+which drops those; on most Linux distributions `ping` still works through
+unprivileged ICMP sockets (`net.ipv4.ping_group_range`). Where it does not, the
+`tcp:` checks carry the feature on their own, or grant the capability:
+
+```sh
+systemctl edit netdash    # [Service] / AmbientCapabilities=CAP_NET_RAW
+```
 
 ### API
 
@@ -265,8 +351,9 @@ and its log is never rotated:
 
 The first is expected and self-correcting: a laptop off the LAN, or the server
 restarting. Logging it would add ~1440 lines a day. The second will not fix
-itself, so it is reported. The host simply shows as **Stale** on the dashboard
-in both cases.
+itself, so it is reported. The host shows as **Stale** on the dashboard in both
+cases — and stays amber rather than going red, because the server can still
+reach it.
 
 On Linux the collector uses `curl` if present and falls back to `wget`, since
 Alpine ships BusyBox `wget` and no `curl`. BusyBox `wget` exits 1 for every
@@ -534,8 +621,11 @@ systemctl list-timers netdash-patchcheck.timer
 curl -s https://netdash.example/api/overview | python3 -m json.tool
 ```
 
-A host showing **Stale** is reachable-but-silent: its timer stopped, or the token
-is wrong (the server answers 401 and the collector exits non-zero).
+A host showing **Stale** is now genuinely reachable-but-silent — the server has
+probed it and something answered. Its timer stopped, or the token is wrong (the
+server answers 401 and the collector exits non-zero). A host showing **DOWN** is
+not answering at all; the card and `/api/overview` say which check failed, at
+which address, and where that address came from.
 
 ## License
 

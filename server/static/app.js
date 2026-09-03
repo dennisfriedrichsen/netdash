@@ -13,10 +13,55 @@ var STATUS = {
   ok:       { css: 'var(--st-ok)',   glyph: '✓', label: 'OK' },
   warning:  { css: 'var(--st-warn)', glyph: '▲', label: 'Warn' },
   critical: { css: 'var(--st-crit)', glyph: '✕', label: 'Crit' },
-  stale:    { css: 'var(--st-none)', glyph: '⋯', label: 'Stale' },
+  /* Not answering. Ranked above Crit and coloured with it: a host at 99% disk
+     is a problem you can still log in and fix. */
+  down:     { css: 'var(--st-crit)', glyph: '!', label: 'DOWN' },
+  /* Amber, not grey. This used to share the muted grey with 'n/a', which meant
+     a hard-locked VM and a metric a collector cannot read looked identical --
+     and grey is the colour you scan past. Silence from a host that is supposed
+     to be reporting is not an absence of information, it IS information. */
+  stale:    { css: 'var(--st-warn)', glyph: '⋯', label: 'Stale' },
+  /* The one silence that is genuinely uninteresting: a host configured with
+     expect_up:false -- a laptop that is closed for the night. Keeps the grey
+     that 'stale' just gave up. */
+  away:     { css: 'var(--st-none)', glyph: '⋯', label: 'Away' },
   unknown:  { css: 'var(--st-none)', glyph: '–', label: 'n/a' }
 };
 function st(k) { return STATUS[k] || STATUS.unknown; }
+
+/* Host-level status needs one thing the metric-level statuses do not: whether
+   this host was ever expected to be reporting. Same 'stale' from the server,
+   two different meanings on the wall. */
+function hostStyle(h) {
+  if (h.status === 'stale' && !h.expect_up) return STATUS.away;
+  return st(h.status);
+}
+
+/* Why this host reads the way it does, in one line -- the sentence you want
+   under a red card at 03:00 rather than a colour you have to interpret. */
+function reachText(h) {
+  var r = h.reachability || {};
+  if (h.down_reason === 'unreachable') {
+    return 'unreachable — ' + (r.detail || 'no answer') +
+           (r.address ? ' (' + r.address + ')' : '');
+  }
+  if (h.down_reason === 'absent') {
+    /* The clock got here, not a probe. Say so: "nothing has confirmed this"
+       is a materially weaker claim than "it did not answer", and the
+       difference changes what you go and check. */
+    return 'no sample for ' + fmtAge(h.age_seconds) + ' and nothing could ' +
+           'confirm it — ' + (r.detail || 'not probed');
+  }
+  if (h.stale && r.state === 'up') {
+    /* The genuinely useful case the dashboard could not express before: the
+       machine is fine, its collector is not. */
+    return 'host answers (' + (r.via || 'probe') + ') but is not reporting — ' +
+           'check the collector';
+  }
+  if (h.stale && !h.expect_up) return 'not expected to be reporting';
+  if (h.stale) return 'no sample — ' + (r.detail || 'not probed yet');
+  return null;
+}
 
 /* Patch status is its own axis, never folded into the host status above:
    resource pressure is live and self-clearing, pending patches sit amber for a
@@ -292,8 +337,8 @@ function virtLabel(h) {
    signal. Colour carries urgency, the number carries the value, and the title
    attribute carries the detail you would otherwise scroll for. */
 function compactRow(h) {
-  var s = st(h.status);
-  var a = el('a', 'crow');
+  var s = hostStyle(h);
+  var a = el('a', 'crow' + (h.status === 'down' ? ' isdown' : ''));
   a.href = '#/host/' + encodeURIComponent(h.host);
   a.style.setProperty('--st', s.css);
 
@@ -305,6 +350,18 @@ function compactRow(h) {
   name.title = [h.os || 'unknown os', fmtUptime(h.uptime_seconds),
                 virtLabel(h)].filter(Boolean).join(' · ');
   a.appendChild(name);
+
+  /* A down host loses its numbers -- they are from before it stopped
+     answering, and showing a stale 12% CPU beside a red dot invites you to
+     read it as current. The row says what is wrong instead. */
+  var why = reachText(h);
+  if (h.status === 'down') {
+    var w = el('span', 'cdown', s.label + ' · ' + why);
+    w.title = why;
+    a.appendChild(w);
+    return a;
+  }
+  if (why) name.title += '\n' + why;
 
   /* Three numbers, each coloured by its own status. Tabular figures so the
      columns line up down the whole grid rather than jittering per row. */
@@ -354,15 +411,20 @@ function renderOverview(data, tab) {
     return;
   }
 
+  var downCount = data.hosts.filter(function (h) { return h.status === 'down'; }).length;
   var bad = data.hosts.filter(function (h) {
-    return h.status === 'critical' || h.status === 'warning' || h.status === 'stale';
+    return h.status === 'critical' || h.status === 'warning' ||
+           (h.status === 'stale' && h.expect_up);
   }).length;
   var eolCount = data.hosts.filter(function (h) {
     return h.eol && h.eol.status === 'eol';
   }).length;
   var behind = data.hosts.filter(function (h) { return h.collector_outdated; }).length;
+  /* Down leads. On a wall panel the headline is the only thing read from
+     across the room, and "1 DOWN" is not the same news as "1 needs attention". */
   metaEl.textContent = data.hosts.length + ' hosts · ' +
-    (bad ? bad + ' need attention' : 'all clear') +
+    (downCount ? downCount + ' DOWN · ' : '') +
+    (bad ? bad + ' need attention' : downCount ? 'nothing else wrong' : 'all clear') +
     (eolCount ? ' · ' + eolCount + ' past EOL' : '') +
     (behind ? ' · ' + behind + ' on an old collector' : '') + ' · ' +
     new Date(data.now * 1000).toLocaleTimeString();
@@ -390,8 +452,8 @@ function renderOverview(data, tab) {
 
   var grid = el('div', 'grid');
   hosts.forEach(function (h) {
-    var s = st(h.status);
-    var a = el('a', 'card');
+    var s = hostStyle(h);
+    var a = el('a', 'card' + (h.status === 'down' ? ' isdown' : ''));
     a.href = '#/host/' + encodeURIComponent(h.host);
     a.style.setProperty('--st', s.css);
 
@@ -428,8 +490,14 @@ function renderOverview(data, tab) {
 
     a.appendChild(patchRow(h.patches));
 
+    var why = reachText(h);
     var sub = el('div', 'sub', (h.stale ? 'last seen ' : 'updated ') + fmtAge(h.age_seconds) +
       (h.source === 'truenas' ? ' · via API' : ''));
+    if (why) {
+      var wl = el('div', 'sub why', why);
+      wl.style.color = h.status === 'down' ? s.css : 'var(--muted)';
+      a.appendChild(wl);
+    }
     if (h.collector_version) {
       var v = el('span', h.collector_outdated ? 'ver old' : 'ver', ' · v' + h.collector_version);
       if (h.collector_outdated) {
@@ -621,8 +689,25 @@ function chartCaption(th, minutes) {
 
 /* ---------- detail ---------- */
 
+function renderDetailWhy(c) {
+  var text = reachText(c);
+  if (!text) return null;
+  var s = hostStyle(c);
+  var b = el('div', 'why-banner', s.label + ' — ' + text);
+  b.style.setProperty('--st', s.css);
+  if (c.stale) {
+    var r = c.reachability || {};
+    b.appendChild(el('div', 'why-sub',
+      'Readings below are from ' + fmtAge(c.age_seconds) + ' ago' +
+      (r.checked_at ? '. Last probe ' + fmtAge(Math.max(0, (c.ts + c.age_seconds) - r.checked_at)) +
+        ' ago via ' + (r.via || '?') +
+        (r.address_source ? ', address from ' + r.address_source : '') : '') + '.'));
+  }
+  return b;
+}
+
 function renderDetail(host, data) {
-  var c = data.current, s = st(c.status);
+  var c = data.current, s = hostStyle(c);
   titleEl.textContent = host;
   metaEl.textContent = (c.os || 'unknown os') + ' · ' + fmtUptime(c.uptime_seconds) +
     ' · ' + (c.stale ? 'last seen ' : 'updated ') + fmtAge(c.age_seconds) +
@@ -631,6 +716,11 @@ function renderDetail(host, data) {
       : c.eol && c.eol.status === 'eol_soon' ? ' · EOL ' + c.eol.eol_date : '');
 
   var frag = document.createDocumentFragment();
+
+  /* Every number below this point predates whatever went wrong. Say so once,
+     at the top, rather than leaving the reader to notice the timestamp. */
+  var why = renderDetailWhy(c);
+  if (why) frag.appendChild(why);
 
   var back = el('div', 'banner');
   var hi = osIcon(c.os); hi.classList.add('osicon-lg');

@@ -33,7 +33,12 @@ CREATE TABLE IF NOT EXISTS samples (
     collector_version  TEXT,
     -- "none" for bare metal, else the hypervisor ("bhyve", "kvm", ...).
     -- NULL means the host could not tell, which is not the same as bare metal.
-    virt               TEXT
+    virt               TEXT,
+    -- Where this push came from, so the reachability prober has an address to
+    -- try when the reported hostname does not resolve on the server's side.
+    -- Last resort only: behind NAT this is the gateway, and probing the
+    -- gateway would report a dead host as alive. See address_for in app.py.
+    peer_addr          TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_samples_host_ts ON samples(host, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples(ts);
@@ -75,6 +80,7 @@ _ADDED_COLUMNS = {
         ("patch_packages", "TEXT"),
         ("collector_version", "TEXT"),
         ("virt", "TEXT"),
+        ("peer_addr", "TEXT"),
     ],
 }
 
@@ -101,7 +107,7 @@ def connect(path):
     return conn
 
 
-def insert_sample(conn, payload, source="push"):
+def insert_sample(conn, payload, source="push", peer=None):
     """payload: dict from a collector. Returns the new sample id."""
     ts = int(payload.get("ts") or time.time())
     # A collector that has never run a patch check omits the key entirely, and
@@ -115,8 +121,8 @@ def insert_sample(conn, payload, source="push"):
         """INSERT INTO samples
              (host, ts, os, source, cpu_pct, mem_used_bytes, mem_total_bytes, uptime_seconds,
               patch_security, patch_other, patch_checked_at, patch_source, patch_detail,
-              patch_reboot, patch_packages, collector_version, virt)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+              patch_reboot, patch_packages, collector_version, virt, peer_addr)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             payload["host"],
             ts,
@@ -135,6 +141,7 @@ def insert_sample(conn, payload, source="push"):
             p.get("packages") or None,
             payload.get("collector_version"),
             payload.get("virt"),
+            peer,
         ),
     )
     sid = cur.lastrowid

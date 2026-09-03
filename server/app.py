@@ -14,12 +14,14 @@ import re
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db  # noqa: E402
 import eol  # noqa: E402
+import reach  # noqa: E402
 import truenas  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -48,6 +50,26 @@ DEFAULTS = {
     # Two days: the checks run daily, so this tolerates one missed run before
     # the badge drops to "unknown".
     "patch_stale_hours": 48,
+    # Turning "we have not heard from it" into "it is down". See the block
+    # comment above reach_state for why this exists at all.
+    "reachability": {
+        "enabled": True,
+        # Tried in order until one answers; any single success means up. ICMP
+        # for hosts that drop connections, a TCP port for hosts that drop ICMP.
+        # 22 is the pragmatic choice: a refusal counts as alive, so it works
+        # even where nothing is listening on it.
+        "checks": ["icmp", "tcp:22"],
+        "interval_seconds": 30,
+        "timeout_seconds": 2,
+        # One dropped packet is not an outage.
+        "failures_before_down": 2,
+        # The backstop for when probing cannot reach a verdict at all -- no
+        # route to that subnet, no ping binary, a host that answers nothing by
+        # design. A host expected to be up and silent for this long is down
+        # whether or not anything confirmed it. null disables this path and
+        # leaves the probe as the only route to red.
+        "down_after_seconds": 900,
+    },
 }
 
 
@@ -90,6 +112,88 @@ def stale_after_for(host):
     return int(ov if ov is not None else CFG["stale_after_seconds"])
 
 
+def expect_up_for(host):
+    """Is this host supposed to be reporting at all times?
+
+    Servers are; a laptop that is closed for the night is not, and the whole
+    down/stale distinction is meaningless for it. Default true because that is
+    what a fleet mostly is, and because the failure mode of the wrong default
+    matters: a laptop wrongly marked down is a nuisance you fix with one config
+    line, a locked server wrongly left grey is the bug this exists to fix.
+    """
+    ov = host_cfg(host).get("expect_up")
+    return True if ov is None else bool(ov)
+
+
+def reach_cfg():
+    """Read defensively, like host_cfg and the truenas block above it.
+
+    load_config fills this in from DEFAULTS, so a real server always has it --
+    but subscripting it directly turns any caller holding a hand-built CFG into
+    a KeyError, which is the exact failure DEFAULTS exists to prevent one step
+    further out.
+    """
+    return CFG.get("reachability") or {}
+
+
+def down_after_for(host):
+    ov = host_cfg(host).get("down_after_seconds")
+    if ov is None:
+        ov = reach_cfg().get("down_after_seconds")
+    return None if ov is None else int(ov)
+
+
+# ---------- reachability ----------
+#
+# Push-only monitoring has one blind spot, and it is the outage you most need
+# to see: nothing arrives from a host whose kernel has stopped scheduling, and
+# nothing arrives from a host whose collector was never installed properly.
+# Both land in the same silence, so both used to read as the same muted "Stale"
+# -- the colour you learn to ignore. A hard-locked VM sat there in grey.
+#
+# The fix is to stop treating silence as one state. A host that is expected to
+# report and has gone quiet is *already* a problem (amber), and it becomes an
+# outage (red) once something confirms it: either a probe that got a clean
+# no-answer, or an absence long enough that no other explanation fits.
+#
+# Live state, not history: this is deliberately in memory rather than the
+# database. It is a fact about right now, it is cheap to re-establish -- a
+# restarted server has a fresh verdict within one sweep -- and writing a row
+# per host per 30s to buy nothing would be the wrong trade.
+REACH = {}
+REACH_LOCK = threading.Lock()
+
+
+def reach_state(host):
+    with REACH_LOCK:
+        r = REACH.get(host)
+        return dict(r) if r else None
+
+
+def address_for(host, sample):
+    """Where to probe, and how we decided -- ("10.0.0.4", "config").
+
+    Order matters, and the last entry is the one to be careful about. An
+    operator's explicit address wins; failing that the reported hostname, which
+    on a LAN with working name resolution is both correct and zero-config.
+    Only if neither works do we fall back to the address the collector's own
+    push came from, because behind any NAT that is a gateway, and a gateway
+    answers a probe cheerfully while the host behind it is dead -- a false
+    green, which is the one answer a down-detector must never give. The source
+    is reported alongside the verdict so that fallback is visible rather than
+    inferred, the same way virt_source is.
+    """
+    ov = host_cfg(host).get("address")
+    if ov:
+        return ov, "config"
+    if reach.resolve(host):
+        return host, "name"
+    peer = sample.get("peer_addr")
+    if peer:
+        return peer, "ingest"
+    return None, None
+
+
 def _level(pct, t):
     if pct is None:
         return "unknown"
@@ -100,7 +204,11 @@ def _level(pct, t):
     return "ok"
 
 
-_RANK = {"unknown": 0, "ok": 1, "warning": 2, "critical": 3, "stale": 4}
+# "down" outranks "critical": a host at 99% disk is a problem you can still log
+# in and fix, a host that is not answering is not. "stale" sits below both --
+# it is the honest middle state, a host we have lost track of but have no
+# evidence against.
+_RANK = {"unknown": 0, "ok": 1, "warning": 2, "critical": 3, "stale": 4, "down": 5}
 
 
 def _vparts(v):
@@ -237,7 +345,31 @@ def summarize(sample, now=None):
     mem_status = _level(mem_pct, th["mem"])
     disk_status = _level(worst_disk_pct, th["disk"])
 
-    stale = age > stale_after_for(sample["host"])
+    host = sample["host"]
+    stale = age > stale_after_for(host)
+    expect_up = expect_up_for(host)
+
+    # Silence only becomes an outage once something corroborates it. Two
+    # independent routes, so neither is a single point of failure:
+    #
+    #   the probe    a clean no-answer from the host's own address. Fast --
+    #                red within a sweep of going stale -- and specific.
+    #   the clock    absence far beyond anything staleness allows, for when
+    #                the probe cannot reach a verdict: no route to that
+    #                subnet, no ping binary, a host that answers nothing.
+    #
+    # A probe that answered UP vetoes the clock. That case is real and worth
+    # getting right: the host is fine and its collector is broken, which is an
+    # amber "stale" -- shouting DOWN at a machine you are currently talking to
+    # is how a dashboard loses its credibility.
+    r = reach_state(host) if expect_up else None
+    down_after = down_after_for(host)
+    down_reason = None
+    if stale and expect_up:
+        if r and r["state"] == "down":
+            down_reason = "unreachable"
+        elif (not r or r["state"] != "up") and down_after and age > down_after:
+            down_reason = "absent"
 
     virt_override = host_cfg(sample["host"]).get("virt")
     virt = virt_override if virt_override else sample.get("virt")
@@ -247,9 +379,9 @@ def summarize(sample, now=None):
     # live and self-clearing; pending patches sit amber for a week and train you
     # to ignore amber. It gets its own badge, and "needs attention" in the header
     # stays a statement about CPU, memory and disk.
-    overall = "stale" if stale else max(
+    overall = ("down" if down_reason else "stale" if stale else max(
         (cpu_status, mem_status, disk_status), key=lambda s: _RANK[s]
-    )
+    ))
 
     return {
         "host": sample["host"],
@@ -258,6 +390,14 @@ def summarize(sample, now=None):
         "ts": sample["ts"],
         "age_seconds": int(age),
         "stale": stale,
+        "expect_up": expect_up,
+        # None when the host is up or merely stale; else why it reads as down.
+        "down_reason": down_reason,
+        # What the prober last established, so a red card can be explained
+        # from the API rather than taken on faith -- and so "we could not
+        # probe it" is legible as itself rather than hiding inside "down".
+        "reachability": r or {"state": "unknown", "detail":
+                              "not probed" if expect_up else "not expected up"},
         "uptime_seconds": sample.get("uptime_seconds"),
         "cpu": {"pct": sample.get("cpu_pct"), "status": cpu_status},
         "mem": {
@@ -364,7 +504,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"error": "missing 'host'"})
 
         try:
-            db.insert_sample(CONN, payload)
+            db.insert_sample(CONN, payload, peer=self.client_address[0])
         except Exception as e:
             return self._fail(500, "ingest %s" % payload["host"], e)
         return self._json(200, {"ok": True, "host": payload["host"]})
@@ -515,6 +655,92 @@ def pruner():
             sys.stderr.write("prune error: %s\n" % e)
 
 
+def _probe_one(host, sample, cfg, now):
+    """Probe one host and fold the result into REACH."""
+    addr, addr_source = address_for(host, sample)
+    if addr is None:
+        state, via, detail = reach.ERROR, None, "no address: %s does not resolve" % host
+    else:
+        state, via, detail = reach.probe(
+            addr, cfg.get("checks") or ["icmp"], float(cfg.get("timeout_seconds") or 2)
+        )
+
+    need = max(1, int(cfg.get("failures_before_down") or 2))
+    with REACH_LOCK:
+        prev = REACH.get(host) or {}
+        fails = (prev.get("failures", 0) + 1) if state == reach.DOWN else 0
+        REACH[host] = {
+            # A single dropped packet is not an outage, so DOWN is held as
+            # "unknown" until it repeats. The count is reported either way --
+            # "1 of 2 failed probes" is exactly what you want to see on a card
+            # that is about to turn red.
+            "state": ("down" if fails >= need else
+                      "up" if state == reach.UP else "unknown"),
+            "probe": state,
+            "failures": fails,
+            "address": addr,
+            "address_source": addr_source,
+            "via": via,
+            "detail": detail,
+            "checked_at": int(now),
+        }
+
+
+def reach_prober():
+    """Ask the hosts we have stopped hearing from whether they are still there.
+
+    Only those. Probing the whole fleet every sweep would be traffic spent
+    re-confirming what a fresh sample already proves -- a host that reported
+    four seconds ago is up, and no ping is going to make that truer.
+
+    Probing starts at half the staleness window rather than at the end of it,
+    so by the time a host crosses into stale the verdict is already in hand and
+    the card goes straight to red instead of sitting amber for another sweep
+    while the prober catches up.
+    """
+    cfg = reach_cfg()
+    interval = max(5, int(cfg.get("interval_seconds") or 30))
+    while True:
+        try:
+            now = time.time()
+            targets = []
+            for sample in db.latest_per_host(CONN):
+                host = sample["host"]
+                if not expect_up_for(host):
+                    continue
+                # TrueNAS is polled by us over its API rather than pushing, so
+                # its silence is already an error this server logged. Probing
+                # it would answer a question we did not have.
+                if sample.get("source") == "truenas":
+                    continue
+                if now - sample["ts"] < max(15, stale_after_for(host) / 2):
+                    with REACH_LOCK:
+                        REACH[host] = {"state": "up", "probe": reach.UP, "failures": 0,
+                                       "address": None, "address_source": None,
+                                       "via": "sample", "detail": "reporting normally",
+                                       "checked_at": int(now)}
+                    continue
+                targets.append((host, sample))
+
+            # A dead switch makes every host behind it a target at once, and
+            # probing those serially at 2s each would take longer than the
+            # sweep interval. Bounded so a large fleet cannot spawn a thread
+            # per host either.
+            if targets:
+                with ThreadPoolExecutor(max_workers=min(8, len(targets))) as pool:
+                    for host, sample in targets:
+                        pool.submit(_probe_one, host, sample, cfg, now)
+
+            # Hosts pruned out of the rolling window leave stale verdicts behind.
+            live = {s["host"] for s in db.latest_per_host(CONN)}
+            with REACH_LOCK:
+                for gone in set(REACH) - live:
+                    del REACH[gone]
+        except Exception as e:
+            sys.stderr.write("reach probe error: %s\n" % e)
+        time.sleep(interval)
+
+
 def truenas_poller():
     tn = CFG.get("truenas") or {}
     interval = int(tn.get("poll_seconds") or 60)
@@ -548,6 +774,23 @@ def main():
                              "never reported: %s\n" % ", ".join(unseen))
 
     threading.Thread(target=pruner, daemon=True).start()
+    if reach_cfg().get("enabled"):
+        checks = reach_cfg().get("checks") or []
+        # Say up front whether the probes can actually run. ICMP is the one
+        # that breaks quietly: the shipped systemd unit sets NoNewPrivileges,
+        # which drops ping's file capabilities, so on a host without
+        # unprivileged ICMP every probe returns "cannot run ping" -- which is
+        # correctly treated as "unknown" rather than "down", and would
+        # therefore fail by showing nothing at all. Better to say so at boot
+        # than to have someone discover it during an outage.
+        if "icmp" in checks:
+            state, detail = reach.icmp("127.0.0.1", 2)
+            if state == reach.ERROR:
+                sys.stderr.write(
+                    "reachability: icmp probes unusable (%s); relying on %s\n"
+                    % (detail, ", ".join(c for c in checks if c != "icmp") or "nothing"))
+        threading.Thread(target=reach_prober, daemon=True).start()
+        sys.stderr.write("reachability prober started (%s)\n" % ", ".join(checks))
     if CFG["eol"].get("enabled"):
         threading.Thread(target=eol_refresher, daemon=True).start()
         sys.stderr.write("eol lookups enabled (endoflife.date)\n")
