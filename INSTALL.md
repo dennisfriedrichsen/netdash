@@ -8,9 +8,20 @@ Examples below use `https://netdash.example/api/ingest`. Replace it with the
 URL clients on your network use to reach the netdash server. `YOUR_INGEST_TOKEN` is the
 `ingest_token` from the server configuration.
 
+This document is for a human working through the install by hand. Handing the
+job to an LLM agent instead? Give it [INSTALL-PROMPT.md](INSTALL-PROMPT.md) --
+it's written as a runbook the agent executes, not prose for a person to read.
+
 ## Server
 
-The server requires Python 3 and systemd. From a repository checkout, run:
+The server itself is Python 3 standard library only -- no pip packages -- so
+the only platform-specific part of installing it is service management.
+Linux uses systemd; FreeBSD uses rc.d and pw(8) instead, via a separate
+deploy script.
+
+### Linux (systemd)
+
+Requires Python 3 and systemd. From a repository checkout, run:
 
 ```sh
 sudo server/deploy.sh
@@ -27,6 +38,37 @@ Check the service before installing collectors:
 systemctl status netdash
 curl http://localhost:8080/api/health
 ```
+
+### FreeBSD (rc.d)
+
+Requires Python 3 (`pkg install python3`). From a repository checkout, run:
+
+```sh
+sudo server/deploy.freebsd.sh
+```
+
+This installs the application under `/usr/local/netdash`, creates a `netdash`
+system user via `pw(8)`, enables it in `rc.conf` (`netdash_enable=YES`), and
+stores persistent data in `/var/db/netdash`. On the first deployment, edit
+`/usr/local/etc/netdash/server.json`; later deployments preserve that file.
+The rc.d script sends the server's log output to syslog under the `netdash`
+tag.
+
+Check the service before installing collectors:
+
+```sh
+service netdash status
+curl http://localhost:8080/api/health
+```
+
+To manage it directly instead of through the deploy script:
+
+```sh
+sysrc netdash_enable=YES
+service netdash start   # or: stop, restart, status
+```
+
+### Either platform
 
 Do not expose an unencrypted netdash instance directly to the internet. Keep it
 on a trusted network or put it behind an HTTPS reverse proxy.

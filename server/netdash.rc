@@ -1,0 +1,48 @@
+#!/bin/sh
+#
+# PROVIDE: netdash
+# REQUIRE: NETWORKING SYSLOG
+# KEYWORD: shutdown
+#
+# rc.d script for the netdash central server on FreeBSD. Installed by
+# deploy.freebsd.sh to /usr/local/etc/rc.d/netdash.
+#
+# Add to /etc/rc.conf (or run `sysrc netdash_enable=YES`):
+#
+# netdash_enable="YES"
+#
+# Optional overrides (defaults shown):
+#
+# netdash_user="netdash"
+# netdash_dir="/usr/local/netdash/server"
+# netdash_config="/usr/local/etc/netdash/server.json"
+# netdash_python="/usr/local/bin/python3"
+
+. /etc/rc.subr
+
+name="netdash"
+rcvar="netdash_enable"
+
+load_rc_config "$name"
+
+: ${netdash_enable:="NO"}
+: ${netdash_user:="netdash"}
+: ${netdash_dir:="/usr/local/netdash/server"}
+: ${netdash_config:="/usr/local/etc/netdash/server.json"}
+: ${netdash_python:="/usr/local/bin/python3"}
+
+pidfile="/var/run/${name}.pid"
+
+# daemon(8) does the actual fork/detach so run_rc_command can invoke this
+# synchronously and return once it has. -P records the supervisor's own pid,
+# not app.py's -- that is deliberate: rc.subr's default status/stop check
+# matches $pidfile's pid against $command (daemon), and -r respawns app.py
+# under the same supervisor if it ever dies, so the recorded pid keeps
+# meaning "is netdash supposed to be running" across a respawn. -S sends
+# app.py's stderr (its only logging) to syslog under the "netdash" tag,
+# the rc.d analogue of journalctl capturing a systemd unit's stderr.
+command="/usr/sbin/daemon"
+command_args="-P ${pidfile} -r -S -t ${name} -u ${netdash_user} \
+/usr/bin/env NETDASH_CONFIG=${netdash_config} ${netdash_python} ${netdash_dir}/app.py"
+
+run_rc_command "$1"

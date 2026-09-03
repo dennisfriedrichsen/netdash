@@ -38,7 +38,8 @@ Re-running `deploy.sh` is the upgrade path: it copies the new code and restarts
 the service, and it never overwrites an existing config.
 
 See [INSTALL.md](INSTALL.md) for server setup and platform-specific collector
-instructions.
+instructions, or [INSTALL-PROMPT.md](INSTALL-PROMPT.md) to hand the install to
+an LLM agent instead of doing it by hand.
 
 ### Config (`/etc/netdash/server.json`)
 
