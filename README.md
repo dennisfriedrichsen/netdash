@@ -55,6 +55,7 @@ an LLM agent instead of doing it by hand.
 | `thresholds` | warn/crit percentages per metric |
 | `hosts` | per-host thresholds, staleness, address and `virt` overrides (see below) |
 | `truenas` | API polling for the NAS (see below) |
+| `hubitat` | polling for a Hubitat Elevation hub (see below) |
 
 ### Thresholds
 
@@ -591,6 +592,99 @@ sudo python3 /opt/netdash/server/truenas.py /etc/netdash/server.json
 ```
 
 That prints exactly what the dashboard will show, or the API error.
+
+## Hubitat
+
+Nothing is installed on the hub, and with its own **hub security** switched off
+there is no credential to configure either — the local endpoints answer anyone
+on the LAN. In `/etc/netdash/server.json`:
+
+```json
+"hubitat": { "enabled": true, "host": "10.0.0.76", "display_name": "palladium",
+             "mem_total_bytes": 2147483648, "poll_seconds": 60 }
+```
+
+Check it before enabling:
+
+```sh
+sudo python3 /opt/netdash/server/hubitat.py /etc/netdash/server.json
+```
+
+That prints exactly what the dashboard will show, or the error.
+
+If hub security is on, every endpoint serves the login page instead of data.
+That is reported as itself — "if hub security was turned on, these endpoints
+now serve the login page" — rather than as a hub that has gone quiet, because
+the two look identical from here and only one of them is a problem.
+
+### What the hub can and cannot answer
+
+| | |
+|---|---|
+| CPU | the 5-minute load average over the core count |
+| memory | measured free against a **declared** total (see below) |
+| disk | nothing — the hub has no filesystem it will report |
+| uptime | nothing — it is nowhere in the HTTP surface |
+| patches | one platform image update, from Hubitat's cloud |
+
+Two of those blanks are permanent, and the card shows them as unknown rather
+than filling them. The hub's database size is not a mount, and turning it into
+a disk row to keep the card symmetrical would put a number on the dashboard
+that means nothing.
+
+`mem_total_bytes` is **declared, not measured**: the hub reports how much
+memory is free and never how much exists. A C-8 Pro has 2 GiB
+(`2147483648`), a C-8 has 1 GiB. Get it wrong and the percentage is wrong in
+proportion — and if you leave it out, memory reads as unknown rather than
+being guessed at.
+
+### CPU is converted, not copied
+
+`/hub/advanced/freeOSMemoryLast` has a column headed **5m CPU avg**. It is a
+load average, not a percentage — Hubitat's own Hub Information driver divides
+it by the core count and multiplies by 100. netdash does the same, reading the
+core count from `/hub/cpuInfo` rather than assuming four.
+
+This matters because the raw number looks like a plausible percentage. A hub
+sitting at a load of `0.37` on four cores is at 9% CPU, and reporting `0.37%`
+would show a hub under real load as permanently idle.
+
+### Patch status comes from the cloud, not the hub
+
+`/hub2/hubData` carries `alerts.platformUpdateAvailable`, which looks like the
+same fact for free — one request, no round trip off the LAN. It is a cache the
+hub refreshes on its own schedule, and it has been observed reading `false`
+while an update was genuinely available.
+
+So the answer comes from `/hub/cloud/checkForUpdate` on `patch_poll_seconds`
+(hourly by default), with the last good answer kept across metric polls. Like
+TrueNAS, Hubitat ships one platform image and classifies nothing, so
+`security` is null rather than 0 — see [PATCH-CHECKS.md](PATCH-CHECKS.md) for
+why that distinction is worth keeping.
+
+### Reachability
+
+Unlike TrueNAS, the hub **is** probed. Knowing it answers on the interface you
+actually use it on is most of the reason it is on the dashboard at all, so its
+silence gets the same treatment as a push host's rather than being left to the
+journal.
+
+It runs no `sshd`, so the default `tcp:22` check can only ever time out. Give
+it the port you reach it on:
+
+```json
+"hosts": { "palladium": { "checks": ["icmp", "tcp:8080"] } }
+```
+
+### A note on an open hub
+
+An unauthenticated hub is what makes all of the above possible, and it is
+worth knowing what else it means: `/hub/shutdown` and `/factory/recovery` are
+unauthenticated GETs, and `/hub2/hubData` hands any LAN client a live
+dashboard access token along with the registered owner's email address. This
+poller only ever `GET`s a fixed list of paths and never logs a response body,
+but that is netdash being careful with something already open to everyone on
+the network.
 
 ## Tests
 
