@@ -329,6 +329,23 @@ var OS_ICONS = {
      rectangle at icon size. */
   netbsd: [['path', { d: 'M6.2 3.4v17.2', fill: 'none', 'stroke-width': 1.8 }],
            ['path', { d: 'M7.3 4.7h12.4l-3.1 3.5 3.1 3.5H7.3z' }]],
+  /* A rack gateway seen head on: body, two link LEDs, and the uplink arcs
+     above it. The arcs are what separate it from the NAS glyph below, which is
+     otherwise also a stack of boxes with lights on. */
+  gateway: [['rect', { x: 3, y: 12.6, width: 18, height: 6.8, rx: 1.6, fill: 'none', 'stroke-width': 1.6 }],
+            ['circle', { cx: 6.6, cy: 16, r: 0.95 }],
+            ['circle', { cx: 9.4, cy: 16, r: 0.95 }],
+            ['path', { d: 'M12.6 16h5.5', fill: 'none', 'stroke-width': 1.4 }],
+            ['path', { d: 'M6.4 8.6a7.9 7.9 0 0 1 11.2 0', fill: 'none', 'stroke-width': 1.6 }],
+            ['path', { d: 'M9.2 10.9a4.1 4.1 0 0 1 5.6 0', fill: 'none', 'stroke-width': 1.6 }]],
+  /* A home automation hub: the house says which building, the dot and its arc
+     say the thing inside it is talking to something. Radiating from a point
+     rather than a cluster of circles, so it cannot be mistaken for the
+     Raspberry Pi glyph. */
+  hub: [['path', { d: 'M3.9 11.4L12 4.7l8.1 6.7', fill: 'none', 'stroke-width': 1.7 }],
+        ['path', { d: 'M6.3 10.7v8.6h11.4v-8.6', fill: 'none', 'stroke-width': 1.6 }],
+        ['circle', { cx: 12, cy: 16.2, r: 1.15 }],
+        ['path', { d: 'M9.5 13.9a3.5 3.5 0 0 1 5 0', fill: 'none', 'stroke-width': 1.45 }]],
   nas: [['rect', { x: 3.6, y: 4.8, width: 16.8, height: 4.4, rx: 1.3, fill: 'none', 'stroke-width': 1.6 }],
         ['rect', { x: 3.6, y: 14.8, width: 16.8, height: 4.4, rx: 1.3, fill: 'none', 'stroke-width': 1.6 }],
         ['circle', { cx: 7, cy: 7, r: 1 }],
@@ -347,6 +364,12 @@ function osFamily(os) {
   var s = String(os || '').toLowerCase();
   /* TrueNAS is FreeBSD underneath, so it has to be tested before bsd. */
   if (s.indexOf('truenas') > -1) return 'nas';
+  /* The polled appliances. Neither string carries a kernel name, so without
+     these they fall all the way through to the question mark -- which is the
+     right answer for a host that could not say what it runs, and the wrong one
+     for a device that told us exactly what it is. */
+  if (s.indexOf('unifi') > -1) return 'gateway';
+  if (s.indexOf('hubitat') > -1) return 'hub';
   if (s.indexOf('macos') > -1 || s.indexOf('mac os') > -1 || s.indexOf('darwin') > -1) return 'apple';
   if (s.indexOf('raspbian') > -1 || s.indexOf('raspberry') > -1) return 'raspberry';
   if (s.indexOf('ubuntu') > -1) return 'ubuntu';

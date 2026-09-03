@@ -1574,6 +1574,10 @@ if want render; then
           "assert d['a_host_with_no_mounts_says_so'] is None, d['a_host_with_no_mounts_says_so']" "$J"
     check "and a long range labels the disk buckets daily" \
           "assert d['a_daily_disk_range_says_daily'] is None, d['a_daily_disk_range_says_daily']" "$J"
+    check "the polled appliances get their own icons, not a question mark" \
+          "assert d['appliances_get_their_own_icons'] is None, d['appliances_get_their_own_icons']" "$J"
+    check "and those icons actually draw shapes with a colour" \
+          "assert d['an_appliance_icon_actually_draws_shapes'] is None, d['an_appliance_icon_actually_draws_shapes']" "$J"
     check "a down row still names its host" \
           "assert d['down_row_names_the_host'] is None, d['down_row_names_the_host']" "$J"
   fi

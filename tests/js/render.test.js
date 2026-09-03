@@ -332,6 +332,37 @@ check('a_daily_disk_range_says_daily', function () {
   }
 });
 
+// -- os icons for the polled appliances --
+check('appliances_get_their_own_icons', function () {
+  var want = [['UniFi OS 5.1.31', 'gateway'], ['Hubitat C-8 Pro 2.5.1.174', 'hub'],
+              ['TrueNAS CORE 13.0-U6.8', 'nas'], ['Debian GNU/Linux 13', 'debian'],
+              ['FreeBSD 15.1', 'bsd'], ['', 'unknown']];
+  want.forEach(function (c) {
+    var got = ctx.osFamily(c[0]);
+    if (got !== c[1]) {
+      throw new Error(JSON.stringify(c[0]) + ' mapped to ' + got + ', wanted ' + c[1]);
+    }
+  });
+});
+check('an_appliance_icon_actually_draws_shapes', function () {
+  /* osIcon() always returns an <svg>, so a missing family fails silently as an
+     empty box. Count the shapes, not the element. */
+  [['UniFi OS 5.1.31', 4], ['Hubitat C-8 Pro 2.5.1.174', 3]].forEach(function (c) {
+    var svg = ctx.osIcon(c[0]);
+    var shapes = (svg.children || []).filter(function (x) {
+      return x.tagName !== '#comment';
+    });
+    if (shapes.length < c[1]) {
+      throw new Error(c[0] + ' drew only ' + shapes.length + ' shapes');
+    }
+    shapes.forEach(function (x) {
+      if (!x.attrs.fill && !x.attrs.stroke) {
+        throw new Error(c[0] + ' has a <' + x.tagName + '> with neither fill nor stroke');
+      }
+    });
+  });
+});
+
 check('down_row_names_the_host', function () {
   if (textOf(ctx.compactRow(host(merge(DOWN, { host: 'hassium' })))).indexOf('hassium') < 0) {
     throw new Error('a down row must still say which host it is');
