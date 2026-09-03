@@ -882,68 +882,72 @@ function renderDetail(host, data, range) {
   panels.appendChild(p2);
 
   /* Disk -- every real mount, worst first */
-  var p3 = el('div', 'panel');
-  p3.appendChild(el('h2', null, 'Disk space'));
-  var b3 = el('div', 'big');
-  b3.appendChild(document.createTextNode(fmtPct(c.disk.worst_pct)));
-  /* Name the mount rather than describing the number. "worst mount" says what
-     the figure is rather than what it belongs to, and on a host with one
-     filesystem it claims a superlative over a field of one. */
-  var fullest = null;
-  c.disk.mounts.forEach(function (d) {
-    if (d.pct !== null && (!fullest || d.pct > fullest.pct)) fullest = d;
-  });
-  if (fullest) {
-    b3.appendChild(el('span', 'unit', c.disk.mounts.length > 1
-      ? '  fullest: ' + fullest.mount
-      : '  ' + fullest.mount));
-  }
-  p3.appendChild(b3);
-  var mounts = el('div', 'mounts');
+  /* One panel per mount, built exactly like the CPU and memory panels above:
+     a number, a full-height trace against this host's own thresholds, and a
+     caption saying what the axis means. Disk used to be the odd one out here
+     -- a stack of bars with no history at all -- which made the one metric
+     whose whole story is "which way is it going" the only one you could not
+     see going anywhere.
+
+     Per mount rather than one chart for the fullest: the fullest mount and the
+     one that is actually filling are routinely different, and a single trace
+     would hide exactly the case worth catching. */
   var dh = data.disk_history || {};
-  c.disk.mounts.slice().sort(function (a2, b4) { return (b4.pct || 0) - (a2.pct || 0); })
-    .forEach(function (d) {
-      mounts.appendChild(meter(d.mount, d.pct, d.status,
-        fmtBytes(d.used_bytes) + ' of ' + fmtBytes(d.total_bytes)));
-      /* Each mount gets its own trace rather than one line for the fullest.
-         The fullest mount and the one that is actually filling are routinely
-         not the same mount, and a chart that only ever draws the first would
-         hide exactly the case worth catching. */
-      var pts = dh[d.mount] || [];
-      if (pts.length < 2) return;
-      var spark = sparkline(pts.map(function (p) {
-        return { ts: p.ts, v: p.pct };
-      }), '--st-ok', th.disk);
-      spark.classList.add('minispark');
-      mounts.appendChild(spark);
-    });
-  if (!c.disk.mounts.length) mounts.appendChild(el('div', 'sub', 'no mounts reported'));
-  p3.appendChild(mounts);
-  if (c.disk.mounts.length && Object.keys(dh).length) {
-    p3.appendChild(chartCaption(th.disk, data.minutes || 60,
-      data.disk_resolution === 'daily' ? 'daily' : 'hourly'));
-  }
-  /* The reason to keep history at all. A percentage is a fact you can read off
-     the card; a slope is the one that says whether to act this week or this
-     quarter. Shown only where the server was willing to fit one -- it returns
-     nothing for a flat mount, for too few days, or for an answer years out. */
-  c.disk.mounts.forEach(function (d) {
-    if (!d.projection) return;
-    var pj = d.projection, days = pj.days_to_full;
-    var line = el('div', 'proj');
-    line.style.setProperty('--st', days <= 30 ? 'var(--st-crit)'
-                                 : days <= 90 ? 'var(--st-warn)' : 'var(--st-none)');
-    line.appendChild(el('span', 'pdot'));
-    line.appendChild(el('span', 'fname', d.mount));
-    line.appendChild(el('span', null,
-      '+' + pj.slope_per_day.toFixed(2) + ' pts/day'));
-    line.appendChild(el('span', 'pval',
-      days === 0 ? 'full' : 'full in ~' + days + ' d'));
-    line.title = 'Least-squares fit over ' + pj.days_observed +
-      ' days of daily averages. A projection, not a promise.';
-    p3.appendChild(line);
+  var dres = data.disk_resolution === 'daily' ? 'daily' : 'hourly';
+  var sorted = c.disk.mounts.slice().sort(function (a2, b4) {
+    return (b4.pct || 0) - (a2.pct || 0);
   });
-  panels.appendChild(p3);
+
+  if (!sorted.length) {
+    /* An appliance with no filesystem it will report still gets the panel, so
+       the blank is visibly a blank rather than a missing section. */
+    var p3 = el('div', 'panel');
+    p3.appendChild(el('h2', null, 'Disk space'));
+    p3.appendChild(el('div', 'big', '–'));
+    p3.appendChild(el('div', 'sub', 'no mounts reported'));
+    panels.appendChild(p3);
+  }
+
+  sorted.forEach(function (d) {
+    var pd = el('div', 'panel');
+    pd.appendChild(el('h2', null, 'Disk · ' + d.mount));
+
+    var bd = el('div', 'big');
+    bd.appendChild(document.createTextNode(fmtPct(d.pct)));
+    if (d.total_bytes) {
+      bd.appendChild(el('span', 'unit',
+        '  ' + fmtBytes(d.used_bytes) + ' of ' + fmtBytes(d.total_bytes)));
+    }
+    bd.style.color = st(d.status).css;
+    pd.appendChild(bd);
+
+    var pts = (dh[d.mount] || []).map(function (x) {
+      return { ts: x.ts, v: x.pct };
+    });
+    pd.appendChild(sparkline(pts, '--st-ok', th.disk));
+    pd.appendChild(chartCaption(th.disk, data.minutes || 60, dres));
+
+    /* The reason to keep history at all, and it belongs next to the trace it
+       was fitted from. A percentage is a fact already on the card; a slope is
+       the one that says whether to act this week or this quarter. Drawn only
+       where the server was willing to fit one -- it returns nothing for a flat
+       mount, for too few days, or for an answer years out. */
+    if (d.projection) {
+      var pj = d.projection, days = pj.days_to_full;
+      var line = el('div', 'proj');
+      line.style.setProperty('--st', days <= 30 ? 'var(--st-crit)'
+                                   : days <= 90 ? 'var(--st-warn)' : 'var(--st-none)');
+      line.appendChild(el('span', 'pdot'));
+      line.appendChild(el('span', 'fname', 'trend'));
+      line.appendChild(el('span', null, '+' + pj.slope_per_day.toFixed(2) + ' pts/day'));
+      line.appendChild(el('span', 'pval',
+        days === 0 ? 'full' : 'full in ~' + days + ' d'));
+      line.title = 'Least-squares fit over ' + pj.days_observed +
+        ' days of daily averages. A projection, not a promise.';
+      pd.appendChild(line);
+    }
+    panels.appendChild(pd);
+  });
 
   /* Patches -- no sparkline: this moves once a day, and a flat line for 23 of
      every 24 hours would say nothing a number does not. */

@@ -16,6 +16,15 @@ var ctx = r.ctx, textOf = r.textOf, out = {};
 
 /* The stub DOM has no querySelectorAll -- deliberately, it is a tree not a
    browser -- so counting elements means walking it. */
+function countClass(node, cls) {
+  if (!node || typeof node !== 'object') return 0;
+  /* el() assigns className; sparkline() uses setAttribute. Check both. */
+  var own = String(node.className || node.attrs && node.attrs['class'] || '')
+              .split(' ').indexOf(cls) >= 0 ? 1 : 0;
+  (node.children || []).forEach(function (c) { own += countClass(c, cls); });
+  return own;
+}
+
 function countTags(node, tag) {
   if (!node || typeof node !== 'object') return 0;
   var n = node.tagName === tag ? 1 : 0;
@@ -221,6 +230,7 @@ check('a_projection_reaches_the_page', function () {
   ctx.renderDetail('h', detail(h), '30d');
   var t = textOf(ctx.root);
   if (t.indexOf('full in ~14 d') < 0) throw new Error('no projection drawn: ' + t);
+  if (t.indexOf('+1.42 pts/day') < 0) throw new Error('projection lost its slope: ' + t);
 });
 check('an_outage_that_ended_still_shows', function () {
   ctx.renderDetail('h', detail(host(), { events: EVENTS }), '24h');
@@ -256,16 +266,41 @@ function twoMounts() {
 check('detail_disk_history', function () {
   ctx.renderDetail('h', detail(twoMounts(), { disk_history: DISKH }), '24h');
 });
-check('every_mount_gets_its_own_trace', function () {
+check('every_mount_gets_its_own_full_panel', function () {
   ctx.renderDetail('h', detail(twoMounts(), { disk_history: DISKH }), '24h');
-  /* Two mounts with history means two traces plus CPU and memory. A chart for
-     only the fullest mount would hide the one that is actually filling. */
+  /* Two mounts means two disk panels plus CPU and memory: four traces, each a
+     full .spark like the others, not a sliver tucked under a bar. */
+  /* +1 for the os icon in the banner, which is also an <svg>. */
   var n = countTags(ctx.root, 'svg');
-  if (n < 4) throw new Error('expected a trace per mount, got ' + n + ' svgs');
+  if (n !== 5) throw new Error('expected 4 traces + os icon, got ' + n);
+  var t = textOf(ctx.root);
+  if (t.indexOf('Disk · /data') < 0 || t.indexOf('Disk · /') < 0) {
+    throw new Error('each mount needs its own titled panel: ' + t);
+  }
+
 });
-check('a_mount_with_one_point_draws_no_trace', function () {
-  ctx.renderDetail('h', detail(twoMounts(), { disk_history: {
-    '/data': [{ ts: 1788340000, pct: 60, used_bytes: 60, total_bytes: 100 }] } }), '24h');
+check('a_disk_panel_carries_a_caption_like_cpu_does', function () {
+  ctx.renderDetail('h', detail(twoMounts(), { disk_history: DISKH }), '24h');
+  /* Three captions: cpu, memory, and one per mount. A trace with no axis
+     caption is the thing that made these read as decoration before. */
+  var caps = countClass(ctx.root, 'cap');
+  if (caps !== 4) throw new Error('expected 4 chart captions, got ' + caps);
+});
+check('a_mount_with_no_history_still_gets_its_panel', function () {
+  /* sparkline() draws its own "not enough history yet" placeholder, so a mount
+     that has only just appeared keeps its panel rather than vanishing. */
+  ctx.renderDetail('h', detail(twoMounts(), { disk_history: {} }), '24h');
+  if (textOf(ctx.root).indexOf('Disk · /data') < 0) {
+    throw new Error('a mount without history lost its panel');
+  }
+});
+check('a_host_with_no_mounts_says_so', function () {
+  var h = host();
+  h.disk = { worst_pct: null, status: 'unknown', mounts: [] };
+  ctx.renderDetail('lanthanum', detail(h), '24h');
+  if (textOf(ctx.root).indexOf('no mounts reported') < 0) {
+    throw new Error('an appliance with no filesystem lost its blank panel');
+  }
 });
 check('a_daily_disk_range_says_daily', function () {
   ctx.renderDetail('h', detail(twoMounts(), { disk_history: DISKH, minutes: 43200,

@@ -348,7 +348,3 @@ button.link:hover { color: var(--text-1); }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
-/* A per-mount trace sits under its meter, shorter than the CPU and memory
-   charts: it is an aside to a number that is already on screen, not a panel
-   of its own. */
-.minispark { height: 42px; margin: -2px 0 10px; }

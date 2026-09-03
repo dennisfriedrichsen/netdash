@@ -1562,10 +1562,14 @@ if want render; then
           "assert d['no_events_panel_when_nothing_has_happened'] is None, d['no_events_panel_when_nothing_has_happened']" "$J"
     check "the disk panel draws usage over time" \
           "assert d['detail_disk_history'] is None, d['detail_disk_history']" "$J"
-    check "with a trace per mount, not just the fullest one" \
-          "assert d['every_mount_gets_its_own_trace'] is None, d['every_mount_gets_its_own_trace']" "$J"
-    check "a mount with a single point draws nothing rather than a dot" \
-          "assert d['a_mount_with_one_point_draws_no_trace'] is None, d['a_mount_with_one_point_draws_no_trace']" "$J"
+    check "with a full panel per mount, not a sliver under a bar" \
+          "assert d['every_mount_gets_its_own_full_panel'] is None, d['every_mount_gets_its_own_full_panel']" "$J"
+    check "and an axis caption on each, exactly like cpu and memory" \
+          "assert d['a_disk_panel_carries_a_caption_like_cpu_does'] is None, d['a_disk_panel_carries_a_caption_like_cpu_does']" "$J"
+    check "a mount with no history keeps its panel and says so" \
+          "assert d['a_mount_with_no_history_still_gets_its_panel'] is None, d['a_mount_with_no_history_still_gets_its_panel']" "$J"
+    check "and an appliance with no filesystem shows an honest blank" \
+          "assert d['a_host_with_no_mounts_says_so'] is None, d['a_host_with_no_mounts_says_so']" "$J"
     check "and a long range labels the disk buckets daily" \
           "assert d['a_daily_disk_range_says_daily'] is None, d['a_daily_disk_range_says_daily']" "$J"
     check "a down row still names its host" \
@@ -1871,8 +1875,11 @@ PYEOF
         "assert abs(d['lan_mem']-63.2)<0.01, d['lan_mem']" "$J"
   check "raw ages out at its own window" \
         "assert d['raw_age_h'] <= 48.1, d['raw_age_h']" "$J"
+  # Not an exact bucket count: the cutoff is now-30d and buckets are hour
+  # aligned, so the oldest one survives or not depending on the minute this
+  # runs. Asserting 720 exactly failed roughly once an hour, for no reason.
   check "while rollups outlive it by weeks" \
-        "assert 29 <= d['roll_age_d'] <= 30.1 and d['cerium_buckets']==720, (d['roll_age_d'], d['cerium_buckets'])" "$J"
+        "assert 29 <= d['roll_age_d'] <= 30.1 and 719 <= d['cerium_buckets'] <= 721, (d['roll_age_d'], d['cerium_buckets'])" "$J"
   check "disk history is bucketed, never one point per sample" \
         "assert d['disk_pts_24h'] <= 25 and d['disk_pts_24h'] >= 20, d['disk_pts_24h']" "$J"
   check "and events are never pruned when no event window is set" \

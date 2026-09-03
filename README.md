@@ -846,10 +846,16 @@ detail it does not have.
 
 ### Disk over time
 
-Each mount gets its own trace under its meter, not one line for the fullest —
-the fullest mount and the one that is actually filling are routinely different,
-and a chart that only ever drew the first would hide exactly the case worth
-catching.
+Each mount gets **its own panel**, built exactly like the CPU and memory panels:
+a number, a full-height trace against this host's own warn and crit lines, and
+a caption saying what the axis means. Disk used to be the odd one out — a stack
+of bars with no history at all — which made the one metric whose whole story is
+*which way is it going* the only one you could not see going anywhere.
+
+Per mount rather than one chart for the fullest: the fullest mount and the one
+that is actually filling are routinely different, and a single trace would hide
+exactly the case worth catching. A host that reports no filesystem at all still
+gets one panel saying so, rather than the section quietly disappearing.
 
 Disk is **never** served at sample resolution, at any range. A mount does not
 move meaningfully inside an hour, so 69 identical points per hour per mount
