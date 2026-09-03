@@ -887,15 +887,7 @@ function renderDetail(host, data) {
        only offered for 'security': 'reboot' clears itself the moment the host
        reboots, and everything else is not the thing this was asked for. */
     if (pp.status === 'security') {
-      var ackRow = el('div', 'sub ackrow');
-      if (pp.acknowledged) {
-        ackRow.appendChild(document.createTextNode(
-          'acknowledged ' + fmtAge(Math.floor(Date.now() / 1000) - pp.acked_at) + ' — '));
-        ackRow.appendChild(ackButton(host, 'patches', 'un-acknowledge', false));
-      } else {
-        ackRow.appendChild(ackButton(host, 'patches', 'acknowledge', true));
-      }
-      p4.appendChild(ackRow);
+      p4.appendChild(ackRow(host, 'patches', pp));
     }
   } else {
     p4.appendChild(el('div', 'sub',
@@ -986,9 +978,9 @@ function renderTabs(data, active) {
   return nav;
 }
 
-function fail(msg) {
+function fail(msg, status) {
   root.replaceChildren(el('div', 'empty', msg));
-  metaEl.textContent = 'disconnected';
+  metaEl.textContent = status || 'disconnected';
 }
 
 function tick() {
@@ -996,15 +988,30 @@ function tick() {
   var url = r.view === 'host'
     ? '/api/host/' + encodeURIComponent(r.host) + '?minutes=60'
     : '/api/overview';
+  /* Two failures that look nothing alike and used to report identically. A
+     single .catch around both the fetch and the render meant a bug in this
+     file announced itself as "cannot reach the netdash server" -- sending you
+     to go and check a service that was answering perfectly well. The fetch
+     result is settled first, and rendering happens in its own try. */
   fetch(url, { cache: 'no-store' })
     .then(function (res) {
       if (!res.ok) throw new Error('HTTP ' + res.status);
       return res.json();
     })
-    .then(function (data) {
-      if (r.view === 'host') renderDetail(r.host, data); else renderOverview(data, r.tab);
+    .catch(function (e) {
+      fail('Cannot reach the netdash server (' + e.message + ').');
+      return null;
     })
-    .catch(function (e) { fail('Cannot reach the netdash server (' + e.message + ').'); });
+    .then(function (data) {
+      if (data === null) return;
+      try {
+        if (r.view === 'host') renderDetail(r.host, data); else renderOverview(data, r.tab);
+      } catch (e) {
+        if (window.console) console.error('netdash render failed', e);
+        fail('The server answered, but the dashboard could not draw this view: ' +
+             e.message + '. Try a hard refresh; the data is fine.', 'display error');
+      }
+    });
 }
 
 function restart() {

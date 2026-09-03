@@ -9,6 +9,8 @@
 # actually shipped, so a regression here is a bug that already bit once.
 #
 # Needs: sh, awk, python3. No network, no root, nothing installed.
+# node is optional: it enables the `render` case, which runs the dashboard
+# JS instead of merely parsing it. Without it that one case skips.
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -1492,6 +1494,51 @@ PYEOF
         "assert d['count_skips'] is True, d" "$J"
   check "/api/host/<name>/ack still means patches" \
         "assert d['legacy_route'] and d['kind_routed'], d" "$J"
+fi
+
+if want render; then
+  # The one case that needs a JS engine. node is not in the suite's stated
+  # dependencies (sh, awk, python3), so its absence skips rather than fails --
+  # but when it is there, this is the only thing that runs the dashboard code
+  # rather than reading it. `node --check` proves app.js parses, and the bug
+  # that prompted this parsed perfectly: a `var` inside renderDetail shadowing
+  # a top-level function of the same name, which killed the detail view of
+  # every host with an end-of-life warning and reported itself to the user as
+  # a server outage.
+  if ! command -v node >/dev/null 2>&1; then
+    echo "render (SKIPPED -- node not installed)"
+  else
+    echo "render (the dashboard actually draws, not merely parses)"
+    J=$(node "$ROOT/tests/js/render.test.js" 2>&1) || J=''
+    check "the detail view renders for a host nearing end of life" \
+          "assert d['detail_eol_soon'] is None, d['detail_eol_soon']" "$J"
+    check "and for one already past it" \
+          "assert d['detail_eol_past'] is None, d['detail_eol_past']" "$J"
+    check "and for one whose warning is acknowledged" \
+          "assert d['detail_eol_acked'] is None, d['detail_eol_acked']" "$J"
+    # Both ack rows on one page is what tripped the shadowing.
+    check "and with a patch ack and an eol ack on the same page" \
+          "assert d['detail_both_ack_rows'] is None, d['detail_both_ack_rows']" "$J"
+    check "and for a host that is down" \
+          "assert d['detail_down'] is None, d['detail_down']" "$J"
+    check "and for one that is away" \
+          "assert d['detail_away'] is None, d['detail_away']" "$J"
+    check "the compact overview renders" \
+          "assert d['overview_compact'] is None, d['overview_compact']" "$J"
+    check "the card overview renders" \
+          "assert d['overview_cards'] is None, d['overview_cards']" "$J"
+    check "an empty fleet renders" \
+          "assert d['overview_empty'] is None, d['overview_empty']" "$J"
+    # What was actually asked for: quiet on the All view once acknowledged.
+    check "acknowledging eol_soon takes its triangle off the All view" \
+          "assert d['acked_eol_soon_has_no_triangle'] is None, d['acked_eol_soon_has_no_triangle']" "$J"
+    check "acknowledging past EOL takes its triangle off too" \
+          "assert d['acked_eol_past_has_no_triangle'] is None, d['acked_eol_past_has_no_triangle']" "$J"
+    check "an unacknowledged past EOL still shows red there" \
+          "assert d['unacked_eol_past_has_a_triangle'] is None, d['unacked_eol_past_has_a_triangle']" "$J"
+    check "a down row still names its host" \
+          "assert d['down_row_names_the_host'] is None, d['down_row_names_the_host']" "$J"
+  fi
 fi
 
 echo
