@@ -14,6 +14,15 @@
 var r = require('./render.js');
 var ctx = r.ctx, textOf = r.textOf, out = {};
 
+/* The stub DOM has no querySelectorAll -- deliberately, it is a tree not a
+   browser -- so counting elements means walking it. */
+function countTags(node, tag) {
+  if (!node || typeof node !== 'object') return 0;
+  var n = node.tagName === tag ? 1 : 0;
+  (node.children || []).forEach(function (c) { n += countTags(c, tag); });
+  return n;
+}
+
 function host(o) {
   var h = { host: 'h', os: 'Debian GNU/Linux 13 (trixie)', source: 'push', ts: 1788436201,
     age_seconds: 5, stale: false, expect_up: true, down_reason: null,
@@ -54,7 +63,13 @@ var DOWN = { status: 'down', stale: true, age_seconds: 10877, down_reason: 'unre
                              checked_at: 1788436200 } };
 var HIST = [{ ts: 1788436100, cpu_pct: 10, mem_used_bytes: 40, mem_total_bytes: 100, mem_pct: 40 },
             { ts: 1788436201, cpu_pct: 12, mem_used_bytes: 41, mem_total_bytes: 100, mem_pct: 41 }];
-function detail(h) { return { now: 1788436210, thresholds: h.thresholds, current: h, history: HIST }; }
+function detail(h, extra) {
+  var d = { now: 1788436210, thresholds: h.thresholds, current: h, history: HIST,
+            minutes: 60, resolution: 'raw', retention_hours: 48, events: [],
+            disk_history: {}, disk_resolution: 'hourly' };
+  for (var k in (extra || {})) d[k] = extra[k];
+  return d;
+}
 function overview(hosts, tab) {
   ctx.renderOverview({ now: 1788436210, thresholds: host().thresholds,
                        collector_newest: '0.4.0', hosts: hosts }, tab);
@@ -157,6 +172,106 @@ check('a_big_fleet_falls_back_to_a_count', function () {
   var t = textOf(ctx.root);
   if (t.indexOf('4 of 9 offline') < 0) {
     throw new Error('four names do not fit a badge; expected a count: ' + t);
+  }
+});
+
+// -- history: long ranges, projections and the event log --
+var EVENTS = [
+  { id: 3, ts: 1788436000, host: 'h', kind: 'status', from_state: 'down',
+    to_state: 'ok', detail: null },
+  { id: 2, ts: 1788425000, host: 'h', kind: 'status', from_state: 'ok',
+    to_state: 'down', detail: 'no icmp reply from 10.0.0.9' }
+];
+var ROLLED = [{ ts: 1788350000, cpu_pct: 12, mem_pct: 44, cpu_min: 3, cpu_max: 61,
+                mem_min: 40, mem_max: 48, samples: 68 },
+              { ts: 1788353600, cpu_pct: 15, mem_pct: 45, cpu_min: 4, cpu_max: 70,
+                mem_min: 41, mem_max: 49, samples: 69 }];
+var PROJ = { slope_per_day: 1.42, days_to_full: 14, days_observed: 30 };
+
+check('detail_hourly_range', function () {
+  ctx.renderDetail('h', detail(host(), { history: ROLLED, minutes: 43200,
+                                         resolution: 'hourly' }), '30d');
+});
+check('detail_events', function () {
+  ctx.renderDetail('h', detail(host(), { events: EVENTS }), '24h');
+});
+check('detail_projection', function () {
+  var h = host();
+  h.disk = { worst_pct: 78, status: 'ok', mounts: [
+    { mount: '/data', used_bytes: 78, total_bytes: 100, pct: 78, status: 'ok',
+      projection: PROJ }] };
+  ctx.renderDetail('h', detail(h), '30d');
+});
+check('an_hourly_range_says_so_in_the_caption', function () {
+  ctx.renderDetail('h', detail(host(), { history: ROLLED, minutes: 43200,
+                                         resolution: 'hourly' }), '30d');
+  var t = textOf(ctx.root);
+  if (t.indexOf('· hourly') < 0) {
+    throw new Error('a rollup chart must not imply per-sample detail: ' + t);
+  }
+  if (t.indexOf('43200 min ago') >= 0) {
+    throw new Error('30 days should not be spelled in minutes');
+  }
+});
+check('a_projection_reaches_the_page', function () {
+  var h = host();
+  h.disk = { worst_pct: 78, status: 'ok', mounts: [
+    { mount: '/data', used_bytes: 78, total_bytes: 100, pct: 78, status: 'ok',
+      projection: PROJ }] };
+  ctx.renderDetail('h', detail(h), '30d');
+  var t = textOf(ctx.root);
+  if (t.indexOf('full in ~14 d') < 0) throw new Error('no projection drawn: ' + t);
+});
+check('an_outage_that_ended_still_shows', function () {
+  ctx.renderDetail('h', detail(host(), { events: EVENTS }), '24h');
+  var t = textOf(ctx.root);
+  if (t.indexOf('ok → down') < 0) {
+    throw new Error('a recovered host lost the record of going down: ' + t);
+  }
+});
+check('no_events_panel_when_nothing_has_happened', function () {
+  ctx.renderDetail('h', detail(host()), '24h');
+  if (textOf(ctx.root).indexOf('Recent changes') >= 0) {
+    throw new Error('an empty event log grew a panel');
+  }
+});
+
+var DISKH = { '/data': [
+    { ts: 1788340000, pct: 60, used_bytes: 60, total_bytes: 100 },
+    { ts: 1788343600, pct: 65, used_bytes: 65, total_bytes: 100 },
+    { ts: 1788347200, pct: 78, used_bytes: 78, total_bytes: 100 }],
+  '/': [
+    { ts: 1788340000, pct: 20, used_bytes: 20, total_bytes: 100 },
+    { ts: 1788343600, pct: 20, used_bytes: 20, total_bytes: 100 }] };
+function twoMounts() {
+  var h = host();
+  h.disk = { worst_pct: 78, status: 'ok', mounts: [
+    { mount: '/data', used_bytes: 78, total_bytes: 100, pct: 78, status: 'ok',
+      projection: PROJ },
+    { mount: '/', used_bytes: 20, total_bytes: 100, pct: 20, status: 'ok',
+      projection: null }] };
+  return h;
+}
+
+check('detail_disk_history', function () {
+  ctx.renderDetail('h', detail(twoMounts(), { disk_history: DISKH }), '24h');
+});
+check('every_mount_gets_its_own_trace', function () {
+  ctx.renderDetail('h', detail(twoMounts(), { disk_history: DISKH }), '24h');
+  /* Two mounts with history means two traces plus CPU and memory. A chart for
+     only the fullest mount would hide the one that is actually filling. */
+  var n = countTags(ctx.root, 'svg');
+  if (n < 4) throw new Error('expected a trace per mount, got ' + n + ' svgs');
+});
+check('a_mount_with_one_point_draws_no_trace', function () {
+  ctx.renderDetail('h', detail(twoMounts(), { disk_history: {
+    '/data': [{ ts: 1788340000, pct: 60, used_bytes: 60, total_bytes: 100 }] } }), '24h');
+});
+check('a_daily_disk_range_says_daily', function () {
+  ctx.renderDetail('h', detail(twoMounts(), { disk_history: DISKH, minutes: 43200,
+    resolution: 'hourly', disk_resolution: 'daily' }), '30d');
+  if (textOf(ctx.root).indexOf('daily') < 0) {
+    throw new Error('a daily disk chart must say so');
   }
 });
 

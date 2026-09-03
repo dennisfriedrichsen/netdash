@@ -50,6 +50,16 @@ DEFAULTS = {
     # Sends nothing about the fleet: it fetches public product files and matches
     # locally. Set "enabled": false to make no outbound request at all.
     "eol": {"enabled": True, "refresh_hours": 24, "warn_days": 30, "overrides": {}},
+    # Downsampled history kept long after the raw samples are gone. 400 days so
+    # "this time last year" is always answerable, not just sometimes.
+    # keep_event_days null means events are never pruned: they are a few
+    # thousand rows a year and they are the only record that an outage happened.
+    "history": {
+        "enabled": True,
+        "keep_rollup_days": 400,
+        "keep_event_days": None,
+        "roll_seconds": 900,
+    },
     # How old a patch check may be before the dashboard stops believing it.
     # Two days: the checks run daily, so this tolerates one missed run before
     # the badge drops to "unknown".
@@ -676,25 +686,68 @@ class Handler(BaseHTTPRequestHandler):
                 mins = int((parse_qs(u.query).get("minutes") or ["60"])[0])
             except ValueError:
                 mins = 60
-            mins = max(5, min(mins, CFG["retention_hours"] * 60))
+            h = CFG.get("history") or {}
+            ceiling = (int(h.get("keep_rollup_days") or 0) * 1440
+                       if h.get("enabled") else 0) or CFG["retention_hours"] * 60
+            mins = max(5, min(mins, max(ceiling, CFG["retention_hours"] * 60)))
             samples = [s for s in db.latest_per_host(CONN) if s["host"] == host]
             if not samples:
                 return self._json(404, {"error": "unknown host"})
-            hist = db.history(CONN, host, mins * 60)
-            for h in hist:
-                # Same precedence as summarize(): a stored percentage wins, and
-                # only a source that reported bytes falls through to the ratio.
-                if h.get("mem_pct") is None:
-                    if h.get("mem_total_bytes") and h.get("mem_used_bytes") is not None:
-                        h["mem_pct"] = 100.0 * h["mem_used_bytes"] / h["mem_total_bytes"]
-                    else:
-                        h["mem_pct"] = None
+            # Which store answers depends on how far back the question
+            # reaches, not on a parameter the caller has to get right: ask for
+            # a year and you get hourly points, ask for an hour and you get
+            # every sample. The response says which, so a chart can label
+            # itself honestly rather than implying 52-second detail it does
+            # not have.
+            raw_window = CFG["retention_hours"] * 60
+            if mins <= raw_window:
+                hist = db.history(CONN, host, mins * 60)
+                for h in hist:
+                    # Same precedence as summarize(): a stored percentage wins,
+                    # and only a source that reported bytes falls through.
+                    if h.get("mem_pct") is None:
+                        if h.get("mem_total_bytes") and h.get("mem_used_bytes") is not None:
+                            h["mem_pct"] = 100.0 * h["mem_used_bytes"] / h["mem_total_bytes"]
+                        else:
+                            h["mem_pct"] = None
+                resolution = "raw"
+                # Disk is bucketed hourly even here -- see db.disk_history.
+                disk_hist = db.disk_history(CONN, host, time.time() - mins * 60, db.HOUR)
+                disk_resolution = "hourly"
+            else:
+                hist = db.rollup_series(CONN, host, time.time() - mins * 60)
+                resolution = "hourly"
+                disk_hist = {}
+                for r in db.disk_series(CONN, host, time.time() - mins * 60):
+                    disk_hist.setdefault(r["mount"], []).append(
+                        {"ts": r["ts"], "pct": r["pct_max"],
+                         "used_bytes": r["used_avg"], "total_bytes": r["total_bytes"]})
+                disk_resolution = "daily"
+
+            cur = summarize(samples[0])
+            for m in cur["disk"]["mounts"]:
+                m["projection"] = disk_projection(host, m["mount"])
             return self._json(200, {
                 "now": int(time.time()),
                 "thresholds": CFG["thresholds"],
-                "current": summarize(samples[0]),
+                "current": cur,
+                "resolution": resolution,
+                "minutes": mins,
+                "retention_hours": CFG["retention_hours"],
                 "history": hist,
+                "disk_history": disk_hist,
+                "disk_resolution": disk_resolution,
+                "events": db.recent_events(CONN, host=host, limit=40),
             })
+
+        if path == "/api/events":
+            q = parse_qs(u.query)
+            try:
+                limit = max(1, min(int((q.get("limit") or ["100"])[0]), 500))
+            except ValueError:
+                limit = 100
+            return self._json(200, {"now": int(time.time()),
+                                    "events": db.recent_events(CONN, limit=limit)})
 
         if path == "/api/health":
             return self._json(200, {"ok": True, "hosts": len(db.known_hosts(CONN))})
@@ -759,7 +812,10 @@ def pruner():
     while True:
         time.sleep(600)
         try:
-            db.prune(CONN, CFG["retention_hours"])
+            h = CFG.get("history") or {}
+            db.prune(CONN, CFG["retention_hours"],
+                     h.get("keep_rollup_days") if h.get("enabled") else None,
+                     h.get("keep_event_days"))
         except Exception as e:
             sys.stderr.write("prune error: %s\n" % e)
 
@@ -867,6 +923,102 @@ def reach_prober():
         time.sleep(interval)
 
 
+def roller():
+    """Fold raw samples into hourly and daily buckets, forever.
+
+    Runs more often than hourly on purpose. The job rewrites every bucket in
+    the raw window each pass, so running it four times an hour costs four cheap
+    passes and means the current hour is never more than fifteen minutes stale
+    on a chart -- rather than a graph whose right-hand end snaps into existence
+    on the hour.
+    """
+    h = CFG.get("history") or {}
+    interval = max(60, int(h.get("roll_seconds") or 900))
+    while True:
+        try:
+            db.rollup(CONN, CFG["retention_hours"])
+        except Exception as e:
+            sys.stderr.write("rollup error: %s\n" % e)
+        time.sleep(interval)
+
+
+def event_watcher():
+    """Record status transitions, so an outage leaves a trace after it ends.
+
+    Its own thread rather than a hook in the request path: the dashboard is a
+    wall panel nobody is looking at during the outages that matter, and an
+    event log that only records what happened while someone had a browser tab
+    open is not a log.
+
+    Seeded from the last recorded state per host so a deploy does not break the
+    chain -- but a host first seen after a restart records nothing, because
+    "the state changed" and "we have never looked before" are different claims
+    and only one of them belongs in a log.
+    """
+    interval = max(15, int((CFG.get("history") or {}).get("watch_seconds") or 30))
+    try:
+        last = db.last_states(CONN)
+    except Exception:
+        last = {}
+    while True:
+        try:
+            for sample in db.latest_per_host(CONN):
+                host = sample["host"]
+                view = summarize(sample)
+                now_state = view["status"]
+                prev = last.get(host)
+                if prev is None:
+                    last[host] = now_state
+                    continue
+                if now_state != prev:
+                    r = view.get("reachability") or {}
+                    detail = view.get("down_reason") or r.get("detail")
+                    db.record_event(CONN, host, "status", prev, now_state, detail)
+                    last[host] = now_state
+            live = {s["host"] for s in db.latest_per_host(CONN)}
+            for gone in set(last) - live:
+                del last[gone]
+        except Exception as e:
+            sys.stderr.write("event watcher error: %s\n" % e)
+        time.sleep(interval)
+
+
+def disk_projection(host, mount, min_days=5):
+    """Days until this mount hits 100%, from a least-squares fit of daily points.
+
+    The whole point of keeping history. "78% full" is a fact you can already
+    read off the card; "78% and climbing 1.4 points a day" is the one that
+    tells you whether to act this week or this quarter.
+
+    Returns None rather than a number whenever the fit would be dressing up
+    noise as a forecast: fewer than min_days of data, a flat or falling trend,
+    or a slope so shallow the answer is years away and therefore meaningless.
+    """
+    days = int((CFG.get("history") or {}).get("project_days") or 30)
+    rows = [r for r in db.disk_series(CONN, host, time.time() - days * 86400)
+            if r["mount"] == mount and r["pct_avg"] is not None]
+    if len(rows) < min_days:
+        return None
+    x0 = rows[0]["ts"]
+    xs = [(r["ts"] - x0) / 86400.0 for r in rows]
+    ys = [r["pct_avg"] for r in rows]
+    n = len(xs)
+    mx, my = sum(xs) / n, sum(ys) / n
+    denom = sum((x - mx) ** 2 for x in xs)
+    if denom <= 0:
+        return None
+    slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / denom
+    if slope <= 0.01:          # flat or shrinking: nothing to warn about
+        return None
+    remaining = 100.0 - ys[-1]
+    if remaining <= 0:
+        return {"slope_per_day": round(slope, 3), "days_to_full": 0, "days_observed": n}
+    eta = remaining / slope
+    if eta > 3650:             # a decade out is not a projection, it is noise
+        return None
+    return {"slope_per_day": round(slope, 3), "days_to_full": int(eta), "days_observed": n}
+
+
 # Appliances: devices netdash polls over an API instead of hosts that install a
 # collector and push. Keyed by the config block that configures one, which is
 # also the `source` recorded on the sample.
@@ -943,6 +1095,11 @@ def main():
     if CFG["eol"].get("enabled"):
         threading.Thread(target=eol_refresher, daemon=True).start()
         sys.stderr.write("eol lookups enabled (endoflife.date)\n")
+    if (CFG.get("history") or {}).get("enabled"):
+        threading.Thread(target=roller, daemon=True).start()
+        threading.Thread(target=event_watcher, daemon=True).start()
+        sys.stderr.write("history: rollups + event log enabled\n")
+
     for name, module in sorted(APPLIANCES.items()):
         if (CFG.get(name) or {}).get("enabled"):
             threading.Thread(target=appliance_poller, args=(name, module),

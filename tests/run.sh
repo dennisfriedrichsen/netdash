@@ -1548,6 +1548,26 @@ if want render; then
           "assert d['a_big_fleet_falls_back_to_a_count'] is None, d['a_big_fleet_falls_back_to_a_count']" "$J"
     check "and a host with no fleet grows no fleet badge" \
           "assert d['a_host_with_no_fleet_renders_no_fleet_row'] is None, d['a_host_with_no_fleet_renders_no_fleet_row']" "$J"
+    check "a 30-day view renders from hourly rollups" \
+          "assert d['detail_hourly_range'] is None, d['detail_hourly_range']" "$J"
+    check "and says hourly rather than implying per-sample detail" \
+          "assert d['an_hourly_range_says_so_in_the_caption'] is None, d['an_hourly_range_says_so_in_the_caption']" "$J"
+    check "a disk projection reaches the page" \
+          "assert d['a_projection_reaches_the_page'] is None, d['a_projection_reaches_the_page']" "$J"
+    check "the event log renders" \
+          "assert d['detail_events'] is None, d['detail_events']" "$J"
+    check "and an outage that already ended is still on it" \
+          "assert d['an_outage_that_ended_still_shows'] is None, d['an_outage_that_ended_still_shows']" "$J"
+    check "while a host with no events grows no panel" \
+          "assert d['no_events_panel_when_nothing_has_happened'] is None, d['no_events_panel_when_nothing_has_happened']" "$J"
+    check "the disk panel draws usage over time" \
+          "assert d['detail_disk_history'] is None, d['detail_disk_history']" "$J"
+    check "with a trace per mount, not just the fullest one" \
+          "assert d['every_mount_gets_its_own_trace'] is None, d['every_mount_gets_its_own_trace']" "$J"
+    check "a mount with a single point draws nothing rather than a dot" \
+          "assert d['a_mount_with_one_point_draws_no_trace'] is None, d['a_mount_with_one_point_draws_no_trace']" "$J"
+    check "and a long range labels the disk buckets daily" \
+          "assert d['a_daily_disk_range_says_daily'] is None, d['a_daily_disk_range_says_daily']" "$J"
     check "a down row still names its host" \
           "assert d['down_row_names_the_host'] is None, d['down_row_names_the_host']" "$J"
   fi
@@ -1769,6 +1789,96 @@ PYEOF
         "assert d['summ']['status']=='ok', (d['summ']['status'], d['summ']['fleet'])" "$J"
   check "fleet firmware updates are counted but stay off the console's patch badge" \
         "assert d['summ']['fleet']['updatable']==1 and d['summ']['patches']['other']==0, d['summ']['patches']" "$J"
+fi
+
+
+# --------------------------------------------------------------- history ----
+if want history; then
+  echo "history (a dashboard that forgets cannot answer when it started)"
+  J=$(python3 - "$ROOT" <<'PYEOF'
+import json, os, sys, tempfile, time
+root = sys.argv[1]
+sys.path.insert(0, os.path.join(root, "server"))
+import db, app
+
+conn = db.connect(os.path.join(tempfile.mkdtemp(), "t.db"))
+now = int(time.time())
+# 40 days: /data fills at 1 point a day, / sits still.
+for d in range(40, 0, -1):
+    for q in range(96):
+        ts = now - d * 86400 + q * 900
+        pct = 40 + (40 - d) * 1.0
+        db.insert_sample(conn, {"host": "cerium", "ts": ts, "cpu_pct": 10 + (q % 20),
+            "mem_used_bytes": int(4e9), "mem_total_bytes": int(8e9),
+            "disks": [{"mount": "/data", "used_bytes": int(1e12 * pct / 100),
+                       "total_bytes": int(1e12)},
+                      {"mount": "/", "used_bytes": int(5e10), "total_bytes": int(1e11)}]})
+# An appliance that reports a percentage and no bytes must roll up too.
+for q in range(200):
+    db.insert_sample(conn, {"host": "lanthanum", "ts": now - q * 900, "cpu_pct": 20.0,
+                            "mem_pct": 63.2, "disks": []}, source="unifi")
+
+db.rollup(conn, 40 * 24)
+before = conn.execute("SELECT COUNT(*) FROM rollups").fetchone()[0]
+db.rollup(conn, 40 * 24)
+after = conn.execute("SELECT COUNT(*) FROM rollups").fetchone()[0]
+
+app.CONN = conn
+app.CFG = {"history": {"project_days": 30}}
+proj = app.disk_projection("cerium", "/data")
+flat = app.disk_projection("cerium", "/")
+
+lan = db.rollup_series(conn, "lanthanum", now - 4 * 3600)
+one = db.rollup_series(conn, "cerium", now - 40 * 86400)[0]
+
+db.record_event(conn, "cerium", "status", "ok", "down", "no icmp reply")
+db.record_event(conn, "cerium", "status", "down", "ok", None)
+seeded = db.last_states(conn)
+
+db.prune(conn, 48, rollup_days=30, event_days=None)
+kept = {
+    "hourly": conn.execute("SELECT COUNT(*) FROM rollups").fetchone()[0],
+    "daily":  conn.execute("SELECT COUNT(*) FROM disk_rollups").fetchone()[0],
+    "raw":    conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0],
+    "events": conn.execute("SELECT COUNT(*) FROM events").fetchone()[0],
+}
+oldest_raw = conn.execute("SELECT MIN(ts) FROM samples").fetchone()[0]
+oldest_roll = conn.execute("SELECT MIN(bucket) FROM rollups").fetchone()[0]
+cerium_buckets = conn.execute(
+    "SELECT COUNT(*) FROM rollups WHERE host='cerium'").fetchone()[0]
+
+dh = db.disk_history(conn, "cerium", now - 86400, db.HOUR)
+disk_pts_24h = len(dh.get("/data", []))
+
+print(json.dumps({"proj": proj, "flat": flat, "before": before, "after": after,
+                  "disk_pts_24h": disk_pts_24h,
+                  "lan_mem": lan[0]["mem_pct"] if lan else None,
+                  "one": one, "seeded": seeded, "kept": kept,
+                  "cerium_buckets": cerium_buckets,
+                  "raw_age_h": (now - oldest_raw) / 3600.0,
+                  "roll_age_d": (now - oldest_roll) / 86400.0}))
+PYEOF
+)
+  check "a filling mount projects a date, from a slope not a snapshot" \
+        "assert d['proj']['days_to_full']==21 and abs(d['proj']['slope_per_day']-1.0)<0.02, d['proj']" "$J"
+  check "and a flat mount refuses to forecast at all" \
+        "assert d['flat'] is None, d['flat']" "$J"
+  check "a bucket keeps min and max, not just the average that hides them" \
+        "o=d['one']; assert o['cpu_min'] < o['cpu_pct'] < o['cpu_max'] and o['samples']==4, o" "$J"
+  check "rolling up twice changes nothing" \
+        "assert d['before']==d['after'], (d['before'], d['after'])" "$J"
+  check "a source reporting a percentage and no bytes still rolls up" \
+        "assert abs(d['lan_mem']-63.2)<0.01, d['lan_mem']" "$J"
+  check "raw ages out at its own window" \
+        "assert d['raw_age_h'] <= 48.1, d['raw_age_h']" "$J"
+  check "while rollups outlive it by weeks" \
+        "assert 29 <= d['roll_age_d'] <= 30.1 and d['cerium_buckets']==720, (d['roll_age_d'], d['cerium_buckets'])" "$J"
+  check "disk history is bucketed, never one point per sample" \
+        "assert d['disk_pts_24h'] <= 25 and d['disk_pts_24h'] >= 20, d['disk_pts_24h']" "$J"
+  check "and events are never pruned when no event window is set" \
+        "assert d['kept']['events']==2, d['kept']" "$J"
+  check "the watcher can be reseeded from the log after a restart" \
+        "assert d['seeded']=={'cerium': 'ok'}, d['seeded']" "$J"
 fi
 
 

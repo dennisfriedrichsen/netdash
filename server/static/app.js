@@ -775,9 +775,17 @@ function sparkline(points, colorVar, th) {
 /* Axis labels live in HTML, not in the SVG: the chart uses
    preserveAspectRatio="none" so the plot stretches to the panel width, which
    would stretch any text inside it too. */
-function chartCaption(th, minutes) {
+function spanLabel(minutes) {
+  if (minutes < 120) return minutes + ' min ago';
+  if (minutes < 2880) return Math.round(minutes / 60) + ' h ago';
+  if (minutes < 43200) return Math.round(minutes / 1440) + ' d ago';
+  return Math.round(minutes / 43200) + ' mo ago';
+}
+
+function chartCaption(th, minutes, resolution) {
   var c = el('div', 'cap');
-  c.appendChild(el('span', null, minutes + ' min ago'));
+  c.appendChild(el('span', null, spanLabel(minutes) +
+    (resolution === 'hourly' ? ' · hourly' : resolution === 'daily' ? ' · daily' : '')));
   var mid = el('span', null);
   if (th && th.warn != null) {
     mid.appendChild(el('span', 'capw', 'warn ' + th.warn + '%'));
@@ -810,8 +818,9 @@ function renderDetailWhy(c) {
   return b;
 }
 
-function renderDetail(host, data) {
+function renderDetail(host, data, range) {
   var c = data.current, s = hostStyle(c);
+  range = range || '24h';
   titleEl.textContent = host;
   metaEl.textContent = (c.os || 'unknown os') + ' · ' + fmtUptime(c.uptime_seconds) +
     ' · ' + (c.stale ? 'last seen ' : 'updated ') + fmtAge(c.age_seconds) +
@@ -839,6 +848,7 @@ function renderDetail(host, data) {
   var g = el('span', 'glyph', s.glyph); g.style.color = s.css; chip.appendChild(g);
   chip.appendChild(el('span', null, s.label));
   back.appendChild(chip);
+  back.appendChild(rangePicker(host, range));
   frag.appendChild(back);
 
   var panels = el('div', 'panels');
@@ -853,7 +863,7 @@ function renderDetail(host, data) {
   p1.appendChild(sparkline(data.history.map(function (h) {
     return { ts: h.ts, v: h.cpu_pct };
   }), st(c.cpu.status).css, th.cpu));
-  p1.appendChild(chartCaption(th.cpu, 60));
+  p1.appendChild(chartCaption(th.cpu, data.minutes || 60, data.resolution));
   panels.appendChild(p1);
 
   /* Memory */
@@ -868,7 +878,7 @@ function renderDetail(host, data) {
   p2.appendChild(sparkline(data.history.map(function (h) {
     return { ts: h.ts, v: h.mem_pct };
   }), st(c.mem.status).css, th.mem));
-  p2.appendChild(chartCaption(th.mem, 60));
+  p2.appendChild(chartCaption(th.mem, data.minutes || 60, data.resolution));
   panels.appendChild(p2);
 
   /* Disk -- every real mount, worst first */
@@ -890,13 +900,49 @@ function renderDetail(host, data) {
   }
   p3.appendChild(b3);
   var mounts = el('div', 'mounts');
+  var dh = data.disk_history || {};
   c.disk.mounts.slice().sort(function (a2, b4) { return (b4.pct || 0) - (a2.pct || 0); })
     .forEach(function (d) {
       mounts.appendChild(meter(d.mount, d.pct, d.status,
         fmtBytes(d.used_bytes) + ' of ' + fmtBytes(d.total_bytes)));
+      /* Each mount gets its own trace rather than one line for the fullest.
+         The fullest mount and the one that is actually filling are routinely
+         not the same mount, and a chart that only ever draws the first would
+         hide exactly the case worth catching. */
+      var pts = dh[d.mount] || [];
+      if (pts.length < 2) return;
+      var spark = sparkline(pts.map(function (p) {
+        return { ts: p.ts, v: p.pct };
+      }), '--st-ok', th.disk);
+      spark.classList.add('minispark');
+      mounts.appendChild(spark);
     });
   if (!c.disk.mounts.length) mounts.appendChild(el('div', 'sub', 'no mounts reported'));
   p3.appendChild(mounts);
+  if (c.disk.mounts.length && Object.keys(dh).length) {
+    p3.appendChild(chartCaption(th.disk, data.minutes || 60,
+      data.disk_resolution === 'daily' ? 'daily' : 'hourly'));
+  }
+  /* The reason to keep history at all. A percentage is a fact you can read off
+     the card; a slope is the one that says whether to act this week or this
+     quarter. Shown only where the server was willing to fit one -- it returns
+     nothing for a flat mount, for too few days, or for an answer years out. */
+  c.disk.mounts.forEach(function (d) {
+    if (!d.projection) return;
+    var pj = d.projection, days = pj.days_to_full;
+    var line = el('div', 'proj');
+    line.style.setProperty('--st', days <= 30 ? 'var(--st-crit)'
+                                 : days <= 90 ? 'var(--st-warn)' : 'var(--st-none)');
+    line.appendChild(el('span', 'pdot'));
+    line.appendChild(el('span', 'fname', d.mount));
+    line.appendChild(el('span', null,
+      '+' + pj.slope_per_day.toFixed(2) + ' pts/day'));
+    line.appendChild(el('span', 'pval',
+      days === 0 ? 'full' : 'full in ~' + days + ' d'));
+    line.title = 'Least-squares fit over ' + pj.days_observed +
+      ' days of daily averages. A projection, not a promise.';
+    p3.appendChild(line);
+  });
   panels.appendChild(p3);
 
   /* Patches -- no sparkline: this moves once a day, and a flat line for 23 of
@@ -1018,6 +1064,32 @@ function renderDetail(host, data) {
     panels.appendChild(p5);
   }
 
+  /* What actually happened, as opposed to what is happening. Everything else
+     on this page is a photograph of now; with 24 hours of samples and the
+     reachability verdict living in memory, a four-minute outage at 03:00 used
+     to leave no trace anywhere at all. */
+  if (data.events && data.events.length) {
+    var pe = el('div', 'panel');
+    pe.appendChild(el('h2', null, 'Recent changes'));
+    var log = el('div', 'events');
+    data.events.slice(0, 12).forEach(function (ev) {
+      var to = st(ev.to_state), row = el('div', 'ev');
+      row.style.setProperty('--st', to.css);
+      row.appendChild(el('span', 'pdot'));
+      row.appendChild(el('span', 'evwhen', fmtAge(data.now - ev.ts)));
+      row.appendChild(el('span', 'evwhat',
+        (ev.from_state || '?') + ' → ' + ev.to_state));
+      if (ev.detail) {
+        var dt = el('span', 'evwhy', ev.detail);
+        dt.title = ev.detail;
+        row.appendChild(dt);
+      }
+      log.appendChild(row);
+    });
+    pe.appendChild(log);
+    panels.appendChild(pe);
+  }
+
   frag.appendChild(panels);
   root.replaceChildren(frag);
 }
@@ -1030,10 +1102,42 @@ var TABS = [
   { id: 'vms',   label: 'VMs',        title: 'Hosts reporting a hypervisor' }
 ];
 
+/* How far back the detail page is looking. Kept in the hash rather than in a
+   variable so a range survives a reload and can be linked to -- "here is the
+   week that mount started filling" is a URL worth sending someone.
+
+   The server decides resolution from the span, so these are spans and not
+   resolutions: past the raw retention window it answers with hourly rollups
+   and says so, and the caption below the chart reports what actually came
+   back rather than what was asked for. */
+var RANGES = [
+  { id: '1h',  label: '1h',  minutes: 60 },
+  { id: '24h', label: '24h', minutes: 1440 },
+  { id: '7d',  label: '7d',  minutes: 10080 },
+  { id: '30d', label: '30d', minutes: 43200 },
+  { id: '1y',  label: '1y',  minutes: 525600 }
+];
+function rangeById(id) {
+  for (var i = 0; i < RANGES.length; i++) if (RANGES[i].id === id) return RANGES[i];
+  return RANGES[1];
+}
+
+function rangePicker(host, active) {
+  var nav = el('div', 'ranges');
+  RANGES.forEach(function (r) {
+    var a = el('a', 'range' + (r.id === active ? ' on' : ''), r.label);
+    a.href = '#/host/' + encodeURIComponent(host) + '/' + r.id;
+    nav.appendChild(a);
+  });
+  return nav;
+}
+
 function currentRoute() {
   var h = location.hash || '#/';
-  var m = h.match(/^#\/host\/(.+)$/);
-  if (m) return { view: 'host', host: decodeURIComponent(m[1]) };
+  var m = h.match(/^#\/host\/(.+?)\/([0-9]+[hdy])$/);
+  if (m) return { view: 'host', host: decodeURIComponent(m[1]), range: rangeById(m[2]).id };
+  m = h.match(/^#\/host\/(.+)$/);
+  if (m) return { view: 'host', host: decodeURIComponent(m[1]), range: '24h' };
   m = h.match(/^#\/(bare|vms)$/);
   return { view: 'overview', tab: m ? m[1] : '' };
 }
@@ -1076,7 +1180,7 @@ function fail(msg, status) {
 function tick() {
   var r = currentRoute();
   var url = r.view === 'host'
-    ? '/api/host/' + encodeURIComponent(r.host) + '?minutes=60'
+    ? '/api/host/' + encodeURIComponent(r.host) + '?minutes=' + rangeById(r.range).minutes
     : '/api/overview';
   /* Two failures that look nothing alike and used to report identically. A
      single .catch around both the fetch and the render meant a bug in this
@@ -1095,7 +1199,7 @@ function tick() {
     .then(function (data) {
       if (data === null) return;
       try {
-        if (r.view === 'host') renderDetail(r.host, data); else renderOverview(data, r.tab);
+        if (r.view === 'host') renderDetail(r.host, data, r.range); else renderOverview(data, r.tab);
       } catch (e) {
         if (window.console) console.error('netdash render failed', e);
         fail('The server answered, but the dashboard could not draw this view: ' +

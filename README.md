@@ -47,7 +47,8 @@ an LLM agent instead of doing it by hand.
 |---|---|
 | `bind_host` / `bind_port` | listen address (trusted network only; do not expose directly) |
 | `ingest_token` | shared secret; collectors send it as `X-Netdash-Token` |
-| `retention_hours` | rolling window; older samples are pruned every 10 min |
+| `retention_hours` | how long full-resolution samples are kept (see History) |
+| `history` | hourly/daily rollups and the state-transition event log (see below) |
 | `stale_after_seconds` | a host with no sample for this long shows as **Stale** |
 | `patch_stale_hours` | a patch check older than this shows as **unknown**, not OK |
 | `reachability` | probing that turns silence into **DOWN** (see below) |
@@ -780,6 +781,122 @@ Every path under `/proxy/network` returns **401 when unauthenticated,
 including paths that cannot exist**. A 401 therefore says nothing about
 whether the Integration API is enabled — only that UniFi OS rejected the
 request before routing it. Test with a real key or the answer is meaningless.
+
+## History
+
+Raw samples answer *what is it doing*. They are the wrong tool for *is this
+normal* and *which way is it going*, and keeping 52-second resolution for a
+year to answer those would cost 5.6 GB to say what 40 MB says just as well.
+
+So there are three tiers with three lifetimes:
+
+| tier | resolution | kept | why |
+|---|---|---|---|
+| samples | ~52 s | `retention_hours` (48) | what it is doing now |
+| CPU / memory rollups | hourly, min-avg-max | `keep_rollup_days` (400) | volatile — the intra-day shape is the information |
+| disk rollups | **daily**, min-avg-max | `keep_rollup_days` (400) | slow — the useful question is a slope in days |
+| events | every transition | forever by default | the only record that an outage happened |
+
+```json
+"history": { "enabled": true, "keep_rollup_days": 400, "keep_event_days": null,
+             "roll_seconds": 900, "project_days": 30 }
+```
+
+Rolling disk up **daily** rather than hourly is what keeps this small — 76
+mounts daily is 28k rows a year where hourly would be 666k — and hourly disk
+granularity tells you nothing the daily figure does not.
+
+`min` and `max` are stored alongside `avg` because an hour that averaged 40%
+CPU and an hour that alternated between 5% and 95% are different facts about a
+machine, and an average alone erases the second one.
+
+400 days rather than 365 so "this time last year" is always answerable rather
+than answerable most of the time.
+
+### The roller is idempotent on purpose
+
+Every pass rewrites all buckets in the raw window rather than tracking a
+watermark. That costs one pass over ~100k rows, which SQLite does in
+milliseconds, and buys the property that matters: a missed run, a restart
+mid-hour, a clock step or a bucket first written from a half-filled hour all
+correct themselves on the next pass. Over a 48-hour raw window each bucket is
+rewritten dozens of times before the samples behind it age out, so what finally
+remains is always a complete bucket.
+
+It runs every `roll_seconds` (15 min) rather than hourly so the right-hand end
+of a chart is never more than a quarter hour stale, instead of snapping into
+existence on the hour.
+
+**SQLite stays.** At ~45 MB a year this is nowhere near stressed; its real
+limits are concurrent writers and network access, and netdash has one writer
+already serialised behind a lock and one process reading. Note that `DELETE`
+does not return space to the filesystem without a `VACUUM` — with a rolling
+window the freed pages get reused, so the file plateaus rather than growing.
+
+### Ranges
+
+The detail page has **1h / 24h / 7d / 30d / 1y**, and the range lives in the
+URL — `#/host/cerium/30d` — so it survives a reload and can be sent to someone.
+
+You pick a *span*, never a resolution. The server answers from raw samples when
+the span fits inside `retention_hours` and from hourly rollups when it does
+not, and says which in the response; the caption under the chart reads `hourly
+avg` when that is what you are looking at, rather than implying per-sample
+detail it does not have.
+
+### Disk over time
+
+Each mount gets its own trace under its meter, not one line for the fullest —
+the fullest mount and the one that is actually filling are routinely different,
+and a chart that only ever drew the first would hide exactly the case worth
+catching.
+
+Disk is **never** served at sample resolution, at any range. A mount does not
+move meaningfully inside an hour, so 69 identical points per hour per mount
+would be several hundred kilobytes of JSON on a page that reloads every 30
+seconds, to draw a line already flat between the hours. It is bucketed in SQL:
+hourly within the raw window, daily beyond it, capping a 48-hour view at 48
+points per mount. Buckets take the `MAX`, not the average — the question a disk
+chart is asked is how close this got, and an average hides the spike.
+
+### Disk projections
+
+The reason to keep history at all. Under the disk panel, any mount with a
+rising trend gets a fitted slope and a date:
+
+```
+/data      +1.42 pts/day      full in ~14 d
+```
+
+A least-squares fit over `project_days` (30) of daily averages. **78% full** is
+a fact you can already read off the card; *78% and climbing 1.4 points a day*
+is the one that tells you whether to act this week or this quarter.
+
+It refuses to answer rather than guessing: fewer than five days of data, a flat
+or falling trend, or an answer more than a decade out all produce nothing. A
+projection dressed up from noise is worse than no projection.
+
+### The event log
+
+Everything else in netdash is a photograph of now. Samples age out in a day and
+the reachability verdict lives in memory and dies on restart, so a host that
+dropped for four minutes at 03:00 left no trace anywhere — nothing recorded
+that it had happened, and nothing could be asked about it afterwards.
+
+A watcher thread records status transitions to an `events` table, shown as
+**Recent changes** on the detail page and available fleet-wide at
+`/api/events`. Its own thread rather than a hook in the request path: the
+dashboard is a wall panel nobody is looking at during the outages that matter,
+and a log that only records what happened while a browser tab was open is not a
+log.
+
+It is seeded from the last recorded state per host, so a `deploy.sh` does not
+break the chain. A host seen for the first time after a restart records
+nothing — "the state changed" and "we have never looked before" are different
+claims, and only one of them belongs in a log.
+
+`kind` is deliberately open rather than a status enum, so a WAN link flapping
+or an access point dropping off a controller can join the same log.
 
 ## Tests
 

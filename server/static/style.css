@@ -308,3 +308,47 @@ button.link:hover { color: var(--text-1); }
   font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
   font-size: 11px;
 }
+
+/* ---------- range picker, projections, event log ---------- */
+.ranges { display: flex; gap: 2px; margin-left: auto; }
+.range {
+  padding: 3px 9px; border-radius: 3px; font-size: 12px; font-weight: 600;
+  color: var(--muted); text-decoration: none; line-height: 1.6;
+}
+.range:hover { background: var(--surface-1); color: var(--text-1); }
+.range.on { background: var(--surface-1); color: var(--text-1); }
+
+/* A projection is a claim about the future and is styled a step quieter than
+   the measurements above it -- it earns attention by its number, not its box. */
+.proj {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 0 0; font-size: 12px; color: var(--muted);
+}
+.proj .pdot { background: var(--st, var(--st-none)); }
+.proj .fname { font-weight: 600; color: var(--text-1); }
+.proj .pval {
+  margin-left: auto; color: var(--st, var(--st-none));
+  font-weight: 600; font-variant-numeric: tabular-nums;
+}
+
+.events { display: flex; flex-direction: column; gap: 1px; margin-top: 6px; }
+.ev {
+  display: flex; align-items: baseline; gap: 8px;
+  font-size: 12.5px; padding: 3px 0; border-bottom: 1px solid var(--border);
+}
+.ev:last-child { border-bottom: none; }
+.ev .pdot { background: var(--st, var(--st-none)); align-self: center; }
+.ev .evwhen {
+  color: var(--muted); font-variant-numeric: tabular-nums;
+  min-width: 5.5em; flex: none;
+}
+.ev .evwhat { font-weight: 600; color: var(--text-1); flex: none; }
+.ev .evwhy {
+  color: var(--muted); margin-left: auto; text-align: right;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* A per-mount trace sits under its meter, shorter than the CPU and memory
+   charts: it is an aside to a number that is already on screen, not a panel
+   of its own. */
+.minispark { height: 42px; margin: -2px 0 10px; }

@@ -87,6 +87,69 @@ CREATE TABLE IF NOT EXISTS fleet (
 );
 CREATE INDEX IF NOT EXISTS idx_fleet_sample ON fleet(sample_id);
 
+-- Downsampled history, kept long after the raw samples behind it are gone.
+--
+-- Raw samples answer "what is it doing"; these answer "is this normal, and
+-- which way is it going". A 52-second sample rate is the right resolution for
+-- the first question and pointless for the second -- keeping it for a year
+-- would cost 5.6 GB to say what 40 MB says just as well.
+--
+-- Two periods rather than one, because the metrics move at different speeds.
+-- CPU and memory are volatile and their intra-day shape is the information, so
+-- they roll up hourly. Disk moves slowly and the useful question about it is a
+-- slope measured in days, so it rolls up daily -- which is also what keeps this
+-- small: 76 mounts daily is 28k rows a year, hourly would be 666k.
+--
+-- min/avg/max, not just avg: an hour that averaged 40% CPU and an hour that
+-- alternated between 5% and 95% are different facts about a machine, and an
+-- average alone erases the second one entirely.
+CREATE TABLE IF NOT EXISTS rollups (
+    host    TEXT    NOT NULL,
+    -- Unix ts of the start of the hour, UTC. Integer arithmetic, no calendar.
+    bucket  INTEGER NOT NULL,
+    samples INTEGER NOT NULL,
+    cpu_min REAL, cpu_avg REAL, cpu_max REAL,
+    mem_min REAL, mem_avg REAL, mem_max REAL,
+    PRIMARY KEY (host, bucket)
+);
+CREATE INDEX IF NOT EXISTS idx_rollups_bucket ON rollups(bucket);
+
+CREATE TABLE IF NOT EXISTS disk_rollups (
+    host        TEXT    NOT NULL,
+    mount       TEXT    NOT NULL,
+    -- Unix ts of the start of the day, UTC.
+    bucket      INTEGER NOT NULL,
+    samples     INTEGER NOT NULL,
+    pct_avg     REAL,
+    pct_max     REAL,
+    used_avg    REAL,
+    total_bytes INTEGER,
+    PRIMARY KEY (host, mount, bucket)
+);
+CREATE INDEX IF NOT EXISTS idx_disk_rollups_bucket ON disk_rollups(bucket);
+
+-- State transitions. Tiny, and the only part of netdash with a memory.
+--
+-- Everything else here is a photograph of now: REACH lives in memory and dies
+-- on restart, and samples age out in a day. A host that drops for four minutes
+-- every night at 03:00 was, until this table, completely invisible -- nothing
+-- recorded that it had happened and nothing could be asked about it afterwards.
+--
+-- `kind` is deliberately open rather than a status enum. A WAN link flapping or
+-- an access point dropping off a controller are the same sort of fact and
+-- belong in the same log.
+CREATE TABLE IF NOT EXISTS events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts         INTEGER NOT NULL,
+    host       TEXT    NOT NULL,
+    kind       TEXT    NOT NULL,
+    from_state TEXT,
+    to_state   TEXT    NOT NULL,
+    detail     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_events_host ON events(host, ts DESC);
+
 -- A silenced patch-security state, one per host. Deliberately narrow: this
 -- acknowledges "N security issues in these packages", not the host in
 -- general, and only that exact state -- a security count or package list
@@ -240,7 +303,15 @@ def insert_sample(conn, payload, source="push", peer=None):
         return sid
 
 
-def prune(conn, retention_hours):
+def prune(conn, retention_hours, rollup_days=None, event_days=None):
+    """Drop raw samples past the window, and rollups past a much longer one.
+
+    Three tiers with three lifetimes, so "how long do we keep data" stops being
+    one number that has to be wrong for something. Raw is expensive and only
+    interesting recently; rollups are cheap and only interesting over months;
+    events are almost free and are the one thing worth keeping indefinitely,
+    which is what `event_days=None` means.
+    """
     with _WRITE:
         cutoff = int(time.time()) - retention_hours * 3600
         conn.execute(
@@ -261,7 +332,159 @@ def prune(conn, retention_hours):
         conn.execute(
             "DELETE FROM eol_acks WHERE host NOT IN (SELECT DISTINCT host FROM samples)"
         )
+        if rollup_days:
+            rcut = int(time.time()) - int(rollup_days) * 86400
+            conn.execute("DELETE FROM rollups WHERE bucket < ?", (rcut,))
+            conn.execute("DELETE FROM disk_rollups WHERE bucket < ?", (rcut,))
+        if event_days:
+            conn.execute("DELETE FROM events WHERE ts < ?",
+                         (int(time.time()) - int(event_days) * 86400,))
         conn.commit()
+
+
+HOUR, DAY = 3600, 86400
+
+
+def rollup(conn, window_hours):
+    """Fold every raw sample still on hand into its hour and day buckets.
+
+    Recomputes the whole raw window on each run rather than tracking a
+    watermark. That costs one pass over ~100k rows, which SQLite does in
+    milliseconds, and buys the property that matters: it is idempotent and
+    self-healing. A missed run, a restart mid-hour, a clock step, a bucket
+    written from a partly-filled hour -- all of them correct themselves on the
+    next pass, because every bucket in the window is rewritten from whatever
+    raw data currently backs it.
+
+    INSERT OR REPLACE rather than INSERT: the current hour is necessarily
+    incomplete when it is first written, and gets replaced by the full hour on
+    a later run. Over a 48-hour raw window every bucket is rewritten dozens of
+    times before the samples behind it age out, so what finally remains is
+    always a complete bucket.
+    """
+    since = int(time.time()) - int(window_hours) * HOUR
+    with _WRITE:
+        conn.execute(
+            """INSERT OR REPLACE INTO rollups
+                 (host, bucket, samples, cpu_min, cpu_avg, cpu_max,
+                  mem_min, mem_avg, mem_max)
+               SELECT host, ts - (ts % ?), COUNT(*),
+                      MIN(cpu_pct), AVG(cpu_pct), MAX(cpu_pct),
+                      MIN(pct), AVG(pct), MAX(pct)
+                 FROM (SELECT host, ts, cpu_pct,
+                              COALESCE(mem_pct,
+                                       CASE WHEN mem_total_bytes > 0
+                                            THEN 100.0 * mem_used_bytes / mem_total_bytes
+                                       END) AS pct
+                         FROM samples WHERE ts >= ?)
+                GROUP BY host, ts - (ts % ?)""",
+            (HOUR, since, HOUR),
+        )
+        conn.execute(
+            """INSERT OR REPLACE INTO disk_rollups
+                 (host, mount, bucket, samples, pct_avg, pct_max, used_avg, total_bytes)
+               SELECT s.host, d.mount, s.ts - (s.ts % ?), COUNT(*),
+                      AVG(100.0 * d.used_bytes / d.total_bytes),
+                      MAX(100.0 * d.used_bytes / d.total_bytes),
+                      AVG(d.used_bytes), MAX(d.total_bytes)
+                 FROM samples s JOIN disks d ON d.sample_id = s.id
+                WHERE s.ts >= ? AND d.total_bytes > 0 AND d.used_bytes IS NOT NULL
+                GROUP BY s.host, d.mount, s.ts - (s.ts % ?)""",
+            (DAY, since, DAY),
+        )
+        conn.commit()
+
+
+def rollup_series(conn, host, since):
+    """Hourly points for one host, shaped like history() so the UI can share code."""
+    rows = conn.execute(
+        """SELECT bucket AS ts, cpu_avg AS cpu_pct, mem_avg AS mem_pct,
+                  cpu_min, cpu_max, mem_min, mem_max, samples
+             FROM rollups WHERE host=? AND bucket >= ? ORDER BY bucket ASC""",
+        (host, int(since)),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def disk_series(conn, host, since):
+    """Daily per-mount points, oldest first."""
+    rows = conn.execute(
+        """SELECT mount, bucket AS ts, pct_avg, pct_max, used_avg, total_bytes
+             FROM disk_rollups WHERE host=? AND bucket >= ? ORDER BY mount, bucket ASC""",
+        (host, int(since)),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def disk_history(conn, host, since, bucket=HOUR):
+    """Per-mount usage over time, bucketed in SQL rather than shipped per sample.
+
+    Disk is never served at sample resolution, at any range. A mount does not
+    move meaningfully inside an hour, so 69 points an hour per mount would be
+    the same number repeated -- several hundred kilobytes of JSON, on a page
+    that reloads every 30 seconds, to draw a line that is already flat between
+    the hours. Bucketing here caps a 48-hour view at 48 points per mount.
+
+    MAX rather than AVG within a bucket: the question a disk chart is asked is
+    how close this got, and an average across an hour hides the spike that
+    filled it.
+    """
+    rows = conn.execute(
+        """SELECT d.mount AS mount, s.ts - (s.ts % ?) AS ts,
+                  MAX(100.0 * d.used_bytes / d.total_bytes) AS pct,
+                  MAX(d.used_bytes) AS used_bytes, MAX(d.total_bytes) AS total_bytes
+             FROM samples s JOIN disks d ON d.sample_id = s.id
+            WHERE s.host = ? AND s.ts >= ? AND d.total_bytes > 0
+                  AND d.used_bytes IS NOT NULL
+            GROUP BY d.mount, s.ts - (s.ts % ?)
+            ORDER BY d.mount, ts ASC""",
+        (int(bucket), host, int(since), int(bucket)),
+    ).fetchall()
+    out = {}
+    for r in rows:
+        out.setdefault(r["mount"], []).append(
+            {"ts": r["ts"], "pct": r["pct"],
+             "used_bytes": r["used_bytes"], "total_bytes": r["total_bytes"]})
+    return out
+
+
+def record_event(conn, host, kind, from_state, to_state, detail=None, ts=None):
+    with _WRITE:
+        conn.execute(
+            """INSERT INTO events (ts, host, kind, from_state, to_state, detail)
+               VALUES (?,?,?,?,?,?)""",
+            (int(ts or time.time()), host, kind, from_state, to_state, detail),
+        )
+        conn.commit()
+
+
+def recent_events(conn, host=None, limit=100, since=None):
+    q = "SELECT * FROM events WHERE 1=1"
+    args = []
+    if host:
+        q += " AND host=?"
+        args.append(host)
+    if since:
+        q += " AND ts >= ?"
+        args.append(int(since))
+    q += " ORDER BY ts DESC, id DESC LIMIT ?"
+    args.append(int(limit))
+    return [dict(r) for r in conn.execute(q, args)]
+
+
+def last_states(conn):
+    """The most recent to_state per host, for seeding the watcher after a restart.
+
+    Without this a restart forgets what every host was last seen doing, and the
+    first sweep silently treats whatever it finds as the starting state -- so a
+    machine that went down during a deploy would never produce an event at all.
+    """
+    rows = conn.execute(
+        """SELECT host, to_state FROM events e
+            WHERE kind='status' AND id = (SELECT MAX(id) FROM events
+                                           WHERE host=e.host AND kind='status')"""
+    ).fetchall()
+    return {r["host"]: r["to_state"] for r in rows}
 
 
 def latest_per_host(conn):
