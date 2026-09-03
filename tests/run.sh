@@ -1595,6 +1595,86 @@ PYEOF
         "assert d['orphans']==0 and d['total']==72, d" "$J"
 fi
 
+# --------------------------------------------------------------- Hubitat ----
+if want hubitat; then
+  echo "hubitat (a load average is not a percentage)"
+  J=$(python3 - "$ROOT" "$FIX" <<'PYEOF'
+import json, sys, os
+root, fix = sys.argv[1], sys.argv[2]
+sys.path.insert(0, os.path.join(root, "server"))
+import hubitat
+
+F = os.path.join(fix, "hubitat")
+SERVED = {
+    "/hub2/hubData":                  "hubData.json",
+    "/hub/advanced/freeOSMemory":     "freeOSMemory.txt",
+    "/hub/advanced/freeOSMemoryLast": "freeOSMemoryLast.txt",
+    "/hub/cpuInfo":                   "cpuInfo.txt",
+    "/hub/cloud/checkForUpdate":      "checkForUpdate.json",
+}
+
+def serve(files):
+    def _get(cfg, path, timeout=10):
+        name = files.get(path)
+        if name is None:
+            raise hubitat.HubitatError("GET %s -> HTTP 404" % path)
+        return open(os.path.join(F, name)).read()
+    return _get
+
+def fresh():
+    """Each scenario starts with empty caches, as a new process would."""
+    hubitat._CORES["value"] = None
+    hubitat._PATCH_CACHE.update(ts=0.0, value=None, error=None)
+
+cfg = {"host": "10.0.0.76", "display_name": "palladium",
+       "mem_total_bytes": 2147483648}
+
+fresh(); hubitat._get = serve(SERVED)
+ok = hubitat.collect(cfg)
+
+# The hub reports free memory and never a total, so a hub with no declared
+# total must report nothing rather than a guess.
+fresh(); hubitat._get = serve(SERVED)
+notot = hubitat.collect({k: v for k, v in cfg.items() if k != "mem_total_bytes"})
+
+# Hub security on: every endpoint serves the login page with a 200.
+fresh(); hubitat._get = serve({k: "login-page.html" for k in SERVED})
+try:
+    hubitat.collect(cfg)
+    secured = None
+except hubitat.HubitatError as e:
+    secured = str(e)
+
+# A hub that answers hubData but nothing else still has an identity worth
+# showing -- metrics are best effort, the card is not.
+fresh(); hubitat._get = serve({"/hub2/hubData": "hubData.json"})
+partial = hubitat.collect(cfg)
+
+print(json.dumps({"ok": ok, "notot": notot, "secured": secured,
+                  "partial": partial}))
+PYEOF
+)
+  check "cpu is the load average over the core count, not the raw column" \
+        "assert d['ok']['cpu_pct']==9.2, d['ok']['cpu_pct']" "$J"
+  check "and is emphatically not the 0.37 the hub printed" \
+        "assert d['ok']['cpu_pct']!=0.37, d['ok']" "$J"
+  check "memory is the declared total minus the measured free" \
+        "assert d['ok']['mem_used_bytes']==779747328, d['ok']" "$J"
+  check "an undeclared total reports unknown rather than a guess" \
+        "assert d['notot']['mem_used_bytes'] is None and d['notot']['mem_total_bytes'] is None, d['notot']" "$J"
+  check "an available update is one uncategorised patch, never zero security" \
+        "assert d['ok']['patches']['other']==1 and d['ok']['patches']['security'] is None, d['ok']['patches']" "$J"
+  check "no uptime and no invented disk row" \
+        "assert d['ok']['uptime_seconds'] is None and d['ok']['disks']==[], d['ok']" "$J"
+  check "the os string carries model and platform version" \
+        "assert d['ok']['os']=='Hubitat C-8 Pro 2.5.1.174', d['ok']['os']" "$J"
+  check "hub security is named as the cause, not reported as bad data" \
+        "assert d['secured'] and 'hub security' in d['secured'], d['secured']" "$J"
+  check "a hub that answers only hubData still reports its identity" \
+        "assert d['partial']['host']=='palladium' and d['partial']['cpu_pct'] is None, d['partial']" "$J"
+fi
+
+
 echo
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]

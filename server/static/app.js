@@ -553,7 +553,9 @@ function renderOverview(data, tab) {
 
     var why = reachText(h);
     var sub = el('div', 'sub', (h.stale ? 'last seen ' : 'updated ') + fmtAge(h.age_seconds) +
-      (h.source === 'truenas' ? ' · via API' : ''));
+      // Any source but 'push' is an appliance this server polled, rather than
+      // a host that installed a collector and reported in.
+      (h.source && h.source !== 'push' ? ' · via API' : ''));
     if (why) {
       var wl = el('div', 'sub why', why);
       wl.style.color = h.status === 'down' ? s.css : 'var(--muted)';

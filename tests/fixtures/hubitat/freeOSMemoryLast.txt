@@ -1,0 +1,2 @@
+Date/time,Free OS,5m CPU avg,Total Java,Free Java,Direct Java
+09-03 10:37:48,1335680,0.37,129984,38019,1800

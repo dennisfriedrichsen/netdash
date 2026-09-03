@@ -41,6 +41,15 @@
     "poll_seconds": 60,
     "patch_poll_seconds": 3600
   },
+  "hubitat": {
+    "enabled": false,
+    "host": "hubitat.example",
+    "display_name": "hubitat",
+    "scheme": "http",
+    "mem_total_bytes": 2147483648,
+    "poll_seconds": 60,
+    "patch_poll_seconds": 3600
+  },
   "eol": {
     "enabled": true,
     "refresh_hours": 24,

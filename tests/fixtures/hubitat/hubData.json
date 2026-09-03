@@ -1,0 +1,13 @@
+{"hubId":"00000000-0000-0000-0000-000000000000","ipAddress":"10.0.0.76",
+ "version":"2.5.1.174","model":"C-8 Pro","name":"palladium",
+ "alerts":{"hubLoadElevated":false,"hubLowMemory":false,"hubHugeDatabase":false,
+           "zwaveOffline":false,"zigbeeOffline":false,"cloudDisconnected":false,
+           "localBackupFailed":false,"platformUpdateAvailable":false,
+           "platformUpdateVersion":null,"databaseSize":1,"alertItems":[]},
+ "baseModel":{"buildVersion":"2.5.1.174","zigbeeStatus":"false","zwaveStatus":"false",
+              "locationName":"palladium","temperatureScale":"F",
+              "dashboard":{"installed":true,"appId":18,
+                           "accessToken":"00000000-0000-0000-0000-000000000000"},
+              "registeredUser":{"AccountType":"Hubitat","Email":"REDACTED@example.com",
+                                "Name":"palladium","role_id":1}},
+ "safeMode":false,"hubVersion":9,"zigbeeReady":true}

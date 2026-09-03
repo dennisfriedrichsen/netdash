@@ -21,6 +21,7 @@ from urllib.parse import urlparse, parse_qs
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db  # noqa: E402
 import eol  # noqa: E402
+import hubitat  # noqa: E402
 import reach  # noqa: E402
 import truenas  # noqa: E402
 
@@ -767,9 +768,15 @@ def reach_prober():
                 host = sample["host"]
                 if not expect_up_for(host):
                     continue
-                # TrueNAS is polled by us over its API rather than pushing, so
-                # its silence is already an error this server logged. Probing
+                # TrueNAS specifically, not polled devices in general. Its
+                # silence is already an error this server logged, and probing
                 # it would answer a question we did not have.
+                #
+                # The other appliances are deliberately NOT excluded. Knowing
+                # the gateway and the hub are reachable on the interface you
+                # actually use them on is the whole reason they are on this
+                # dashboard, and for them a failed poll is the beginning of
+                # that question rather than the end of it.
                 if sample.get("source") == "truenas":
                     continue
                 if now - sample["ts"] < max(15, stale_after_for(host) / 2):
@@ -800,16 +807,39 @@ def reach_prober():
         time.sleep(interval)
 
 
-def truenas_poller():
-    tn = CFG.get("truenas") or {}
-    interval = int(tn.get("poll_seconds") or 60)
+# Appliances: devices netdash polls over an API instead of hosts that install a
+# collector and push. Keyed by the config block that configures one, which is
+# also the `source` recorded on the sample.
+#
+# They are not merely collector-less servers. Neither the gateway nor the hub
+# has a filesystem it will report, so a third of the card is permanently
+# unknown -- which is the honest reading, and why nothing here invents a disk
+# row to fill it. What they do have is the thing a push host cannot prove about
+# itself: the poll only succeeds if something on the far end was scheduled to
+# answer it.
+APPLIANCES = {"truenas": truenas, "hubitat": hubitat}
+
+
+def appliance_poller(name, module):
+    cfg = CFG.get(name) or {}
+    interval = max(10, int(cfg.get("poll_seconds") or 60))
+    # An unchanging failure repeats every interval into a journal nothing
+    # rotates, so it is said once and again only when it changes -- the same
+    # treatment the update checks give their own errors, for the same reason.
+    # The first failure is always printed; silence here would look like a
+    # working poller.
+    last = None
     while True:
         try:
-            payload = truenas.collect(tn)
+            payload = module.collect(cfg)
             if payload:
-                db.insert_sample(CONN, payload, source="truenas")
+                db.insert_sample(CONN, payload, source=name)
+            last = None
         except Exception as e:
-            sys.stderr.write("truenas poll error: %s\n" % e)
+            msg = str(e)[:200]
+            if msg != last:
+                sys.stderr.write("%s poll error: %s\n" % (name, msg))
+                last = msg
         time.sleep(interval)
 
 
@@ -853,9 +883,11 @@ def main():
     if CFG["eol"].get("enabled"):
         threading.Thread(target=eol_refresher, daemon=True).start()
         sys.stderr.write("eol lookups enabled (endoflife.date)\n")
-    if (CFG.get("truenas") or {}).get("enabled"):
-        threading.Thread(target=truenas_poller, daemon=True).start()
-        sys.stderr.write("truenas poller started\n")
+    for name, module in sorted(APPLIANCES.items()):
+        if (CFG.get(name) or {}).get("enabled"):
+            threading.Thread(target=appliance_poller, args=(name, module),
+                             daemon=True).start()
+            sys.stderr.write("%s poller started\n" % name)
 
     srv = Server((CFG["bind_host"], CFG["bind_port"]), Handler)
     sys.stderr.write("netdash listening on %s:%s\n" % (CFG["bind_host"], CFG["bind_port"]))
