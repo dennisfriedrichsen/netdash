@@ -138,6 +138,16 @@ FreeBSD)
       SEC=$((SEC + 1))
       DET="includes 1 staged base system update (freebsd-update)"
       SRC="pkg-audit+freebsd-update"
+      # Named in the package list too, not just counted: netdash can
+      # acknowledge a pending security state, keyed on the security count and
+      # this string together, and "1 security issue" alone cannot tell two
+      # different staged patches apart if pkg audit's own package list is
+      # unchanged (commonly empty) across both. The running version is exactly
+      # that -- it only advances once this staged patch is installed and the
+      # host reboots onto it, so an ack against it does not silently cover
+      # whatever the next patch turns out to be.
+      SECPKGS=$(printf '%s%sfreebsd-update: staged patch beyond %s' \
+                "$SECPKGS" "${SECPKGS:+, }" "$(freebsd-version)")
     fi
   fi
   ;;

@@ -362,7 +362,7 @@ fi
 if want patches-freebsd; then
   echo "patches-freebsd (count packages to upgrade, not advisories against them)"
   J=$(python3 - "$ROOT" <<'PY'
-import re,subprocess,sys,json
+import os,re,shlex,shutil,subprocess,sys,tempfile,json
 root=sys.argv[1]
 src=open(f"{root}/collectors/bsd/netdash-patchcheck.sh").read()
 sed_expr=re.search(r"\| sed -n '([^']*package\(s\) found[^']*)'", src).group(1)
@@ -373,6 +373,30 @@ pkgs=subprocess.run(["sed","-n",sed_expr],input=fx,capture_output=True,text=True
 hdrs=int(subprocess.run(["grep","-c",fallback],input=fx,capture_output=True,text=True).stdout or 0)
 probs=subprocess.run(["sed","-n",r"s/^\([0-9][0-9]*\) problem(s).*/\1/p"],
                      input=fx,capture_output=True,text=True).stdout.strip()
+
+# The freebsd-update branch (non-pkgbase base, e.g. a 14.4 host) increments
+# SEC but must also touch SECPKGS -- otherwise two different staged base
+# patches that both leave pkg audit's own list empty are indistinguishable to
+# netdash's patch-ack fingerprint (security count + package list). Extracted
+# and run standalone, same as the sed/grep expressions above, rather than
+# executing the whole script: this path has no pkg/freebsd-update mock to run
+# it end to end, same as the pkgbase path above.
+snippet = re.search(r"SECPKGS=\$\(printf '%s%sfreebsd-update.*?\)\n", src, re.S).group(0)
+def secpkgs(existing, fake_version):
+    # A shell function named freebsd-version is a syntax error under dash's
+    # strict POSIX parser (hyphens are not valid in a function name there),
+    # unlike bash -- so the mock has to be a real PATH executable, same as
+    # every other mocked command this suite uses.
+    d = tempfile.mkdtemp()
+    with open(f"{d}/freebsd-version", "w") as f:
+        f.write(f"#!/bin/sh\necho {shlex.quote(fake_version)}\n")
+    os.chmod(f"{d}/freebsd-version", 0o755)
+    script = "SECPKGS=%s\n%s\nprintf '%%s' \"$SECPKGS\"" % (shlex.quote(existing), snippet)
+    env = {**os.environ, "PATH": d + ":" + os.environ["PATH"]}
+    out = subprocess.run(["sh","-c",script],capture_output=True,text=True,env=env).stdout
+    shutil.rmtree(d)
+    return out
+
 print(json.dumps({
   "packages": int(pkgs or 0), "headers": hdrs, "problems": int(probs or 0),
   "pkgbase_detected": "pkg info -e FreeBSD-runtime" in src,
@@ -380,6 +404,9 @@ print(json.dumps({
   # so the fetch has to be judged by stderr, never by exit status.
   "fetch_by_stderr": bool(re.search(r'FERR=\$\(pkg audit -F -q 2>&1 >/dev/null', src)),
   "no_exit_status_gate": "pkg audit -F -q >/dev/null 2>&1 &&" not in src,
+  "version_only":    secpkgs("", "14.4-RELEASE-p7"),
+  "joins_with_pkgs": secpkgs("chromium-1.2.3", "14.4-RELEASE-p7"),
+  "version_bump":    secpkgs("", "14.4-RELEASE-p8"),
 }))
 PY
 ) || J=''
@@ -399,6 +426,14 @@ PY
   # so a successful fetch is indistinguishable from a failed one by status alone.
   check "the vuln.xml fetch is judged by stderr, not by exit status" \
         "assert d['fetch_by_stderr'] and d['no_exit_status_gate'], d" "$J"
+  check "a staged base update names the running version, even with no vulnerable packages" \
+        "assert d['version_only']=='freebsd-update: staged patch beyond 14.4-RELEASE-p7', d" "$J"
+  check "it joins onto an existing pkg audit list rather than replacing it" \
+        "assert d['joins_with_pkgs']=='chromium-1.2.3, freebsd-update: staged patch beyond 14.4-RELEASE-p7', d" "$J"
+  # The whole point: once the running version moves, a stale ack against the
+  # old string stops matching on its own.
+  check "a different running version yields a different string" \
+        "assert d['version_only'] != d['version_bump'], d" "$J"
 fi
 
 if want patches-macos; then
