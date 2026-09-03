@@ -1,0 +1,10 @@
+{"offset":0,"limit":25,"count":3,"totalCount":3,"data":[
+ {"id":"d-gw","macAddress":"74:ac:b9:de:00:00","ipAddress":"192.168.0.25",
+  "name":"Lanthanum","model":"UDM Pro","state":"ONLINE","supported":true,
+  "firmwareVersion":"5.1.31","firmwareUpdatable":false},
+ {"id":"d-sw","macAddress":"aa:bb:cc:00:00:01","ipAddress":"10.0.0.138",
+  "name":"USW-16-PoE","model":"USW 16 PoE","state":"ONLINE","supported":true,
+  "firmwareVersion":"7.5.10","firmwareUpdatable":true},
+ {"id":"d-ap","macAddress":"aa:bb:cc:00:00:02","ipAddress":"10.0.0.55",
+  "name":"Nano HD","model":"Nano HD","state":"OFFLINE","supported":true,
+  "firmwareVersion":"6.7.54","firmwareUpdatable":false}]}

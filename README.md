@@ -56,6 +56,7 @@ an LLM agent instead of doing it by hand.
 | `hosts` | per-host thresholds, staleness, address and `virt` overrides (see below) |
 | `truenas` | API polling for the NAS (see below) |
 | `hubitat` | polling for a Hubitat Elevation hub (see below) |
+| `unifi` | polling for a UniFi OS console and the devices it has adopted (see below) |
 
 ### Thresholds
 
@@ -685,6 +686,100 @@ dashboard access token along with the registered owner's email address. This
 poller only ever `GET`s a fixed list of paths and never logs a response body,
 but that is netdash being careful with something already open to everyone on
 the network.
+
+## UniFi
+
+Nothing is installed on the console. The server polls the Network **Integration
+API** with an API key — created in the Network application under Settings →
+Control Plane → Integrations, or on UniFi OS 5.x under Settings → System →
+Advanced → API.
+
+The key inherits the permissions of the account that created it; Ubiquiti
+offers no genuinely read-only key, so it is worth creating a dedicated admin
+for it. An account with MFA enabled cannot be used this way.
+
+```json
+"unifi": { "enabled": true, "host": "10.0.0.1", "display_name": "gateway",
+           "verify_tls": false, "api_key": "xxxxx", "poll_seconds": 60 }
+```
+
+Check it before enabling:
+
+```sh
+sudo python3 /opt/netdash/server/unifi.py /etc/netdash/server.json
+```
+
+`device_name` and `site` are optional. netdash finds the console among its own
+adopted devices by asking the unauthenticated `/api/system` for the console's
+MAC and matching it; set `device_name` only if that fails. Set `"fleet": false`
+to poll the console alone and skip its adopted devices.
+
+### What the console can and cannot answer
+
+| | |
+|---|---|
+| CPU | `cpuUtilizationPct` |
+| memory | `memoryUtilizationPct` — a **percentage, with no byte counts at all** |
+| disk | nothing in this API |
+| uptime | `uptimeSec` |
+| patches | `firmwareUpdatable`, from the controller itself |
+
+Memory has no total to report a fraction of, so these samples carry a
+`mem_pct` column instead. Every source that does report bytes leaves it null
+and the percentage is derived from used ÷ total as before, so the two can
+never disagree.
+
+The classic `/proxy/network/api/s/{site}/stat/device` endpoint does report a
+storage array, byte counts and temperatures — but only to a session logged in
+with an admin password. That trade was declined: a revocable key is worth more
+than a disk figure on a device whose disk you were never going to act on.
+
+### The adopted fleet
+
+Switches and access points appear as one badge on the console's card — *5
+online*, or the names of whatever is not — and in full on its detail page, with
+per-device memory, uptime and firmware.
+
+They are **not hosts**. They never push, run no collector, and cannot be probed
+apart from the console that reports them, so they live in a `fleet` table
+hanging off the console's sample in the same way disk rows do. Putting them in
+`samples` would drag them through the reachability sweep, the EOL lookups and
+every host listing, to be filtered back out again at render time.
+
+A downed device **does not change the console's status colour.** That dot
+answers "is this gateway healthy", and a gateway running perfectly while two
+access points are offline is a true statement that a red dot would turn into a
+lie. The count gets its own badge instead — the same separation this dashboard
+already makes for patch status, and for the same reason.
+
+Two limits worth stating plainly:
+
+* **Online state is the controller's word, not a netdash probe.** If the
+  controller is wrong about a switch, netdash is wrong about it too. What it is
+  not is a gap: when the controller itself stops answering, the poll fails and
+  the console's own card goes stale and then down on its own evidence.
+* **Fleet firmware updates stay off the console's patch badge.** They are
+  counted, and shown per device on the detail page, but the badge keeps
+  answering a question about the console.
+
+### The gateway's own card cannot page you about the gateway
+
+If netdash runs behind this console, a real outage takes the dashboard with it
+and every other host goes red at once. The card is still worth having — it
+catches a wedged or rebooting gateway, and it explains a blast radius after the
+fact — but nothing hosted behind a gateway can alert on that gateway.
+
+### Two traps
+
+`ipAddress` for a gateway is its **WAN** address (`192.168.0.25` on a console
+reached at `10.0.0.1`). netdash never uses it: the configured `host` is the
+only address that means anything for reachability, and probing the one in the
+payload would aim at the wrong interface entirely.
+
+Every path under `/proxy/network` returns **401 when unauthenticated,
+including paths that cannot exist**. A 401 therefore says nothing about
+whether the Integration API is enabled — only that UniFi OS rejected the
+request before routing it. Test with a real key or the answer is meaningless.
 
 ## Tests
 

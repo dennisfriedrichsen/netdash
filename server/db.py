@@ -15,6 +15,12 @@ CREATE TABLE IF NOT EXISTS samples (
     cpu_pct         REAL,
     mem_used_bytes  INTEGER,
     mem_total_bytes INTEGER,
+    -- Memory as a percentage, for sources that report one and no byte counts.
+    -- The UniFi API gives memoryUtilizationPct and never a total, so the ratio
+    -- the dashboard normally derives from used/total cannot be computed. NULL
+    -- for everything that does report bytes -- summarize() prefers this when
+    -- it is set and falls back to the ratio, so the two never disagree.
+    mem_pct         REAL,
     uptime_seconds  INTEGER,
     -- Patch status, all nullable: a host whose netdash-patchcheck has never run
     -- reports nothing here and reads as "unknown". patch_security is null
@@ -51,6 +57,35 @@ CREATE TABLE IF NOT EXISTS disks (
     total_bytes INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_disks_sample ON disks(sample_id);
+
+-- Devices that belong to an appliance rather than to netdash: the switches and
+-- access points a UniFi console has adopted.
+--
+-- They hang off a sample for the same reason disk rows do -- they are something
+-- that sample observed, not hosts in their own right. They never push, run no
+-- collector, and cannot be probed apart from the console that reports them, so
+-- putting them in `samples` would drag five extra rows through known_hosts,
+-- latest_per_host, the reachability sweep and the EOL lookups, to be filtered
+-- back out again at render time.
+--
+-- `state` is the controller's word, not our probe: if it is wrong about a
+-- switch, so are we. That is a real limit and not a gap -- when the controller
+-- itself stops answering, the poll fails and the console's own card goes stale
+-- and then down, which is the honest report of "we no longer know".
+CREATE TABLE IF NOT EXISTS fleet (
+    sample_id          INTEGER NOT NULL REFERENCES samples(id) ON DELETE CASCADE,
+    name               TEXT,
+    model              TEXT,
+    -- "ONLINE" or anything else. Not normalised to a boolean: "PENDING_ADOPTION"
+    -- and "OFFLINE" are both not-online and mean different things to a person.
+    state              TEXT,
+    cpu_pct            REAL,
+    mem_pct            REAL,
+    uptime_seconds     INTEGER,
+    firmware           TEXT,
+    firmware_updatable INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_fleet_sample ON fleet(sample_id);
 
 -- A silenced patch-security state, one per host. Deliberately narrow: this
 -- acknowledges "N security issues in these packages", not the host in
@@ -101,6 +136,7 @@ _ADDED_COLUMNS = {
         ("patch_reboot", "INTEGER"),
         ("patch_packages", "TEXT"),
         ("collector_version", "TEXT"),
+        ("mem_pct", "REAL"),
         ("virt", "TEXT"),
         ("peer_addr", "TEXT"),
     ],
@@ -157,10 +193,11 @@ def insert_sample(conn, payload, source="push", peer=None):
     with _WRITE:
         cur = conn.execute(
             """INSERT INTO samples
-                 (host, ts, os, source, cpu_pct, mem_used_bytes, mem_total_bytes, uptime_seconds,
+                 (host, ts, os, source, cpu_pct, mem_used_bytes, mem_total_bytes, mem_pct,
+                  uptime_seconds,
                   patch_security, patch_other, patch_checked_at, patch_source, patch_detail,
                   patch_reboot, patch_packages, collector_version, virt, peer_addr)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 payload["host"],
                 ts,
@@ -169,6 +206,7 @@ def insert_sample(conn, payload, source="push", peer=None):
                 payload.get("cpu_pct"),
                 payload.get("mem_used_bytes"),
                 payload.get("mem_total_bytes"),
+                payload.get("mem_pct"),
                 payload.get("uptime_seconds"),
                 p.get("security"),
                 p.get("other"),
@@ -188,6 +226,16 @@ def insert_sample(conn, payload, source="push", peer=None):
                 "INSERT INTO disks (sample_id, mount, used_bytes, total_bytes) VALUES (?,?,?,?)",
                 (sid, d.get("mount"), d.get("used_bytes"), d.get("total_bytes")),
             )
+        for f in payload.get("fleet") or []:
+            conn.execute(
+                """INSERT INTO fleet (sample_id, name, model, state, cpu_pct, mem_pct,
+                                      uptime_seconds, firmware, firmware_updatable)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (sid, f.get("name"), f.get("model"), f.get("state"), f.get("cpu_pct"),
+                 f.get("mem_pct"), f.get("uptime_seconds"), f.get("firmware"),
+                 None if f.get("firmware_updatable") is None
+                 else int(bool(f["firmware_updatable"]))),
+            )
         conn.commit()
         return sid
 
@@ -197,6 +245,10 @@ def prune(conn, retention_hours):
         cutoff = int(time.time()) - retention_hours * 3600
         conn.execute(
             "DELETE FROM disks WHERE sample_id IN (SELECT id FROM samples WHERE ts < ?)",
+            (cutoff,),
+        )
+        conn.execute(
+            "DELETE FROM fleet WHERE sample_id IN (SELECT id FROM samples WHERE ts < ?)",
             (cutoff,),
         )
         conn.execute("DELETE FROM samples WHERE ts < ?", (cutoff,))
@@ -230,6 +282,18 @@ def latest_per_host(conn):
                 (r["id"],),
             ).fetchall()
         ]
+        # Ordered by the controller's own naming rather than by health: a list
+        # that reorders itself when a switch goes offline is one you cannot
+        # scan for the device you were looking for.
+        d["fleet"] = [
+            dict(x)
+            for x in conn.execute(
+                """SELECT name, model, state, cpu_pct, mem_pct, uptime_seconds,
+                          firmware, firmware_updatable
+                     FROM fleet WHERE sample_id=? ORDER BY name""",
+                (r["id"],),
+            ).fetchall()
+        ]
         out.append(d)
     return out
 
@@ -237,7 +301,7 @@ def latest_per_host(conn):
 def history(conn, host, since_seconds):
     cutoff = int(time.time()) - since_seconds
     rows = conn.execute(
-        """SELECT id, ts, cpu_pct, mem_used_bytes, mem_total_bytes
+        """SELECT id, ts, cpu_pct, mem_used_bytes, mem_total_bytes, mem_pct
              FROM samples WHERE host=? AND ts >= ? ORDER BY ts ASC""",
         (host, cutoff),
     ).fetchall()

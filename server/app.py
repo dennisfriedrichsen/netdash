@@ -24,6 +24,7 @@ import eol  # noqa: E402
 import hubitat  # noqa: E402
 import reach  # noqa: E402
 import truenas  # noqa: E402
+import unifi  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(HERE, "static")
@@ -342,6 +343,55 @@ def eol_for(sample):
     return out
 
 
+def fleet_summary(sample, th):
+    """The devices an appliance reports, rolled up for the card and listed for detail.
+
+    Deliberately NOT folded into the host's own status. That dot answers "is
+    this console healthy", and a gateway that is running perfectly while two of
+    its access points are offline is a true statement that a red dot would turn
+    into a lie. The count gets its own badge instead, beside the patch badge --
+    the same separation this file already argues for with patches, and for the
+    same reason: a colour that can mean two different things stops meaning
+    either.
+
+    Members are scored against the console's own thresholds so the detail page
+    can colour them, but those scores go nowhere near the rollup.
+    """
+    members = sample.get("fleet") or []
+    if not members:
+        return None
+    out = []
+    offline = []
+    for m in members:
+        online = (m.get("state") or "").upper() == "ONLINE"
+        if not online:
+            offline.append(m.get("name") or "?")
+        out.append({
+            "name": m.get("name"),
+            "model": m.get("model"),
+            "state": m.get("state"),
+            "online": online,
+            "cpu_pct": m.get("cpu_pct"),
+            "cpu_status": _level(m.get("cpu_pct"), th["cpu"]),
+            "mem_pct": m.get("mem_pct"),
+            "mem_status": _level(m.get("mem_pct"), th["mem"]),
+            "uptime_seconds": m.get("uptime_seconds"),
+            "firmware": m.get("firmware"),
+            "firmware_updatable": (None if m.get("firmware_updatable") is None
+                                   else bool(m["firmware_updatable"])),
+        })
+    return {
+        "total": len(out),
+        "online": len(out) - len(offline),
+        "offline": len(offline),
+        # Named, not just counted: "1 of 6 offline" sends you to the detail page
+        # to find out which, and the card has room to just say.
+        "offline_names": offline,
+        "updatable": sum(1 for m in out if m["firmware_updatable"]),
+        "members": out,
+    }
+
+
 def summarize(sample, now=None):
     """Turn a raw sample row into the shape the UI consumes."""
     now = now or time.time()
@@ -353,8 +403,13 @@ def summarize(sample, now=None):
     # needs BOTH halves: with only the total, this raised TypeError and the
     # whole /api/overview response 500'd, so one quiet host took the entire
     # dashboard down rather than showing itself as unknown.
-    mem_pct = None
-    if sample.get("mem_total_bytes") and sample.get("mem_used_bytes") is not None:
+    # A source that reports a percentage directly wins over the ratio. The
+    # UniFi API gives memoryUtilizationPct and no byte counts at all, so there
+    # is nothing to divide; everything that does report bytes leaves mem_pct
+    # null and lands in the branch below, so the two can never disagree.
+    mem_pct = sample.get("mem_pct")
+    if mem_pct is None and sample.get("mem_total_bytes") \
+            and sample.get("mem_used_bytes") is not None:
         mem_pct = 100.0 * sample["mem_used_bytes"] / sample["mem_total_bytes"]
 
     disks = []
@@ -439,6 +494,8 @@ def summarize(sample, now=None):
             "status": mem_status,
         },
         "disk": {"worst_pct": worst_disk_pct, "status": disk_status, "mounts": disks},
+        # The devices a console has adopted. None for everything that is not one.
+        "fleet": fleet_summary(sample, th),
         # The effective values, so an override can be confirmed from the API
         # rather than inferred from a card being a colour you did not expect.
         "thresholds": th,
@@ -625,10 +682,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(404, {"error": "unknown host"})
             hist = db.history(CONN, host, mins * 60)
             for h in hist:
-                if h.get("mem_total_bytes") and h.get("mem_used_bytes") is not None:
-                    h["mem_pct"] = 100.0 * h["mem_used_bytes"] / h["mem_total_bytes"]
-                else:
-                    h["mem_pct"] = None
+                # Same precedence as summarize(): a stored percentage wins, and
+                # only a source that reported bytes falls through to the ratio.
+                if h.get("mem_pct") is None:
+                    if h.get("mem_total_bytes") and h.get("mem_used_bytes") is not None:
+                        h["mem_pct"] = 100.0 * h["mem_used_bytes"] / h["mem_total_bytes"]
+                    else:
+                        h["mem_pct"] = None
             return self._json(200, {
                 "now": int(time.time()),
                 "thresholds": CFG["thresholds"],
@@ -817,7 +877,7 @@ def reach_prober():
 # row to fill it. What they do have is the thing a push host cannot prove about
 # itself: the poll only succeeds if something on the far end was scheduled to
 # answer it.
-APPLIANCES = {"truenas": truenas, "hubitat": hubitat}
+APPLIANCES = {"truenas": truenas, "hubitat": hubitat, "unifi": unifi}
 
 
 def appliance_poller(name, module):

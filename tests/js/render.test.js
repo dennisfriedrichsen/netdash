@@ -109,6 +109,57 @@ check('unacked_eol_past_has_a_triangle', function () {
     throw new Error('past EOL must still show red on the All view');
   }
 });
+// -- the adopted fleet, which the console's card and detail page both render --
+var FLEET = { total: 3, online: 2, offline: 1, offline_names: ['Nano HD'], updatable: 1,
+  members: [
+    { name: 'Nano HD', model: 'Nano HD', state: 'OFFLINE', online: false, cpu_pct: null,
+      cpu_status: 'unknown', mem_pct: null, mem_status: 'unknown', uptime_seconds: null,
+      firmware: '6.7.54', firmware_updatable: false },
+    { name: 'USW-16-PoE', model: 'USW 16 PoE', state: 'ONLINE', online: true, cpu_pct: 16.4,
+      cpu_status: 'ok', mem_pct: 38, mem_status: 'ok', uptime_seconds: 1094445,
+      firmware: '7.5.10', firmware_updatable: true },
+    { name: 'U7 Pro', model: 'U7 Pro', state: 'ONLINE', online: true, cpu_pct: 3.2,
+      cpu_status: 'ok', mem_pct: 49.8, mem_status: 'ok', uptime_seconds: 2417194,
+      firmware: '8.7.11', firmware_updatable: false } ] };
+var GW = { host: 'lanthanum', os: 'UniFi OS 5.1.31', source: 'unifi', fleet: FLEET,
+  mem: { pct: 63.2, used_bytes: null, total_bytes: null, status: 'ok' },
+  disk: { worst_pct: null, status: 'unknown', mounts: [] }, uptime_seconds: 667072,
+  /* A gateway is bare metal, which is also what puts it on the 'bare' tab the
+     card assertions below render -- on the default 'kvm' host() it would be
+     filtered out and every one of them would pass against an empty grid. */
+  virt: 'none', virt_source: 'host', is_vm: false, collector_version: null };
+
+check('detail_fleet', function () { ctx.renderDetail('lanthanum', detail(host(GW))); });
+check('overview_fleet_cards', function () { overview([host(GW)], 'bare'); });
+check('detail_fleet_all_online', function () {
+  ctx.renderDetail('lanthanum', detail(host(merge(GW, {
+    fleet: merge(FLEET, { offline: 0, online: 3, offline_names: [] }) }))));
+});
+check('fleet_card_names_the_offline_device', function () {
+  overview([host(GW)], 'bare');
+  var t = textOf(ctx.root);
+  if (t.indexOf('Fleet') < 0) throw new Error('the console card grew no fleet badge');
+  /* One offline device out of three, so the badge has room to say which. */
+  if (t.indexOf('Nano HD') < 0) {
+    throw new Error('the badge counted the outage without naming it: ' + t);
+  }
+});
+check('a_host_with_no_fleet_renders_no_fleet_row', function () {
+  overview([host()], 'vms');
+  if (textOf(ctx.root).indexOf('Fleet') >= 0) {
+    throw new Error('a plain host grew a fleet badge');
+  }
+});
+check('a_big_fleet_falls_back_to_a_count', function () {
+  var many = { total: 9, online: 5, offline: 4, offline_names: ['a', 'b', 'c', 'd'],
+               updatable: 0, members: FLEET.members };
+  overview([host(merge(GW, { fleet: many }))], 'bare');
+  var t = textOf(ctx.root);
+  if (t.indexOf('4 of 9 offline') < 0) {
+    throw new Error('four names do not fit a badge; expected a count: ' + t);
+  }
+});
+
 check('down_row_names_the_host', function () {
   if (textOf(ctx.compactRow(host(merge(DOWN, { host: 'hassium' })))).indexOf('hassium') < 0) {
     throw new Error('a down row must still say which host it is');

@@ -1536,6 +1536,18 @@ if want render; then
           "assert d['acked_eol_past_has_no_triangle'] is None, d['acked_eol_past_has_no_triangle']" "$J"
     check "an unacknowledged past EOL still shows red there" \
           "assert d['unacked_eol_past_has_a_triangle'] is None, d['unacked_eol_past_has_a_triangle']" "$J"
+    check "the console detail page renders its adopted fleet" \
+          "assert d['detail_fleet'] is None, d['detail_fleet']" "$J"
+    check "and renders when every device is online" \
+          "assert d['detail_fleet_all_online'] is None, d['detail_fleet_all_online']" "$J"
+    check "the console card renders with a fleet badge" \
+          "assert d['overview_fleet_cards'] is None, d['overview_fleet_cards']" "$J"
+    check "the badge names the offline device while there is room to" \
+          "assert d['fleet_card_names_the_offline_device'] is None, d['fleet_card_names_the_offline_device']" "$J"
+    check "and falls back to a count when there are too many to name" \
+          "assert d['a_big_fleet_falls_back_to_a_count'] is None, d['a_big_fleet_falls_back_to_a_count']" "$J"
+    check "and a host with no fleet grows no fleet badge" \
+          "assert d['a_host_with_no_fleet_renders_no_fleet_row'] is None, d['a_host_with_no_fleet_renders_no_fleet_row']" "$J"
     check "a down row still names its host" \
           "assert d['down_row_names_the_host'] is None, d['down_row_names_the_host']" "$J"
   fi
@@ -1672,6 +1684,91 @@ PYEOF
         "assert d['secured'] and 'hub security' in d['secured'], d['secured']" "$J"
   check "a hub that answers only hubData still reports its identity" \
         "assert d['partial']['host']=='palladium' and d['partial']['cpu_pct'] is None, d['partial']" "$J"
+fi
+
+
+# ----------------------------------------------------------------- UniFi ----
+if want unifi; then
+  echo "unifi (a fleet is not five more hosts)"
+  J=$(python3 - "$ROOT" "$FIX" <<'PYEOF'
+import json, sys, os
+root, fix = sys.argv[1], sys.argv[2]
+sys.path.insert(0, os.path.join(root, "server"))
+import unifi, db, app
+
+F = os.path.join(fix, "unifi")
+S = "00000000-0000-0000-0000-0000000000aa"
+API = "/proxy/network/integration/v1"
+SERVED = {
+    "/api/system":                                  "system.json",
+    API + "/sites":                                 "sites.json",
+    API + "/sites/%s/devices" % S:                  "devices.json",
+    API + "/sites/%s/devices/d-gw/statistics/latest" % S: "stats-gw.json",
+    API + "/sites/%s/devices/d-sw/statistics/latest" % S: "stats-sw.json",
+    # d-ap is OFFLINE: the controller serves no statistics for it at all.
+}
+
+def serve(files):
+    def _request(cfg, path, timeout=15, auth=True):
+        name = files.get(path)
+        if name is None:
+            raise unifi.UniFiError("GET %s -> HTTP 404" % path)
+        return json.load(open(os.path.join(F, name)))
+    return _request
+
+cfg = {"host": "10.0.0.1", "display_name": "lanthanum", "api_key": "x"}
+
+unifi._request = serve(SERVED)
+p = unifi.collect(cfg)
+
+# The console must be picked out by the MAC /api/system reports, not by
+# position and not by the operator having to name it.
+noname = dict(p)
+
+# With /api/system unavailable, model prefix matching still finds the gateway.
+unifi._request = serve({k: v for k, v in SERVED.items() if k != "/api/system"})
+nosys = unifi.collect(cfg)
+
+# End to end: through the database and out of summarize(), which is where the
+# fleet has to survive a round trip rather than merely be built correctly.
+import tempfile
+conn = db.connect(os.path.join(tempfile.mkdtemp(), "t.db"))
+unifi._request = serve(SERVED)
+db.insert_sample(conn, unifi.collect(cfg), source="unifi")
+row = [r for r in db.latest_per_host(conn) if r["host"] == "lanthanum"][0]
+app.CFG = {"thresholds": {"cpu": {"warn": 80, "crit": 95},
+                          "mem": {"warn": 85, "crit": 95},
+                          "disk": {"warn": 85, "crit": 95}},
+           "stale_after_seconds": 180, "patch_stale_hours": 48,
+           "hosts": {}, "eol": {"enabled": False}, "reachability": {}}
+summ = app.summarize(row)
+
+print(json.dumps({"p": p, "nosys": nosys, "summ": summ,
+                  "row_mem_pct": row["mem_pct"]}))
+PYEOF
+)
+  check "the console is found by the mac /api/system reports" \
+        "assert d['p']['host']=='lanthanum' and d['p']['os']=='UniFi OS 5.1.31', d['p']" "$J"
+  check "and by model prefix when /api/system will not answer" \
+        "assert d['nosys']['os']=='UniFi OS 5.1.31', d['nosys']" "$J"
+  check "the console is not listed among its own adopted devices" \
+        "assert sorted(m['name'] for m in d['p']['fleet'])==['Nano HD','USW-16-PoE'], d['p']['fleet']" "$J"
+  check "and the stored fleet comes back ordered by name, not by health" \
+        "assert [m['name'] for m in d['summ']['fleet']['members']]==['Nano HD','USW-16-PoE'], d['summ']['fleet']['members']" "$J"
+  check "memory is a percentage, with no bytes invented for it" \
+        "assert d['p']['mem_pct']==63.2 and d['p']['mem_used_bytes'] is None, d['p']" "$J"
+  check "and survives the round trip through the database" \
+        "assert d['row_mem_pct']==63.2 and abs(d['summ']['mem']['pct']-63.2)<0.01, d['summ']['mem']" "$J"
+  check "no disk row is invented for a console that reports no storage" \
+        "assert d['p']['disks']==[], d['p']['disks']" "$J"
+  check "an offline device still appears, with no stats rather than zeroes" \
+        "m={x['name']: x for x in d['summ']['fleet']['members']}['Nano HD']; assert m['online'] is False and m['cpu_pct'] is None and m['mem_pct'] is None, m" "$J"
+  check "the rollup counts and names what is offline" \
+        "assert d['summ']['fleet']['offline']==1 and d['summ']['fleet']['offline_names']==['Nano HD'] and d['summ']['fleet']['online']==1, d['summ']['fleet']" "$J"
+  check "a downed fleet device does not turn the console's own card red" \
+        "assert d['summ']['status']=='ok', (d['summ']['status'], d['summ']['fleet'])" "$J"
+  check "fleet firmware updates are counted but stay off the console's patch badge" \
+        "assert d['summ']['fleet']['updatable']==1 and d['summ']['patches']['other']==0, d['summ']['patches']" "$J"
 fi
 
 

@@ -50,6 +50,16 @@
     "poll_seconds": 60,
     "patch_poll_seconds": 3600
   },
+  "unifi": {
+    "enabled": false,
+    "host": "10.0.0.1",
+    "display_name": "gateway",
+    "scheme": "https",
+    "verify_tls": false,
+    "api_key": "",
+    "fleet": true,
+    "poll_seconds": 60
+  },
   "eol": {
     "enabled": true,
     "refresh_hours": 24,

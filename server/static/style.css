@@ -293,3 +293,18 @@ button.link:hover { color: var(--text-1); }
   .grid, .panels { padding-left: 13px; padding-right: 13px; }
   header.top { padding: 14px 13px 8px; }
 }
+
+/* ---------- adopted fleet ----------
+   An offline device has no statistics to draw, so it gets a plain row rather
+   than a meter with an empty bar -- which would read as "0%, fine". */
+.fleet-off {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 0 2px; font-size: 13px;
+}
+.fleet-off .pdot { background: var(--st-crit); }
+.fleet-off .fname { font-weight: 600; color: var(--text-1); }
+.fleet-off .fstate {
+  margin-left: auto; color: var(--st-crit);
+  font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  font-size: 11px;
+}

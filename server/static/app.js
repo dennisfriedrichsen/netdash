@@ -160,6 +160,46 @@ function patchRow(p) {
   return row;
 }
 
+/* ---------- adopted fleet ----------
+
+   Devices a console reports rather than hosts netdash knows: a UniFi gateway's
+   switches and access points. Deliberately a badge and not a status, for the
+   reason spelled out in fleet_summary() on the server -- the card's dot answers
+   "is this console healthy", and a gateway running perfectly while two APs are
+   offline is a true statement a red dot would turn into a lie.
+
+   Built from .patch so it sits under the patch badge as an obvious sibling
+   rather than as a second thing that happens to look similar. */
+function fleetStyle(f) {
+  if (!f || !f.total) return STATUS.unknown;
+  return f.offline ? STATUS.down : STATUS.ok;
+}
+
+function fleetText(f) {
+  if (!f || !f.total) return '–';
+  if (!f.offline) return f.total + ' online';
+  /* Named while there is room. "1 of 6 offline" makes you open the detail page
+     to learn which one, and on a small fleet the answer fits right here. */
+  if (f.offline_names.length <= 2) return f.offline_names.join(', ') + ' offline';
+  return f.offline + ' of ' + f.total + ' offline';
+}
+
+function fleetRow(f) {
+  var s = fleetStyle(f);
+  var row = el('div', 'patch');
+  row.style.setProperty('--st', s.css);
+  row.appendChild(el('span', 'pdot'));
+  row.appendChild(el('span', null, 'Fleet'));
+  row.appendChild(el('span', 'pglyph', s.glyph));
+  row.appendChild(el('span', 'pval', fleetText(f)));
+  row.title = f.total + ' adopted device' + (f.total === 1 ? '' : 's') + ': ' +
+    f.online + ' online' + (f.offline ? ', ' + f.offline_names.join(', ') +
+    ' offline' : '') +
+    (f.updatable ? ' · ' + f.updatable + ' with firmware updates' : '') +
+    '. State is the controller’s, not a netdash probe.';
+  return row;
+}
+
 /* POSTs to /api/host/<name>/ack or /unack, then re-fetches so the button's
    own click is what makes the state it reads back consistent -- no separate
    client-side toggle to keep in sync with what the server actually stored. */
@@ -550,6 +590,7 @@ function renderOverview(data, tab) {
               (h.disk.mounts.length > 1 ? '  (+' + (h.disk.mounts.length - 1) + ' more)' : '') : ''));
 
     a.appendChild(patchRow(h.patches));
+    if (h.fleet) a.appendChild(fleetRow(h.fleet));
 
     var why = reachText(h);
     var sub = el('div', 'sub', (h.stale ? 'last seen ' : 'updated ') + fmtAge(h.age_seconds) +
@@ -896,6 +937,53 @@ function renderDetail(host, data) {
       'No patch check has run on this host yet — run netdash-patchcheck.'));
   }
   panels.appendChild(p4);
+
+  /* The adopted fleet, in full. The overview card carries only a count; this
+     is where you come to find out which device and how it is doing. Offline
+     first, then by name -- the ordering answers the question that brought you
+     here, and everything after the first group is a stable list you can scan
+     rather than one that reshuffles as load moves around. */
+  if (c.fleet && c.fleet.total) {
+    var pf = el('div', 'panel');
+    pf.appendChild(el('h2', null, 'Adopted devices'));
+    var fs = fleetStyle(c.fleet);
+    var bf = el('div', 'big');
+    bf.appendChild(document.createTextNode(String(c.fleet.online)));
+    bf.appendChild(el('span', 'unit', '  of ' + c.fleet.total + ' online'));
+    bf.style.color = fs.css;
+    pf.appendChild(bf);
+
+    var list = el('div', 'mounts');
+    c.fleet.members.slice().sort(function (x, y) {
+      if (x.online !== y.online) return x.online ? 1 : -1;
+      return String(x.name).localeCompare(String(y.name));
+    }).forEach(function (m) {
+      var sub = [m.model, m.online ? fmtUptime(m.uptime_seconds) : null,
+                 m.firmware ? 'fw ' + m.firmware : null,
+                 m.firmware_updatable ? 'update available' : null]
+                .filter(Boolean).join(' · ');
+      if (!m.online) {
+        /* An offline device reports no statistics at all, so a meter would draw
+           an empty bar next to a name and read as "0%, fine". Say the state. */
+        var d = el('div', 'fleet-off');
+        d.appendChild(el('span', 'pdot'));
+        d.appendChild(el('span', 'fname', m.name));
+        d.appendChild(el('span', 'fstate', (m.state || 'OFFLINE').toLowerCase()));
+        d.title = sub;
+        list.appendChild(d);
+        list.appendChild(el('div', 'sub', sub));
+        return;
+      }
+      /* Memory rather than CPU: on switches and APs CPU is near-idle noise,
+         and memory is the number that actually creeps. */
+      list.appendChild(meter(m.name, m.mem_pct, m.mem_status,
+        sub + (m.cpu_pct !== null ? '  ·  cpu ' + fmtPct(m.cpu_pct) : '')));
+    });
+    pf.appendChild(list);
+    pf.appendChild(el('div', 'sub',
+      'Online state is reported by the controller, not probed by netdash.'));
+    panels.appendChild(pf);
+  }
 
   /* Support status. Shown only when it is bad news and therefore only when
      there is something to acknowledge -- a panel reading "supported" on every
