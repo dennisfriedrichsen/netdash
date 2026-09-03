@@ -351,10 +351,22 @@ var OS_ICONS = {
         ['circle', { cx: 7, cy: 7, r: 1 }],
         ['circle', { cx: 7, cy: 17, r: 1 }],
         ['path', { d: 'M12 10.2v3.6M10.3 12.4L12 14.1l1.7-1.7', fill: 'none', 'stroke-width': 1.5 }]],
-  linux: [['ellipse', { cx: 12, cy: 14.8, rx: 5, ry: 6.2 }],
-          ['circle', { cx: 12, cy: 6.6, r: 3.6 }],
-          ['circle', { cx: 10.7, cy: 6.2, r: 0.85, fill: 'var(--surface-1)' }],
-          ['circle', { cx: 13.3, cy: 6.2, r: 0.85, fill: 'var(--surface-1)' }]],
+  /* Tux. The previous version was a filled ellipse under a filled circle with
+     two dots on it, which is a snowman -- nothing in that silhouette says
+     bird. Three things fix it, and all three survive being drawn at 19px:
+     paddle feet splayed at the bottom, a white front large enough to break up
+     the body, and a pear-shaped bottom rather than a plain oval. The bill is
+     mostly lost at card size, so it is not carrying any of the weight.
+     Feet come first so the body paints over where they join. */
+  linux: [['ellipse', { cx: 8.5, cy: 20.7, rx: 3, ry: 1.35 }],
+          ['ellipse', { cx: 15.5, cy: 20.7, rx: 3, ry: 1.35 }],
+          ['ellipse', { cx: 12, cy: 14.6, rx: 5.1, ry: 6 }],
+          ['ellipse', { cx: 12, cy: 17.3, rx: 5.5, ry: 3.6 }],
+          ['circle', { cx: 12, cy: 7.7, r: 4.1 }],
+          ['ellipse', { cx: 12, cy: 16.4, rx: 3.5, ry: 4.1, fill: 'var(--surface-1)' }],
+          ['circle', { cx: 10.5, cy: 7.15, r: 0.8, fill: 'var(--surface-1)' }],
+          ['circle', { cx: 13.5, cy: 7.15, r: 0.8, fill: 'var(--surface-1)' }],
+          ['ellipse', { cx: 12, cy: 9.4, rx: 1.55, ry: 0.95, fill: 'var(--surface-1)' }]],
   unknown: [['circle', { cx: 12, cy: 12, r: 7.6, fill: 'none', 'stroke-width': 1.7 }],
             ['path', { d: 'M9.8 9.8a2.3 2.3 0 1 1 2.7 2.9v1.2', fill: 'none', 'stroke-width': 1.7 }],
             ['circle', { cx: 12.4, cy: 16.4, r: 1 }]]

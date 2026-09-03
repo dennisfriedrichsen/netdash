@@ -347,7 +347,10 @@ check('appliances_get_their_own_icons', function () {
 check('an_appliance_icon_actually_draws_shapes', function () {
   /* osIcon() always returns an <svg>, so a missing family fails silently as an
      empty box. Count the shapes, not the element. */
-  [['UniFi OS 5.1.31', 4], ['Hubitat C-8 Pro 2.5.1.174', 3]].forEach(function (c) {
+  /* Linux is 9: the feet, front and pear bottom are what stop Tux reading as
+     a snowman, and dropping any of them is a silent regression. */
+  [['UniFi OS 5.1.31', 4], ['Hubitat C-8 Pro 2.5.1.174', 3],
+   ['Alpine Linux 3.24', 9]].forEach(function (c) {
     var svg = ctx.osIcon(c[0]);
     var shapes = (svg.children || []).filter(function (x) {
       return x.tagName !== '#comment';
