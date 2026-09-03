@@ -132,12 +132,18 @@ FreeBSD)
       # already on its own timer.
       run freebsd-update --not-running-from-cron fetch >/dev/null
     fi
+    # Set as soon as the branch is entered, not only when something turns up
+    # pending -- a clean `updatesready` (exit 2, nothing staged) is base
+    # genuinely having been checked, and left at the bare "pkg-audit" default
+    # it would have been indistinguishable from freebsd-update never running
+    # at all. The pkgbase branch above already sets its source unconditionally
+    # for the same reason.
+    SRC="pkg-audit+freebsd-update"
     if freebsd-update updatesready >/dev/null 2>&1; then
       # Counted as one pending security item. The count is packages plus this,
       # so the detail line says where the extra one came from.
       SEC=$((SEC + 1))
       DET="includes 1 staged base system update (freebsd-update)"
-      SRC="pkg-audit+freebsd-update"
       # Named in the package list too, not just counted: netdash can
       # acknowledge a pending security state, keyed on the security count and
       # this string together, and "1 security issue" alone cannot tell two

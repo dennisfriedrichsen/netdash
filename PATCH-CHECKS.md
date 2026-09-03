@@ -233,19 +233,32 @@ So pkgbase is detected with `pkg info -e FreeBSD-runtime` and the whole
 freebsd-update branch is skipped, with the source reported as
 `pkg-audit-pkgbase` to say so.
 
-**The freebsd-update branch itself is implemented but, unlike pkgbase above,
-not verified against a real traditional-base host** (14.4 and earlier
-defaults to this; pkgbase is opt-in before 15.0). It counts a staged update as
-one pending security item, same as any vulnerable package -- but `updatesready`
-only says yes or no, naming nothing, so without help the package list stays
-whatever `pkg audit` alone found, commonly empty on a base-only host. That is
-a real gap now that a pending security state can be acknowledged: "1 security
-issue" with an empty package list cannot tell apart two different staged
-patches that happen to leave pkg audit equally quiet. So the branch also names
-the running version in the package list --
-`freebsd-update: staged patch beyond 14.4-RELEASE-p7` -- which is exactly what
-changes once *this* staged patch is installed and the host reboots onto it, so
-an old ack cannot silently carry over onto whatever patch comes next.
+**The freebsd-update branch: detection verified on a real 14.4 host, the
+"something is actually pending" path still is not.** `command -v freebsd-update`
+and `pkg info -e FreeBSD-runtime` were confirmed against real output on a
+traditional-base 14.4 box (14.4 and earlier default to this; pkgbase is
+opt-in before 15.0), so the branch is confirmed to fire on real hardware. But
+that host had nothing staged (`updatesready` exits 2), which is the common
+steady state and exposed a real bug: `SRC`/`DET` were previously set only
+*inside* the "something is pending" check, so a clean freebsd-update result
+left them at the bare `pkg-audit` default -- identical to freebsd-update never
+running at all. Fixed: the source is now recorded as soon as the branch is
+entered, same as pkgbase already does unconditionally, so "checked, clean"
+and "never checked" are distinguishable again. The "something IS staged"
+sub-path (`SEC` incremented, `DET` naming it, the package list enriched with
+the running version) remains unverified against a host with a patch actually
+staged.
+
+That package-list enrichment exists because `updatesready` only says yes or
+no, naming nothing -- so without help the package list stays whatever `pkg
+audit` alone found, commonly empty on a base-only host. That is a real gap now
+that a pending security state can be acknowledged: "1 security issue" with an
+empty package list cannot tell apart two different staged patches that happen
+to leave pkg audit equally quiet. So the branch also names the running
+version in the package list -- `freebsd-update: staged patch beyond
+14.4-RELEASE-p7` -- which is exactly what changes once *this* staged patch is
+installed and the host reboots onto it, so an old ack cannot silently carry
+over onto whatever patch comes next.
 
 If neither scheduled job is enabled on a given host, both reads still answer,
 just from an ageing database — which is exactly what `checked_at` is for.

@@ -407,6 +407,13 @@ print(json.dumps({
   "version_only":    secpkgs("", "14.4-RELEASE-p7"),
   "joins_with_pkgs": secpkgs("chromium-1.2.3", "14.4-RELEASE-p7"),
   "version_bump":    secpkgs("", "14.4-RELEASE-p8"),
+  # A real 14.4 host with nothing staged (freebsd-update updatesready exits 2)
+  # left SRC at the plain "pkg-audit" default -- identical to freebsd-update
+  # never running at all. The source line must be set as soon as the branch
+  # is entered, before the inner "is anything actually pending" check, same
+  # as the pkgbase branch sets its source unconditionally.
+  "src_set_before_updatesready_check":
+    src.index('SRC="pkg-audit+freebsd-update"') < src.index("if freebsd-update updatesready"),
 }))
 PY
 ) || J=''
@@ -422,6 +429,11 @@ PY
   # for a base it does not manage.
   check "pkgbase is detected so freebsd-update is skipped there" \
         "assert d['pkgbase_detected'], d" "$J"
+  # A traditional-base host with a clean freebsd-update (nothing staged) must
+  # still say so was checked -- a real fleet host reported plain "pkg-audit"
+  # here, indistinguishable from freebsd-update not running at all.
+  check "a clean freebsd-update check still records that base was checked" \
+        "assert d['src_set_before_updatesready_check'], d" "$J"
   # The captured host exits 1 with nine vulnerable packages and an empty stderr,
   # so a successful fetch is indistinguishable from a failed one by status alone.
   check "the vuln.xml fetch is judged by stderr, not by exit status" \
