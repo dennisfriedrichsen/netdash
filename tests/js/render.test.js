@@ -279,6 +279,28 @@ check('every_mount_gets_its_own_full_panel', function () {
   }
 
 });
+check('disk_traces_are_coloured_like_cpu_and_memory', function () {
+  /* sparkline() puts this value straight into stroke/fill attributes, so a
+     bare custom-property name draws nothing. Every trace on the page must
+     carry a real colour, and a healthy mount must carry the same one CPU and
+     memory do. */
+  ctx.renderDetail('h', detail(twoMounts(), { disk_history: DISKH }), '24h');
+  var strokes = [];
+  (function walk(n) {
+    if (!n || typeof n !== 'object') return;
+    var v = n.attrs && n.attrs.stroke;
+    if (v && String(v).indexOf('--st') >= 0) strokes.push(v);
+    (n.children || []).forEach(walk);
+  })(ctx.root);
+  strokes.forEach(function (v) {
+    if (v.indexOf('var(') !== 0) {
+      throw new Error('a trace was given a bare token, not a colour: ' + v);
+    }
+  });
+  if (strokes.indexOf('var(--st-ok)') < 0) {
+    throw new Error('no healthy trace drawn in the ok colour: ' + strokes.join(','));
+  }
+});
 check('a_disk_panel_carries_a_caption_like_cpu_does', function () {
   ctx.renderDetail('h', detail(twoMounts(), { disk_history: DISKH }), '24h');
   /* Three captions: cpu, memory, and one per mount. A trace with no axis

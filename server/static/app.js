@@ -924,7 +924,11 @@ function renderDetail(host, data, range) {
     var pts = (dh[d.mount] || []).map(function (x) {
       return { ts: x.ts, v: x.pct };
     });
-    pd.appendChild(sparkline(pts, '--st-ok', th.disk));
+    /* st().css, not a bare token: sparkline() drops this straight into a
+       stroke/fill attribute, so it has to be a colour value and not the name
+       of a custom property. Passing the mount's own status also makes the
+       trace change colour at warn and crit exactly as CPU and memory do. */
+    pd.appendChild(sparkline(pts, st(d.status).css, th.disk));
     pd.appendChild(chartCaption(th.disk, data.minutes || 60, dres));
 
     /* The reason to keep history at all, and it belongs next to the trace it

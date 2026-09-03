@@ -1564,6 +1564,8 @@ if want render; then
           "assert d['detail_disk_history'] is None, d['detail_disk_history']" "$J"
     check "with a full panel per mount, not a sliver under a bar" \
           "assert d['every_mount_gets_its_own_full_panel'] is None, d['every_mount_gets_its_own_full_panel']" "$J"
+    check "each disk trace uses a real colour, the same green cpu uses" \
+          "assert d['disk_traces_are_coloured_like_cpu_and_memory'] is None, d['disk_traces_are_coloured_like_cpu_and_memory']" "$J"
     check "and an axis caption on each, exactly like cpu and memory" \
           "assert d['a_disk_panel_carries_a_caption_like_cpu_does'] is None, d['a_disk_panel_carries_a_caption_like_cpu_does']" "$J"
     check "a mount with no history keeps its panel and says so" \
