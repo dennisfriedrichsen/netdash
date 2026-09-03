@@ -648,6 +648,8 @@ class Handler(BaseHTTPRequestHandler):
             ".js": "application/javascript; charset=utf-8",
             ".css": "text/css; charset=utf-8",
             ".svg": "image/svg+xml",
+            ".png": "image/png",
+            ".ico": "image/x-icon",
         }.get(os.path.splitext(full)[1], "application/octet-stream")
         with open(full, "rb") as f:
             return self._send(200, f.read(), ctype)
