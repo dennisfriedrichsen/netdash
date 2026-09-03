@@ -332,6 +332,17 @@ cache, so a slow or unreachable endoflife.date can never delay the dashboard —
 it just leaves the badge unknown. A failed refresh keeps the previous cache;
 release dates move on the scale of months, so yesterday's copy is still right.
 
+**Debian's own eol date is a handover, not an ending.** endoflife.date's
+`eolFrom` for Debian marks the Security Team stepping back — Debian's own LTS
+Team then covers the release for two more years, free and on by default for
+every install ([announcement](https://www.debian.org/News/2026/20260712)), so
+netdash treats *that* date (`eoesFrom`) as Debian's real EOL. This is a
+Debian-specific allowlist, not a general rule: Ubuntu's equivalent field is
+Extended Security Maintenance, paid and opt-in via Ubuntu Pro, so a stock
+install gets none of it — trusting it there would read an unpatched-since-2025
+box as supported until 2030. Absent a product-specific reason to trust it, an
+`eolFrom` release reads EOL.
+
 ## Bare metal or VM
 
 Each collector reports whether it is virtualised, and the dashboard splits the

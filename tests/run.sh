@@ -682,11 +682,21 @@ from datetime import date
 # Cycle data captured from endoflife.date, not fetched: the suite runs with no
 # network. Only the shapes the matcher depends on are kept.
 eol._CACHE.update({
- "debian":  {"ts":9e9,"releases":[{"name":"13","isEol":False,"eolFrom":"2028-08-09"},
-                                  {"name":"12","isEol":True,"eolFrom":"2026-07-11"},
-                                  {"name":"11","isEol":True,"eolFrom":"2024-08-14"}]},
+ # isEoes/eoesFrom captured alongside isEol/eolFrom: Debian 12 has already
+ # passed eolFrom (Security Team handoff) but not eoesFrom (its own LTS Team
+ # stepping back), and Debian 11 has now passed both.
+ "debian":  {"ts":9e9,"releases":[{"name":"13","isEol":False,"eolFrom":"2028-08-09",
+                                    "isEoes":False,"eoesFrom":"2030-06-30"},
+                                  {"name":"12","isEol":True,"eolFrom":"2026-07-11",
+                                   "isEoes":False,"eoesFrom":"2028-06-30"},
+                                  {"name":"11","isEol":True,"eolFrom":"2024-08-14",
+                                   "isEoes":True,"eoesFrom":"2026-08-31"}]},
+ # 20.04's eoesFrom is 2030 -- Ubuntu Pro ESM, paid and opt-in. A stock install
+ # gets none of it, so it must not make an already-eolFrom release read supported.
  "ubuntu":  {"ts":9e9,"releases":[{"name":"24.04","isEol":False,"eolFrom":"2029-05-31"},
-                                  {"name":"22.04","isEol":False,"eolFrom":"2027-06-01"}]},
+                                  {"name":"22.04","isEol":False,"eolFrom":"2027-06-01"},
+                                  {"name":"20.04","isEol":True,"eolFrom":"2025-05-31",
+                                   "isEoes":False,"eoesFrom":"2030-04-23"}]},
  "netbsd":  {"ts":9e9,"releases":[{"name":"11","isEol":False,"eolFrom":None}]},
  "macos":   {"ts":9e9,"releases":[{"name":"26","isEol":False,"eolFrom":None}]},
  "freebsd": {"ts":9e9,"releases":[{"name":"15.1","isEol":False,"eolFrom":"2027-03-31"},
@@ -711,7 +721,10 @@ print(json.dumps({
  "truenas":       q("TrueNAS CORE 13.0 U6.8")["status"],
  "truenas_src":   q("TrueNAS CORE 13.0 U6.8")["source"],
  "old_debian":    q("Debian GNU/Linux 11 (bullseye) (x86_64)")["status"],
- "soon":          q("Debian GNU/Linux 12 (bookworm) (x86_64)")["status"],
+ "debian12":      q("Debian GNU/Linux 12 (bookworm) (x86_64)")["status"],
+ "debian12_date": q("Debian GNU/Linux 12 (bookworm) (x86_64)")["eol_date"],
+ "debian13_date": q("Debian GNU/Linux 13 (trixie) (x86_64)")["eol_date"],
+ "ubuntu_esm":    q("Ubuntu 20.04.6 LTS (x86_64)")["status"],
  "no_eol_date":   q("macOS 26.6.2 (arm64)")["status"],
  "unmatched":     q("Plan 9 from Bell Labs")["status"],
  "fedora_98d":    qd(FED, date(2026,9,2))["status"],
@@ -742,7 +755,20 @@ PY
   check "a config override answers where endoflife.date has no product" \
         "assert d['truenas']=='eol' and d['truenas_src']=='config', d" "$J"
   check "a past-EOL release reads eol" \
-        "assert d['old_debian']=='eol' and d['soon']=='eol', d" "$J"
+        "assert d['old_debian']=='eol', d" "$J"
+  # Debian's LTS Team takes over for free the moment the Security Team steps
+  # back (https://www.debian.org/News/2026/20260712) -- eolFrom marks that
+  # handover, not an ending, so a release between eolFrom and eoesFrom must
+  # still read supported, against the later date.
+  check "Debian between eolFrom and eoesFrom reads supported, not eol" \
+        "assert d['debian12']=='supported' and d['debian12_date']=='2028-06-30', d" "$J"
+  check "a Debian release still in regular support also reports its eoes date" \
+        "assert d['debian13_date']=='2030-06-30', d" "$J"
+  # Ubuntu's own extended phase is Extended Security Maintenance -- paid,
+  # opt-in via Ubuntu Pro, and absent on a stock install. It must not rescue
+  # an eolFrom release the way Debian's free LTS does.
+  check "Ubuntu's paid ESM does not rescue an eolFrom release" \
+        "assert d['ubuntu_esm']=='eol', d" "$J"
   # warn_days defaults to 30, not 90: Fedora's ~13-month cycle would otherwise
   # hold those hosts amber for three months twice a year, and a warning that is
   # always on is one nobody reads. 98 days out is quiet; 19 days out is not.

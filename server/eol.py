@@ -49,6 +49,13 @@ _RULES = [
 _ROLLING = [re.compile(p, re.I) for p in (r"^Arch\s+Linux", r"^openSUSE\s+Tumbleweed",
                                           r"^openSUSE\s+Slowroll")]
 
+# Products whose endoflife.date "eoes" (extended) phase is free and applies
+# to every install by default, so it is safe to treat as the real end of
+# support rather than the "eol" phase before it. See the comment in lookup()
+# -- this is not true of every product that has an eoes phase (Ubuntu's is
+# paid ESM), so the set is deliberately an allowlist, not a default.
+_FREE_EXTENDED_SUPPORT = {"debian"}
+
 # product -> {"ts": fetched_at, "releases": [...]}
 _CACHE = {}
 _ERRORS = {}
@@ -163,10 +170,26 @@ def lookup(os_string, cfg, today=None):
     if not rel:
         return _unknown(product)
 
-    eol_from = rel.get("eolFrom")
-    # isEol is precomputed upstream, so no date arithmetic is needed for the
-    # verdict itself -- only for "how long left".
-    if rel.get("isEol"):
+    # endoflife.date models a further support phase after "eol" via
+    # isEoes/eoesFrom for several products, but what that phase actually *is*
+    # differs by vendor, so trusting it is not safe in general. Debian's is
+    # its own LTS Team taking over from the Security Team, free and on by
+    # default for every install -- eolFrom there marks a handover, not an
+    # ending (https://www.debian.org/News/2026/20260712), so eoesFrom is the
+    # boundary that actually means "abandoned". Ubuntu's eoes is Extended
+    # Security Maintenance: paid, opt-in via Ubuntu Pro, and absent on a
+    # stock install -- trusting it there would call an unpatched-since-2025
+    # box "supported" until 2030. Anything not in this set keeps using
+    # eolFrom/isEol, which undersells support at worst rather than oversells
+    # it -- the safer direction to be wrong in for a product not checked here.
+    if product in _FREE_EXTENDED_SUPPORT and rel.get("eoesFrom"):
+        is_eol, eol_from = bool(rel.get("isEoes")), rel.get("eoesFrom")
+    else:
+        is_eol, eol_from = bool(rel.get("isEol")), rel.get("eolFrom")
+
+    # isEol/isEoes are precomputed upstream, so no date arithmetic is needed
+    # for the verdict itself -- only for "how long left".
+    if is_eol:
         status, days = "eol", None
     elif not eol_from:
         # Known cycle, no announced end date -- macOS and NetBSD are both like
