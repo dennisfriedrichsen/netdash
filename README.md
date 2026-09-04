@@ -911,6 +911,29 @@ sh tests/run.sh              # everything
 sh tests/run.sh openbsd      # just the cases matching a name
 ```
 
+### Looking at the icons
+
+The OS icons are the one thing here that cannot be reviewed by reading it, and
+there is no SVG rasteriser or browser on a netdash box. Three icon bugs shipped
+before this existed — a Linux penguin that was a snowman, and two attempted
+fixes for it that rendered as a donut and as a bowtie. All three read perfectly
+well as coordinates.
+
+```sh
+python3 tests/icons/rasterize.py             # every family
+python3 tests/icons/rasterize.py linux hub   # just these
+```
+
+Writes `icons.png`: each glyph at 96px, then at its true 19px card size,
+magnified so the actual pixels are visible. It reads the shapes out of
+`app.js` through node rather than keeping a second copy, so what you are
+looking at is what ships.
+
+`--check` is the fast path, and is what `tests/run.sh` runs: it parses every
+glyph's geometry and fails on a path command it cannot read, an element that
+draws nothing, or a shape that leaves the 24×24 viewBox. It says nothing about
+whether an icon *looks* right — only a person looking at the PNG can say that.
+
 108 cases, no network, no root, nothing installed — `sh`, `awk` and `python3`.
 The BSD and macOS cases run the real collector end to end against mocked
 `sysctl`/`df`/`mount`/`vmstat`; the Linux cases drive its awk programs directly,

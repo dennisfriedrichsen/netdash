@@ -332,20 +332,20 @@ var OS_ICONS = {
   /* A rack gateway seen head on: body, two link LEDs, and the uplink arcs
      above it. The arcs are what separate it from the NAS glyph below, which is
      otherwise also a stack of boxes with lights on. */
-  gateway: [['rect', { x: 3, y: 12.6, width: 18, height: 6.8, rx: 1.6, fill: 'none', 'stroke-width': 1.6 }],
-            ['circle', { cx: 6.6, cy: 16, r: 0.95 }],
-            ['circle', { cx: 9.4, cy: 16, r: 0.95 }],
-            ['path', { d: 'M12.6 16h5.5', fill: 'none', 'stroke-width': 1.4 }],
-            ['path', { d: 'M6.4 8.6a7.9 7.9 0 0 1 11.2 0', fill: 'none', 'stroke-width': 1.6 }],
-            ['path', { d: 'M9.2 10.9a4.1 4.1 0 0 1 5.6 0', fill: 'none', 'stroke-width': 1.6 }]],
+  gateway: [['rect', { x: 3, y: 12.2, width: 18, height: 7.6, rx: 1.8, fill: 'none', 'stroke-width': 1.6 }],
+            ['circle', { cx: 7, cy: 16, r: 1.15 }],
+            ['circle', { cx: 11, cy: 16, r: 1.15 }],
+            ['path', { d: 'M14.6 16h3.4', fill: 'none', 'stroke-width': 1.5 }],
+            ['path', { d: 'M6.4 8.6a7.9 7.9 0 0 1 11.2 0', fill: 'none', 'stroke-width': 1.7 }],
+            ['path', { d: 'M9.2 10.9a4.1 4.1 0 0 1 5.6 0', fill: 'none', 'stroke-width': 1.7 }]],
   /* A home automation hub: the house says which building, the dot and its arc
      say the thing inside it is talking to something. Radiating from a point
      rather than a cluster of circles, so it cannot be mistaken for the
      Raspberry Pi glyph. */
   hub: [['path', { d: 'M3.9 11.4L12 4.7l8.1 6.7', fill: 'none', 'stroke-width': 1.7 }],
         ['path', { d: 'M6.3 10.7v8.6h11.4v-8.6', fill: 'none', 'stroke-width': 1.6 }],
-        ['circle', { cx: 12, cy: 16.2, r: 1.15 }],
-        ['path', { d: 'M9.5 13.9a3.5 3.5 0 0 1 5 0', fill: 'none', 'stroke-width': 1.45 }]],
+        ['circle', { cx: 12, cy: 16.6, r: 1.5 }],
+        ['path', { d: 'M9.2 13.6a3.9 3.9 0 0 1 5.6 0', fill: 'none', 'stroke-width': 1.6 }]],
   nas: [['rect', { x: 3.6, y: 4.8, width: 16.8, height: 4.4, rx: 1.3, fill: 'none', 'stroke-width': 1.6 }],
         ['rect', { x: 3.6, y: 14.8, width: 16.8, height: 4.4, rx: 1.3, fill: 'none', 'stroke-width': 1.6 }],
         ['circle', { cx: 7, cy: 7, r: 1 }],

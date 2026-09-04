@@ -1895,6 +1895,24 @@ PYEOF
 fi
 
 
+# ----------------------------------------------------------------- icons ----
+if want icons; then
+  # Geometry only. Whether an icon LOOKS right is a question only a person
+  # looking at the PNG can answer -- see tests/icons/rasterize.py, which exists
+  # because three icon bugs shipped that all read fine as coordinates.
+  if ! command -v node >/dev/null 2>&1; then
+    echo "icons (SKIPPED -- node not installed)"
+  else
+    echo "icons (every glyph parses and stays inside its box)"
+    J=$(python3 "$ROOT/tests/icons/rasterize.py" --check 2>/dev/null) || J=''
+    check "every icon family has drawable geometry, inside the viewBox" \
+          "assert d['errors']==[], d['errors']" "$J"
+    check "and the whole set is present" \
+          "assert d['families'] >= 12, d['families']" "$J"
+  fi
+fi
+
+
 echo
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]
