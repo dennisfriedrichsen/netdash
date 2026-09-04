@@ -203,6 +203,9 @@ systemctl edit netdash    # [Service] / AmbientCapabilities=CAP_NET_RAW
 | `POST /api/ingest` | collector push (requires `X-Netdash-Token`) |
 | `GET /api/overview` | all hosts, latest sample + status, newest collector version seen |
 | `GET /api/host/<name>?minutes=60` | one host + recent history |
+| `POST /api/host/<name>/patches/ack?package=<name>` | acknowledge one pending package; without `package`, every one pending now |
+| `POST /api/host/<name>/patches/unack?package=<name>` | back to pending; without `package`, the whole host |
+| `POST /api/host/<name>/eol/ack`, `/eol/unack` | the same for an end-of-life warning, which is one per host |
 | `GET /api/health` | liveness |
 
 Payload shape:
@@ -564,15 +567,25 @@ statement about CPU, memory and disk.
 Not every red **security** badge is waiting on you: `pkg audit` on FreeBSD (and
 `arch-audit`, and others) can flag a package for months with no upstream fix
 yet, and the badge has no way to tell "not fixed" from "not looked at" apart.
-The host's detail page has an **acknowledge** button for exactly that case —
-it silences this security count against this exact package list, muting the
-badge to grey while leaving its glyph in place, since the issue is still real.
+The host's detail page lists the pending packages with an **acknowledge** link
+on each, and once every one of them is acknowledged the badge mutes to grey
+while keeping its glyph, since the issues are still real.
 
-It is *not* a snooze on the host. The ack is keyed to that count and that
-package list, both — a package on the list getting fixed, or a different one
-turning up vulnerable, changes one of them, and the badge reverts to red on
-its own at the next check. Nothing needs to notice the ack has gone stale and
-clear it by hand.
+Acknowledging is per package, and that is the point. Acknowledging `python312`
+is a statement about python312: the packages around it can be fixed, and
+different ones can turn up vulnerable, without that decision lapsing and having
+to be made again over something it was never about. An unacknowledged package
+keeps the badge red until it too has been looked at, and when it goes away the
+host falls quiet on its own with nothing to re-acknowledge.
+
+It is still *not* a snooze on the host. Each ack is keyed to the package name
+exactly as the check reports it, version and all — a package that changes
+underneath an ack is new information about the thing that was reviewed, so it
+comes back. The names past the collector's cap of six (`+3 more`) can only be
+acknowledged as a group, keyed on how many there are, so that ack lapses as
+soon as the number moves. And an ack for a package that stops being pending is
+dropped by the next prune, so that package's *next* advisory arrives loud
+rather than pre-silenced by a decision about an older one.
 
 Only offered for **security** — a **reboot required** badge clears itself the
 moment the host reboots, so there is nothing there worth silencing.

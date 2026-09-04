@@ -1,5 +1,6 @@
 """SQLite storage for netdash. Rolling window only -- no long-term retention."""
 
+import re
 import sqlite3
 import threading
 import time
@@ -150,17 +151,27 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_events_host ON events(host, ts DESC);
 
--- A silenced patch-security state, one per host. Deliberately narrow: this
--- acknowledges "N security issues in these packages", not the host in
--- general, and only that exact state -- a security count or package list
--- that no longer matches means new information arrived (a package was fixed,
--- or a different one became vulnerable), and the ack stops applying on its
--- own rather than silencing whatever replaced it.
+-- A silenced patch-security item: one row per acknowledged package, not one
+-- per host. Still narrow -- it acknowledges "this package's pending security
+-- issue", never the host in general -- but narrow along the axis that actually
+-- moves. The whole-state ack this replaces was keyed on the security count and
+-- the whole package list together, so on a FreeBSD box carrying a months-old
+-- pkg audit hit on python312, every unrelated package that turned up
+-- vulnerable and was then fixed made that reviewed-and-understood python312 ack
+-- lapse, and it had to be made again over a decision nothing had changed about.
+--
+-- Keyed on the name exactly as the check reports it, version and all: a package
+-- that changes underneath an ack is genuinely new information about the thing
+-- that was reviewed, and gets to surface again.
+--
+-- The host reads as acknowledged only when every pending item is acked, so a
+-- newly vulnerable package still turns the badge red on its own -- without
+-- disturbing the acks already made around it.
 CREATE TABLE IF NOT EXISTS patch_acks (
-    host      TEXT    PRIMARY KEY,
-    security  INTEGER NOT NULL,
-    packages  TEXT    NOT NULL,
-    acked_at  INTEGER NOT NULL
+    host      TEXT    NOT NULL,
+    package   TEXT    NOT NULL,
+    acked_at  INTEGER NOT NULL,
+    PRIMARY KEY (host, package)
 );
 
 -- A silenced end-of-life warning, one per host. Narrow in the same way and
@@ -214,6 +225,85 @@ def _migrate(conn):
                 conn.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, name, decl))
 
 
+# The tail the collectors append once the name list is capped: "openssl, zlib1g
+# (+3 more)". See "Naming the packages" in PATCH-CHECKS.md for why it is capped.
+# Not anchored to the end of the string: FreeBSD's base-system branch appends
+# its staged patch to the list after the cap has already been applied, so the
+# tail can land in the middle.
+_MORE_RE = re.compile(r"\s*\(\+(\d+) more\)\s*")
+
+# What cap_names() joins names with. A comma alone is part of a name.
+_JOIN_RE = re.compile(r",\s+")
+
+
+def patch_entries(packages, security):
+    """The individual things an ack can be made against, in the order reported.
+
+    A check reports one string -- "openssl, zlib1g, python312-3.12.14" -- and an
+    ack is now made against one package at a time, so that string has to come
+    apart the same way everywhere it is used: the read that decides whether a
+    host is silenced, the write that records an ack, and the prune that drops
+    acks for packages nobody is waiting on any more.
+
+    The capped tail is an entry in its own right, and the count is part of its
+    name. Six names are all a collector will ever send, so on a host with nine
+    vulnerable packages the other three can only be acknowledged as a group --
+    keyed on how many there are, so that group ack lapses the moment the number
+    moves. That is exactly as strong as the whole-state ack this replaces, and
+    it is the only part of this that still is. A platform that classifies a
+    count but names nothing (a staged base update, an unparsed check) lands in
+    the same group for the same reason.
+    """
+    text = (packages or "").strip()
+    m = _MORE_RE.search(text)
+    if m:
+        rest = text[m.end():]
+        text = text[:m.start()] + (", " + rest if rest else "")
+    # Split on the ", " the collectors join with, never on a bare comma: a
+    # FreeBSD package name carries its PORTEPOCH as one, and a live host had
+    # exactly that -- "gimp-2.10.38,2" came apart into a package and a stray
+    # "2", each separately acknowledgeable and neither meaning anything.
+    names = [n.strip() for n in _JOIN_RE.split(text) if n.strip()]
+    unnamed = int(m.group(1)) if m else 0
+    if security:
+        unnamed = max(unnamed, int(security) - len(names))
+    if unnamed > 0:
+        names.append("(+%d more)" % unnamed)
+    return names
+
+
+def patch_entry_unnamed(entry):
+    """How many unnamed packages an entry stands for, or None for a real name."""
+    m = _MORE_RE.fullmatch(entry or "")
+    return int(m.group(1)) if m else None
+
+
+def _migrate_patch_acks(conn):
+    """Carry whole-host acks over to the per-package table.
+
+    CREATE TABLE IF NOT EXISTS is silent on a database that already has the old
+    one, so a deploy onto a live box would otherwise keep the (host, security,
+    packages) shape and every ack would fail on the unknown column. Splitting
+    the stored list is the honest conversion: an admin who acknowledged three
+    packages as one state did review those three packages, and losing that would
+    turn every acknowledged host red on the first deploy for no reason.
+    """
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(patch_acks)")}
+    if not cols or "package" in cols:
+        return
+    old = conn.execute("SELECT host, security, packages, acked_at FROM patch_acks").fetchall()
+    rows = [
+        (r["host"], pkg, r["acked_at"])
+        for r in old
+        for pkg in patch_entries(r["packages"], r["security"])
+    ]
+    conn.execute("DROP TABLE patch_acks")
+    conn.executescript(SCHEMA)
+    conn.executemany(
+        "INSERT OR IGNORE INTO patch_acks (host, package, acked_at) VALUES (?,?,?)", rows
+    )
+
+
 # One connection is shared by every request thread (check_same_thread=False), so
 # a write that spans more than one statement has to be serialised by hand.
 # sqlite3's own locking makes each statement atomic, but nothing stops another
@@ -239,6 +329,7 @@ def connect(path):
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA)
     _migrate(conn)
+    _migrate_patch_acks(conn)
     conn.commit()
     return conn
 
@@ -329,6 +420,26 @@ def prune(conn, retention_hours, rollup_days=None, event_days=None):
         conn.execute(
             "DELETE FROM patch_acks WHERE host NOT IN (SELECT DISTINCT host FROM samples)"
         )
+        # And an ack for a package that is no longer pending is not silencing
+        # anything either -- it is a landmine. Left in place, a python312 fixed
+        # in March would come back vulnerable in July already silenced, by a
+        # decision made about a different advisory. Only hosts whose latest
+        # sample actually carries a check are cleaned: a collector that stopped
+        # reporting patches has not told us anything about what is pending, and
+        # dropping its acks on that silence would un-silence the lot the moment
+        # it came back.
+        for s in latest_per_host(conn):
+            if s["patch_checked_at"] is None:
+                continue
+            keep = patch_entries(s["patch_packages"], s["patch_security"])
+            if keep:
+                conn.execute(
+                    "DELETE FROM patch_acks WHERE host=? AND package NOT IN (%s)"
+                    % ",".join("?" * len(keep)),
+                    [s["host"]] + keep,
+                )
+            else:
+                conn.execute("DELETE FROM patch_acks WHERE host=?", (s["host"],))
         conn.execute(
             "DELETE FROM eol_acks WHERE host NOT IN (SELECT DISTINCT host FROM samples)"
         )
@@ -535,28 +646,37 @@ def known_hosts(conn):
     return [r["host"] for r in conn.execute("SELECT DISTINCT host FROM samples ORDER BY host")]
 
 
-def get_patch_ack(conn, host):
-    r = conn.execute("SELECT * FROM patch_acks WHERE host=?", (host,)).fetchone()
-    return dict(r) if r else None
+def get_patch_acks(conn, host):
+    """{package: acked_at} for every package acknowledged on this host."""
+    rows = conn.execute("SELECT package, acked_at FROM patch_acks WHERE host=?", (host,))
+    return {r["package"]: r["acked_at"] for r in rows}
 
 
-def ack_patch(conn, host, security, packages, now):
-    """Silence the host's current patch-security state -- this exact count and
-    package list, not "security issues" in general. See the note on the table."""
+def ack_patch(conn, host, packages, now):
+    """Silence these pending packages on this host -- each one on its own terms,
+    so an ack survives the rest of the list changing. See the note on the table.
+
+    Takes a list rather than one name because "acknowledge all" is one decision
+    made at one moment, and writing it as one statement keeps every row in it
+    carrying the same timestamp.
+    """
     with _WRITE:
-        conn.execute(
-            """INSERT INTO patch_acks (host, security, packages, acked_at)
-                 VALUES (?,?,?,?)
-               ON CONFLICT(host) DO UPDATE SET
-                 security=excluded.security, packages=excluded.packages, acked_at=excluded.acked_at""",
-            (host, security, packages, now),
+        conn.executemany(
+            """INSERT INTO patch_acks (host, package, acked_at) VALUES (?,?,?)
+               ON CONFLICT(host, package) DO UPDATE SET acked_at=excluded.acked_at""",
+            [(host, p, now) for p in packages],
         )
         conn.commit()
 
 
-def unack_patch(conn, host):
+def unack_patch(conn, host, package=None):
+    """One package back to pending, or the whole host when package is None."""
     with _WRITE:
-        conn.execute("DELETE FROM patch_acks WHERE host=?", (host,))
+        if package is None:
+            conn.execute("DELETE FROM patch_acks WHERE host=?", (host,))
+        else:
+            conn.execute("DELETE FROM patch_acks WHERE host=? AND package=?",
+                         (host, package))
         conn.commit()
 
 

@@ -295,19 +295,34 @@ def patch_summary(sample, now):
     else:
         status = "ok"
 
-    # An ack silences one exact state -- this security count against this
-    # package list -- not "security issues" on this host in general. A FreeBSD
-    # box can carry a pkg audit hit for months with no upstream fix yet; that
-    # is worth silencing once reviewed, but a *different* package turning up
-    # vulnerable next week is not the thing that got reviewed, so the ack must
-    # not cover it. Comparing both fields, not just the count, is what makes
-    # "shrank by one, grew by a different one" register as a change too.
-    packages = sample.get("patch_packages") or ""
-    ack = (db.get_patch_ack(CONN, sample["host"])
-           if status == "security" and CONN is not None and sample.get("host") else None)
-    acknowledged = bool(
-        ack and ack["security"] == sec and (ack["packages"] or "") == packages
-    )
+    # An ack silences one package, not "security issues" on this host in
+    # general. A FreeBSD box can carry a pkg audit hit on python312 for months
+    # with no upstream fix yet; that is worth silencing once reviewed, and it
+    # stays reviewed while the rest of the list churns around it -- which is the
+    # whole reason the ack is per package and not per state. A *different*
+    # package turning up vulnerable is not the thing that got reviewed, so it
+    # arrives unacknowledged and the badge goes back to red until it too has
+    # been looked at. Nothing has to be re-acknowledged for that to work.
+    entries = (db.patch_entries(sample.get("patch_packages"), sec)
+               if status == "security" else [])
+    acks = (db.get_patch_acks(CONN, sample["host"])
+            if entries and CONN is not None and sample.get("host") else {})
+    items = [
+        {
+            "package": e,
+            # How many packages this entry stands for when the check named none
+            # of them, so the page can say "3 further packages" rather than
+            # printing the collector's "(+3 more)" shorthand at the reader.
+            "unnamed": db.patch_entry_unnamed(e),
+            "acknowledged": e in acks,
+            "acked_at": acks.get(e),
+        }
+        for e in entries
+    ]
+    acked = [i for i in items if i["acknowledged"]]
+    # The host is silenced only when every pending item is: one unreviewed
+    # package is a reason to look, however much of the list is already known.
+    acknowledged = bool(items) and len(acked) == len(items)
 
     return {
         "status": status,
@@ -319,8 +334,12 @@ def patch_summary(sample, now):
         "source": sample.get("patch_source"),
         "detail": sample.get("patch_detail"),
         "packages": sample.get("patch_packages"),
+        "entries": items,
+        "acked_count": len(acked),
         "acknowledged": acknowledged,
-        "acked_at": ack["acked_at"] if acknowledged else None,
+        # When the whole state is silenced, the moment it became so -- the last
+        # of the packages to be acknowledged, not the first.
+        "acked_at": max(i["acked_at"] for i in acked) if acknowledged else None,
     }
 
 
@@ -577,11 +596,19 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- POST /api/ingest, /api/host/<name>/ack, /api/host/<name>/unack --
     def do_POST(self):
-        path = urlparse(self.path).path
+        u = urlparse(self.path)
+        path = u.path
 
         m = _ACK_PATH.match(path)
         if m:
-            return self._ack(m.group(1), m.group(2) or "patches", m.group(3) == "ack")
+            # The package rides in the query string rather than the path: names
+            # carry dots, plus signs, colons and spaces, and one more path
+            # segment to escape and match is one more way to get that wrong.
+            # No package means the whole pending list, which is what the
+            # "acknowledge all" link and every pre-existing caller send.
+            pkg = (parse_qs(u.query).get("package") or [None])[0]
+            return self._ack(m.group(1), m.group(2) or "patches",
+                             m.group(3) == "ack", pkg)
 
         if path != "/api/ingest":
             return self._json(404, {"error": "not found"})
@@ -612,7 +639,7 @@ class Handler(BaseHTTPRequestHandler):
     # other host-facing route (/api/overview, /api/host/<name>) already trusts
     # anyone who can reach this server -- see the "trusted network only" note
     # in the README.
-    def _ack(self, host, kind, acknowledge):
+    def _ack(self, host, kind, acknowledge, package=None):
         try:
             samples = [s for s in db.latest_per_host(CONN) if s["host"] == host]
             if not samples:
@@ -620,6 +647,10 @@ class Handler(BaseHTTPRequestHandler):
             sample = samples[0]
 
             if kind == "eol":
+                # There is one end-of-life fact per host, so naming a package
+                # here is a caller that thinks it is doing something it is not.
+                if package is not None:
+                    return self._json(400, {"error": "an eol ack takes no package"})
                 if acknowledge:
                     e = eol_for(sample)
                     # Same rule as patches: re-read the state here rather than
@@ -644,10 +675,20 @@ class Handler(BaseHTTPRequestHandler):
                 # a stale page cannot ack a state that has since changed.
                 if pp["status"] != "security":
                     return self._json(400, {"error": "nothing pending to acknowledge"})
-                db.ack_patch(CONN, host, pp["security"],
-                             sample.get("patch_packages") or "", int(time.time()))
+                pending = [i["package"] for i in pp["entries"]]
+                if package is not None:
+                    # Same rule one level finer: the pending list is re-read
+                    # here, so a page left open across a fix landing cannot
+                    # acknowledge a package that is no longer pending -- which
+                    # would leave a row behind to silence that package's next
+                    # advisory, months from now, on nobody's decision.
+                    if package not in pending:
+                        return self._json(
+                            400, {"error": "not pending on this host: %s" % package})
+                    pending = [package]
+                db.ack_patch(CONN, host, pending, int(time.time()))
             else:
-                db.unack_patch(CONN, host)
+                db.unack_patch(CONN, host, package)
         except Exception as e:
             return self._fail(500, "ack %s" % host, e)
         return self._json(200, summarize(sample))

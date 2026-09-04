@@ -144,6 +144,12 @@ function patchTitle(p) {
   if (p.detail) bits.push(p.detail);
   if (p.acknowledged) {
     bits.push('acknowledged ' + fmtAge(Math.floor(Date.now() / 1000) - p.acked_at));
+  } else if (p.acked_count) {
+    /* A partly reviewed list still reads as red, so this is where the work
+       already done gets its credit -- and where "why is that still red when I
+       acknowledged it" is answered without opening the host. */
+    bits.push(p.acked_count + ' of ' + (p.entries ? p.entries.length : p.security) +
+              ' acknowledged');
   }
   return bits.join(' · ');
 }
@@ -203,10 +209,11 @@ function fleetRow(f) {
 /* POSTs to /api/host/<name>/ack or /unack, then re-fetches so the button's
    own click is what makes the state it reads back consistent -- no separate
    client-side toggle to keep in sync with what the server actually stored. */
-function postAck(host, kind, acknowledge, btn) {
+function postAck(host, kind, acknowledge, btn, pkg) {
   btn.disabled = true;
   fetch('/api/host/' + encodeURIComponent(host) + '/' + kind + '/' +
-        (acknowledge ? 'ack' : 'unack'), { method: 'POST' })
+        (acknowledge ? 'ack' : 'unack') +
+        (pkg ? '?package=' + encodeURIComponent(pkg) : ''), { method: 'POST' })
     .then(function (res) {
       if (!res.ok) return res.json().then(function (b) { throw new Error(b.error || res.status); });
       return tick();
@@ -215,30 +222,53 @@ function postAck(host, kind, acknowledge, btn) {
 }
 
 var ACK_TITLE = {
-  patches: 'Silence this exact count and package list until either changes.',
+  patches: 'Silence this one package until it changes or is fixed. Anything' +
+           ' else pending, now or later, is unaffected.',
+  patches_all: 'Silence every package pending right now, each on its own terms' +
+               ' — one turning up later still shows.',
   /* Spelled out because the phase is the surprising half: acknowledging the
      warning does not acknowledge the thing it was warning about. */
   eol: 'Silence this warning until the release, the date or the phase changes' +
        ' — going properly past EOL will show again on its own.'
 };
 
-function ackButton(host, kind, label, acknowledge) {
+function ackButton(host, kind, label, acknowledge, pkg) {
   var b = el('button', 'link', label);
   b.type = 'button';
-  b.title = acknowledge ? ACK_TITLE[kind] : 'Show this as pending again.';
-  b.onclick = function () { postAck(host, kind, acknowledge, b); };
+  b.title = acknowledge ? ACK_TITLE[kind === 'patches' && !pkg ? 'patches_all' : kind]
+                        : 'Show this as pending again.';
+  b.onclick = function () { postAck(host, kind, acknowledge, b, pkg); };
   return b;
 }
 
-/* "acknowledged 3h ago — un-acknowledge", or an "acknowledge" button. */
-function ackRow(host, kind, state) {
+/* The package the collector named, or the group standing in for the ones it
+   did not: the list is capped at six names with a "(+3 more)" tail, and those
+   three can only be acknowledged together, so say that in words rather than
+   printing the collector's shorthand at the reader. */
+function pkgLabel(item) {
+  if (!item.unnamed) return item.package;
+  return item.unnamed + ' further package' + (item.unnamed === 1 ? '' : 's') +
+         ' the check did not name';
+}
+
+/* "acknowledged 3h ago — un-acknowledge", or an "acknowledge" button.
+
+   With an item -- one entry of the pending package list, which is also the
+   state being asked about -- the same line prefixed by what it is about, so
+   each package is acknowledged on its own and reads that way. */
+function ackRow(host, kind, state, item) {
   var row = el('div', 'sub ackrow');
+  var pkg = item ? item.package : null;
+  if (item) {
+    row.appendChild(el('span', 'pkg', pkgLabel(item)));
+    row.appendChild(document.createTextNode(' — '));
+  }
   if (state.acknowledged) {
     row.appendChild(document.createTextNode(
       'acknowledged ' + fmtAge(Math.floor(Date.now() / 1000) - state.acked_at) + ' — '));
-    row.appendChild(ackButton(host, kind, 'un-acknowledge', false));
+    row.appendChild(ackButton(host, kind, 'un-acknowledge', false, pkg));
   } else {
-    row.appendChild(ackButton(host, kind, 'acknowledge', true));
+    row.appendChild(ackButton(host, kind, 'acknowledge', true, pkg));
   }
   return row;
 }
@@ -1008,19 +1038,38 @@ function renderDetail(host, data, range) {
     }
     p4.appendChild(el('div', 'sub',
       (pp.source || 'unknown source') + ' · checked ' + fmtAge(pp.age_seconds)));
-    if (pp.packages) p4.appendChild(el('div', 'sub', pp.packages));
+    /* One row per pending package, each acknowledged on its own. The list and
+       the controls are the same thing here, because "which of these have I
+       already looked at" is the question this panel exists to answer, and the
+       old single button forced the whole list to be re-acknowledged every time
+       any part of it moved. Only 'security' is offered: 'reboot' clears itself
+       the moment the host reboots, and nothing else is the thing this was
+       asked for. */
+    if (pp.status === 'security' && pp.entries && pp.entries.length) {
+      pp.entries.forEach(function (it) {
+        p4.appendChild(ackRow(host, 'patches', it, it));
+      });
+      var pending = pp.entries.filter(function (it) { return !it.acknowledged; });
+      /* Only worth a row when it saves more than one click: with a single
+         package left, its own link is already right there. */
+      if (pending.length > 1) {
+        var all = el('div', 'sub ackrow');
+        all.appendChild(ackButton(host, 'patches',
+                                  'acknowledge all ' + pending.length, true));
+        p4.appendChild(all);
+      } else if (pp.entries.length > 1 && !pending.length) {
+        var none = el('div', 'sub ackrow');
+        none.appendChild(ackButton(host, 'patches', 'un-acknowledge all', false));
+        p4.appendChild(none);
+      }
+    } else if (pp.packages) {
+      p4.appendChild(el('div', 'sub', pp.packages));
+    }
     if (pp.reboot_required) {
       p4.appendChild(el('div', 'sub',
         'updates are installed but not running until this host reboots'));
     }
     if (pp.detail) p4.appendChild(el('div', 'sub', pp.detail));
-    /* Acknowledging silences this exact count and package list -- a pkg audit
-       hit with no upstream fix yet can otherwise sit red for months. It is
-       only offered for 'security': 'reboot' clears itself the moment the host
-       reboots, and everything else is not the thing this was asked for. */
-    if (pp.status === 'security') {
-      p4.appendChild(ackRow(host, 'patches', pp));
-    }
   } else {
     p4.appendChild(el('div', 'sub',
       'No patch check has run on this host yet — run netdash-patchcheck.'));

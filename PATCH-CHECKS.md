@@ -252,13 +252,14 @@ staged.
 That package-list enrichment exists because `updatesready` only says yes or
 no, naming nothing -- so without help the package list stays whatever `pkg
 audit` alone found, commonly empty on a base-only host. That is a real gap now
-that a pending security state can be acknowledged: "1 security issue" with an
-empty package list cannot tell apart two different staged patches that happen
-to leave pkg audit equally quiet. So the branch also names the running
-version in the package list -- `freebsd-update: staged patch beyond
-14.4-RELEASE-p7` -- which is exactly what changes once *this* staged patch is
-installed and the host reboots onto it, so an old ack cannot silently carry
-over onto whatever patch comes next.
+that a pending security item can be acknowledged: an unnamed staged patch is
+acknowledged as "one item this check could not name", and two different staged
+patches that both leave pkg audit equally quiet are indistinguishable under
+that key. So the branch also names the running version in the package list --
+`freebsd-update: staged patch beyond 14.4-RELEASE-p7` -- which gives the base
+update an ack key of its own, and one that is exactly what changes once *this*
+staged patch is installed and the host reboots onto it, so an old ack cannot
+silently carry over onto whatever patch comes next.
 
 If neither scheduled job is enabled on a given host, both reads still answer,
 just from an ageing database — which is exactly what `checked_at` is for.
@@ -639,6 +640,14 @@ reports the *security-relevant names*, capped at six with a `(+N more)` tail:
 
 Alpine and Tumbleweed name nothing, because neither can say which updates are
 security ones in the first place.
+
+These names are also the key an acknowledgement is stored against — one row per
+package, so acknowledging a months-old `pkg audit` hit on `python312` survives
+the rest of the list changing around it (see *Acknowledging a security state* in
+the README). The cap has a consequence there: the packages past the sixth can
+only be acknowledged as a group, keyed on how many of them there are. A platform
+that reports a count and names nothing is that same group, for the same reason —
+there is nothing else to key on.
 
 The cap is not cosmetic: this string rides on *every* sample, once or twice a
 minute, forever. A host with fifty vulnerable packages would otherwise push

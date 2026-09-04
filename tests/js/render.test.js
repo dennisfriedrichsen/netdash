@@ -45,7 +45,8 @@ function host(o) {
                   disk: { warn: 85, crit: 95 } },
     patches: { status: 'ok', security: 0, other: 0, reboot_required: false,
                checked_at: 1788436000, age_seconds: 200, source: 'apt', detail: null,
-               packages: null, acknowledged: false, acked_at: null },
+               packages: null, entries: [], acked_count: 0, acknowledged: false,
+               acked_at: null },
     eol: { status: 'supported', source: 'endoflife.date', product: 'debian', cycle: '13',
            eol_date: '2030-06-01', days_left: 900, ackable: false, acknowledged: false,
            acked_at: null },
@@ -90,11 +91,26 @@ check('detail_eol_past', function () { ctx.renderDetail('mercury', detail(host({
 check('detail_eol_acked', function () {
   ctx.renderDetail('h', detail(host({ eol: merge(SOON, { acknowledged: true, acked_at: 1788430000 }) })));
 });
+/* One entry of a pending security list, as patch_summary() sends it. */
+function item(name, acked) {
+  return { package: name, unnamed: null, acknowledged: !!acked,
+           acked_at: acked ? 1788430000 : null };
+}
+function SEC(entries, extra) {
+  var p = { status: 'security', security: entries.length, other: 5,
+            reboot_required: false, checked_at: 1788436000, age_seconds: 200,
+            source: 'pkg audit', detail: null,
+            packages: entries.map(function (i) { return i.package; }).join(', '),
+            entries: entries,
+            acked_count: entries.filter(function (i) { return i.acknowledged; }).length,
+            acknowledged: false, acked_at: null };
+  p.acknowledged = p.acked_count === entries.length;
+  for (var k in (extra || {})) p[k] = extra[k];
+  return p;
+}
 check('detail_both_ack_rows', function () {
-  ctx.renderDetail('h', detail(host({ eol: SOON, patches: {
-    status: 'security', security: 3, other: 5, reboot_required: false, checked_at: 1788436000,
-    age_seconds: 200, source: 'pkg audit', detail: null, packages: 'a, b',
-    acknowledged: false, acked_at: null } })));
+  ctx.renderDetail('h', detail(host({ eol: SOON,
+    patches: SEC([item('a'), item('b')]) })));
 });
 check('detail_down', function () { ctx.renderDetail('hassium', detail(host(DOWN))); });
 check('detail_away', function () {
@@ -364,6 +380,40 @@ check('an_appliance_icon_actually_draws_shapes', function () {
       }
     });
   });
+});
+
+/* The ask this feature exists for: python312 is acknowledged on its own, and
+   stays that way while the rest of the list comes and goes. The page has to
+   offer that per package -- one button for the whole state cannot express it. */
+check('every_pending_package_gets_its_own_ack_row', function () {
+  ctx.renderDetail('h', detail(host({ patches: SEC(
+    [item('python312-3.12.14', true), item('giflib-6.1.3'), item('curl-8.9.0')]) })));
+  var t = textOf(ctx.root);
+  ['python312-3.12.14', 'giflib-6.1.3', 'curl-8.9.0'].forEach(function (n) {
+    if (t.indexOf(n) < 0) throw new Error(n + ' is not on the page at all');
+  });
+  if (countClass(ctx.root, 'ackrow') < 4) {
+    throw new Error('wanted a row per package plus the bulk one, got ' +
+                    countClass(ctx.root, 'ackrow'));
+  }
+  if (t.indexOf('un-acknowledge') < 0) {
+    throw new Error('the acknowledged package offers no way back to pending');
+  }
+  /* Two left to review, so the bulk link saves a click and says how many. */
+  if (t.indexOf('acknowledge all 2') < 0) {
+    throw new Error('no "acknowledge all 2" for the two still pending');
+  }
+});
+
+/* The capped tail is a group, and printing the collector's "(+3 more)" at the
+   reader is not the same as telling them what it means. */
+check('the_unnamed_remainder_reads_as_a_group', function () {
+  ctx.renderDetail('h', detail(host({ patches: SEC(
+    [item('a'), { package: '(+3 more)', unnamed: 3, acknowledged: false, acked_at: null }]) })));
+  var t = textOf(ctx.root);
+  if (t.indexOf('3 further packages') < 0) {
+    throw new Error('the remainder is not spelled out: ' + t.slice(0, 200));
+  }
 });
 
 check('down_row_names_the_host', function () {

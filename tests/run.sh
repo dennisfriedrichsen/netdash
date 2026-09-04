@@ -1023,9 +1023,9 @@ PY
 fi
 
 if want patch-ack; then
-  echo "patch-ack (acknowledging silences one exact state, not the host)"
+  echo "patch-ack (acknowledging silences one package, not the whole list)"
   J=$(python3 - "$ROOT" <<'PY'
-import sys,json,time; sys.path.insert(0,f"{sys.argv[1]}/server")
+import sys,json,os,time,sqlite3,tempfile; sys.path.insert(0,f"{sys.argv[1]}/server")
 import app, db
 
 app.CONN = db.connect(":memory:")
@@ -1035,49 +1035,140 @@ app.CFG = {"thresholds":{"cpu":{"warn":80,"crit":95},"mem":{"warn":85,"crit":95}
            "eol":{"enabled":False},"hosts":{}}
 now = time.time()
 HOST = "freebsd15dot1package"
-PKGS = "python312-3.12.14, giflib-6.1.3, py312-setuptools-63.1.0_3"
+PY312, GIF, SETUP = "python312-3.12.14", "giflib-6.1.3", "py312-setuptools-63.1.0_3"
+THREE = ", ".join([PY312, GIF, SETUP])
 
-def patches(sec, pkgs):
-    row = {"host":HOST,"ts":now,"os":"x","cpu_pct":None,"mem_used_bytes":None,
-           "mem_total_bytes":None,"uptime_seconds":1,
-           "patch_security":sec,"patch_other":0,"patch_checked_at":now,
-           "patch_source":"pkg-audit-pkgbase","patch_detail":None,"patch_reboot":False,
-           "patch_packages":pkgs,"collector_version":None,"disks":[]}
-    return app.summarize(row, now)["patches"]
+def sample(sec, pkgs, host=HOST):
+    return {"host":host,"ts":now,"os":"x","cpu_pct":None,"mem_used_bytes":None,
+            "mem_total_bytes":None,"uptime_seconds":1,
+            "patch_security":sec,"patch_other":0,"patch_checked_at":now,
+            "patch_source":"pkg-audit-pkgbase","patch_detail":None,"patch_reboot":False,
+            "patch_packages":pkgs,"collector_version":None,"disks":[]}
 
-before = patches(3, PKGS)
-db.ack_patch(app.CONN, HOST, 3, PKGS, int(now))
-after_ack = patches(3, PKGS)
-# A different fix landing changes the package list -- must not stay silenced
-# under an ack that reviewed a different set of packages.
-fewer_pkgs = patches(2, "python312-3.12.14, giflib-6.1.3")
-# Same three packages shown, but a fourth became vulnerable without changing
-# which names are listed -- the count alone moving must also un-silence it.
-more_of_same = patches(4, PKGS)
+def patches(sec, pkgs, host=HOST):
+    return app.summarize(sample(sec, pkgs, host), now)["patches"]
+
+def acked(p):
+    return sorted(i["package"] for i in p["entries"] if i["acknowledged"])
+
+before = patches(3, THREE)
+db.ack_patch(app.CONN, HOST, [PY312], int(now))
+one = patches(3, THREE)
+# The whole point. python312 carries a pkg audit hit with no upstream fix, and
+# the rest of the list churns around it -- under the old whole-state ack that
+# lapsed python312 too, and it had to be acknowledged again over a decision
+# nothing had changed about.
+churned = patches(3, ", ".join([PY312, GIF, "curl-8.9.0"]))
+db.ack_patch(app.CONN, HOST, [GIF, SETUP], int(now))
+all_acked = patches(3, THREE)
+# A newly vulnerable package still speaks up, and disturbs nothing already
+# reviewed...
+newcomer = patches(4, THREE + ", curl-8.9.0")
+# ...and once it is fixed the host goes quiet again with nothing re-acknowledged.
+fixed_again = patches(3, THREE)
+
+db.unack_patch(app.CONN, HOST, GIF)
+after_one_unack = patches(3, THREE)
 db.unack_patch(app.CONN, HOST)
-after_unack = patches(3, PKGS)
+after_unack = patches(3, THREE)
+
+# The names are capped at six, so anything past that can only be acknowledged
+# as a group -- keyed on how many there are, which is as strong as the old
+# whole-state ack and the only part of this that still is.
+BIG = "bighost"
+big_before = patches(9, "a, b, c, d, e, f (+3 more)", BIG)
+db.ack_patch(app.CONN, BIG, [i["package"] for i in big_before["entries"]], int(now))
+big_acked = patches(9, "a, b, c, d, e, f (+3 more)", BIG)
+big_moved = patches(10, "a, b, c, d, e, f (+4 more)", BIG)
+
+# A FreeBSD PORTEPOCH is part of the package name, not a separator. Splitting
+# on a bare comma broke gimp-2.10.38,2 on a live host into a package and a
+# stray "2", each with its own acknowledge link and neither meaning anything.
+EPOCH = "chromium-151.0.7922.169, python312-3.12.14, gimp-2.10.38,2"
+epoch = patches(3, EPOCH, "freebsd15dot0package")
+
+# An ack for a package that is no longer pending is not silencing anything, it
+# is a landmine: left behind, it would silence that package's *next* advisory
+# months from now on nobody's decision.
+db.ack_patch(app.CONN, HOST, [PY312, GIF], int(now))
+db.insert_sample(app.CONN, {"host":HOST,"ts":now,"os":"x",
+                            "patches":{"security":1,"other":0,"checked_at":now,
+                                       "source":"pkg-audit-pkgbase","packages":PY312}})
+db.prune(app.CONN, 24)
+after_prune = sorted(db.get_patch_acks(app.CONN, HOST))
+
+# Upgrading a live box must not turn every acknowledged host red: the old
+# whole-state rows carry over, split into the packages they were made about.
+path = os.path.join(tempfile.mkdtemp(), "old.db")
+c = sqlite3.connect(path)
+c.execute("""CREATE TABLE patch_acks (host TEXT PRIMARY KEY, security INTEGER NOT NULL,
+                                      packages TEXT NOT NULL, acked_at INTEGER NOT NULL)""")
+c.execute("INSERT INTO patch_acks VALUES (?,?,?,?)", (HOST, 3, THREE, 1000))
+c.commit(); c.close()
+migrated = sorted(db.get_patch_acks(db.connect(path), HOST))
 
 print(json.dumps({
-  "before_status":    before["status"],
-  "before_acked":     before["acknowledged"],
-  "after_ack_status": after_ack["status"],
-  "after_ack_acked":  after_ack["acknowledged"],
-  "fewer_pkgs_acked": fewer_pkgs["acknowledged"],
-  "more_same_acked":  more_of_same["acknowledged"],
-  "after_unack_acked": after_unack["acknowledged"],
+  "before_status":      before["status"],
+  "before_acked":       before["acknowledged"],
+  "one_acked":          acked(one),
+  "one_whole_host":     one["acknowledged"],
+  "one_count":          one["acked_count"],
+  "churned_acked":      acked(churned),
+  "all_acked":          all_acked["acknowledged"],
+  "all_acked_at":       all_acked["acked_at"] == int(now),
+  "newcomer_acked":     newcomer["acknowledged"],
+  "newcomer_kept":      acked(newcomer),
+  "fixed_again_acked":  fixed_again["acknowledged"],
+  "one_unack_whole":    after_one_unack["acknowledged"],
+  "one_unack_kept":     acked(after_one_unack),
+  "after_unack_acked":  acked(after_unack),
+  "big_entries":        [i["package"] for i in big_before["entries"]],
+  "big_unnamed":        [i["unnamed"] for i in big_before["entries"]],
+  "big_acked":          big_acked["acknowledged"],
+  "big_moved_acked":    big_moved["acknowledged"],
+  "epoch_entries":      [i["package"] for i in epoch["entries"]],
+  "after_prune":        after_prune,
+  "migrated":           migrated,
 }))
 PY
 ) || J=''
   check "an unacknowledged security state reads security, not acknowledged" \
         "assert d['before_status']=='security' and d['before_acked'] is False, d" "$J"
-  check "acknowledging the exact current state silences it" \
-        "assert d['after_ack_status']=='security' and d['after_ack_acked'] is True, d" "$J"
-  check "a different package list un-silences it, even with fewer issues" \
-        "assert d['fewer_pkgs_acked'] is False, d" "$J"
-  check "the same package list but a different count also un-silences it" \
-        "assert d['more_same_acked'] is False, d" "$J"
-  check "un-acknowledging reverts to unsilenced even for the acked state" \
-        "assert d['after_unack_acked'] is False, d" "$J"
+  check "acknowledging one package silences that package and nothing else" \
+        "assert d['one_acked']==['python312-3.12.14'] and d['one_count']==1, d" "$J"
+  # One unreviewed package is still a reason to look, however much of the list
+  # has been dealt with.
+  check "and leaves the host itself unsilenced while others are pending" \
+        "assert d['one_whole_host'] is False, d" "$J"
+  # The complaint this replaced the whole-state ack over.
+  check "the rest of the list changing does not disturb that ack" \
+        "assert d['churned_acked']==['python312-3.12.14'], d" "$J"
+  check "acknowledging every pending package silences the host" \
+        "assert d['all_acked'] is True and d['all_acked_at'] is True, d" "$J"
+  check "a newly vulnerable package un-silences the host on its own" \
+        "assert d['newcomer_acked'] is False, d" "$J"
+  check "without costing the acks already made" \
+        "assert d['newcomer_kept']==['giflib-6.1.3','py312-setuptools-63.1.0_3','python312-3.12.14'], d" "$J"
+  check "and when it is fixed the host falls quiet with nothing re-acknowledged" \
+        "assert d['fixed_again_acked'] is True, d" "$J"
+  check "un-acknowledging one package brings back only that one" \
+        "assert d['one_unack_whole'] is False and d['one_unack_kept']==['py312-setuptools-63.1.0_3','python312-3.12.14'], d" "$J"
+  check "un-acknowledging the host clears the lot" \
+        "assert d['after_unack_acked']==[], d" "$J"
+  check "the packages past the collector's cap are one group, counted" \
+        "assert d['big_entries'][-1]=='(+3 more)' and d['big_unnamed'][-1]==3 and d['big_unnamed'][0] is None, d" "$J"
+  check "acknowledging that group silences the host" \
+        "assert d['big_acked'] is True, d" "$J"
+  check "and the group ack lapses as soon as how many there are moves" \
+        "assert d['big_moved_acked'] is False, d" "$J"
+  # Otherwise a package fixed in March comes back vulnerable in July already
+  # silenced, by a decision made about a different advisory.
+  check "pruning drops acks for packages that are no longer pending" \
+        "assert d['after_prune']==['python312-3.12.14'], d" "$J"
+  check "a package name carrying an epoch stays one package" \
+        "assert d['epoch_entries']==['chromium-151.0.7922.169','python312-3.12.14','gimp-2.10.38,2'], d" "$J"
+  check "an old whole-host ack upgrades into the packages it was made about" \
+        "assert d['migrated']==['giflib-6.1.3','py312-setuptools-63.1.0_3','python312-3.12.14'], d" "$J"
 fi
 
 if want reachability; then
@@ -1519,6 +1610,12 @@ if want render; then
     # Both ack rows on one page is what tripped the shadowing.
     check "and with a patch ack and an eol ack on the same page" \
           "assert d['detail_both_ack_rows'] is None, d['detail_both_ack_rows']" "$J"
+    # What the whole-state ack could not express: python312 acknowledged on its
+    # own, and still acknowledged when the rest of the list has moved on.
+    check "every pending package gets its own acknowledge link" \
+          "assert d['every_pending_package_gets_its_own_ack_row'] is None, d['every_pending_package_gets_its_own_ack_row']" "$J"
+    check "and the packages past the cap read as a group, not as \"(+3 more)\"" \
+          "assert d['the_unnamed_remainder_reads_as_a_group'] is None, d['the_unnamed_remainder_reads_as_a_group']" "$J"
     check "and for a host that is down" \
           "assert d['detail_down'] is None, d['detail_down']" "$J"
     check "and for one that is away" \

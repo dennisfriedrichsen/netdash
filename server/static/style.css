@@ -223,6 +223,9 @@ button.link:hover { color: var(--text-1); }
 }
 .ackrow button.link:hover { color: var(--text-1); }
 .ackrow button.link:disabled { color: var(--muted); text-decoration: none; cursor: default; }
+/* The package an ack row is about, in the panel's own text colour: the row is
+   otherwise muted .sub, and the name is the part you are scanning the list for. */
+.ackrow .pkg { color: var(--text-1); }
 
 /* ---------- patch badge ----------
    Its own row below the meters, divided off, because it answers a different
