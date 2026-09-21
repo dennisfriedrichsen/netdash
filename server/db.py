@@ -7,6 +7,37 @@ import time
 import os
 
 SCHEMA = """
+-- The fleet itself: one row per host netdash has heard from, and the only
+-- answer to the question "which machines are we watching".
+--
+-- Membership used to be derived from `samples`, which quietly made it expire
+-- with the data. A host that stopped reporting held its place for
+-- retention_hours, and then the pruner deleted its last sample and the host
+-- left the dashboard altogether -- silently, and precisely for the hosts that
+-- had earned a red card. ubuntu22dot04server locked up, went red for a day,
+-- and by the next morning the wall panel showed a complete, all-green fleet
+-- with a machine missing from it. Nothing looked wrong, which is the worst
+-- thing an outage can manage to look like.
+--
+-- So this is derived from nothing and expires on no timer. Samples age out
+-- underneath it and the row stays, which is what lets a host with no data
+-- left still be listed, still be probed, and still read DOWN. A host leaves
+-- only when a person says so -- forget_host, from the button on its detail
+-- page -- because "this machine is decommissioned" is a fact no amount of
+-- silence can establish.
+--
+-- os, source and peer_addr are copies of the last sample's, kept for the same
+-- reason the row is: the card still needs an icon and the prober still needs
+-- an address after the sample they came from has gone.
+CREATE TABLE IF NOT EXISTS hosts (
+    host       TEXT    PRIMARY KEY,
+    first_seen INTEGER NOT NULL,
+    last_seen  INTEGER NOT NULL,
+    os         TEXT,
+    source     TEXT    NOT NULL DEFAULT 'push',
+    peer_addr  TEXT
+);
+
 CREATE TABLE IF NOT EXISTS samples (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     host            TEXT    NOT NULL,
@@ -225,6 +256,38 @@ def _migrate(conn):
                 conn.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, name, decl))
 
 
+def _migrate_hosts(conn):
+    """Seed the host register from the samples a live database already holds.
+
+    Every host in the rolling window is a host we are watching, so the first
+    connect after this ships has to say so -- otherwise an upgrade would show
+    an empty dashboard until every collector had pushed again.
+
+    Hosts whose samples were already pruned cannot be recovered here. Nothing
+    is left that says they existed except their events, and resurrecting a
+    machine that was deliberately decommissioned a year ago is worse than the
+    gap: those come back on their next push, or by hand with register_host.
+    """
+    have = {r["host"] for r in conn.execute("SELECT host FROM hosts")}
+    rows = conn.execute(
+        """SELECT s.host, s.ts, s.os, s.source, s.peer_addr,
+                  (SELECT MIN(ts) FROM samples WHERE host = s.host) AS first_seen
+             FROM samples s
+             JOIN (SELECT host, MAX(ts) AS mts FROM samples GROUP BY host) m
+               ON s.host = m.host AND s.ts = m.mts
+         GROUP BY s.host"""
+    ).fetchall()
+    for r in rows:
+        if r["host"] in have:
+            continue
+        conn.execute(
+            """INSERT INTO hosts (host, first_seen, last_seen, os, source, peer_addr)
+               VALUES (?,?,?,?,?,?)""",
+            (r["host"], r["first_seen"], r["ts"], r["os"],
+             r["source"] or "push", r["peer_addr"]),
+        )
+
+
 # The tail the collectors append once the name list is capped: "openssl, zlib1g
 # (+3 more)". See "Naming the packages" in PATCH-CHECKS.md for why it is capped.
 # Not anchored to the end of the string: FreeBSD's base-system branch appends
@@ -330,8 +393,32 @@ def connect(path):
     conn.executescript(SCHEMA)
     _migrate(conn)
     _migrate_patch_acks(conn)
+    _migrate_hosts(conn)
     conn.commit()
     return conn
+
+
+def register_host(conn, host, ts, os_string=None, source="push", peer=None):
+    """Note that this host exists and was heard from at `ts`.
+
+    Called on every ingest, and callable by hand to put back a host that was
+    lost before the register existed. Never overwrites what it was not told:
+    a sample carrying no OS string or arriving without a peer address must not
+    erase the ones the prober and the card have been using.
+
+    Caller holds _WRITE and commits -- this is part of storing the sample, not
+    a write of its own.
+    """
+    conn.execute(
+        """INSERT INTO hosts (host, first_seen, last_seen, os, source, peer_addr)
+             VALUES (?,?,?,?,?,?)
+           ON CONFLICT(host) DO UPDATE SET
+             last_seen = MAX(hosts.last_seen, excluded.last_seen),
+             os        = COALESCE(excluded.os, hosts.os),
+             source    = excluded.source,
+             peer_addr = COALESCE(excluded.peer_addr, hosts.peer_addr)""",
+        (host, int(ts), int(ts), os_string, source, peer),
+    )
 
 
 def insert_sample(conn, payload, source="push", peer=None):
@@ -375,6 +462,7 @@ def insert_sample(conn, payload, source="push", peer=None):
             ),
         )
         sid = cur.lastrowid
+        register_host(conn, payload["host"], ts, payload.get("os"), source, peer)
         for d in payload.get("disks") or []:
             conn.execute(
                 "INSERT INTO disks (sample_id, mount, used_bytes, total_bytes) VALUES (?,?,?,?)",
@@ -414,11 +502,15 @@ def prune(conn, retention_hours, rollup_days=None, event_days=None):
             (cutoff,),
         )
         conn.execute("DELETE FROM samples WHERE ts < ?", (cutoff,))
-        # An ack for a host that has since aged out of the rolling window entirely
-        # is not "still silencing something", it is a leftover -- and if the name
-        # is ever reused, one that would misapply to whatever that new host reports.
+        # An ack for a host netdash no longer watches is not "still silencing
+        # something", it is a leftover -- and if the name is ever reused, one
+        # that would misapply to whatever that new host reports. Keyed on the
+        # register rather than on the samples: a host that is merely down has
+        # not stopped being ours, and dropping its acks while it was offline
+        # would have turned it red on the way back up over a decision somebody
+        # had already made. forget_host is what clears these now.
         conn.execute(
-            "DELETE FROM patch_acks WHERE host NOT IN (SELECT DISTINCT host FROM samples)"
+            "DELETE FROM patch_acks WHERE host NOT IN (SELECT host FROM hosts)"
         )
         # And an ack for a package that is no longer pending is not silencing
         # anything either -- it is a landmine. Left in place, a python312 fixed
@@ -598,7 +690,50 @@ def last_states(conn):
     return {r["host"]: r["to_state"] for r in rows}
 
 
+# Cached because latest_per_host runs in four background loops and the answer
+# cannot change while the process is up -- the schema is settled by connect().
+_SAMPLE_COLS = None
+
+
+def _sample_columns(conn):
+    global _SAMPLE_COLS
+    if _SAMPLE_COLS is None:
+        _SAMPLE_COLS = [r["name"] for r in conn.execute("PRAGMA table_info(samples)")]
+    return _SAMPLE_COLS
+
+
+def _no_sample(conn, h):
+    """A row for a host whose samples have all aged out.
+
+    Every metric null rather than absent, so nothing downstream has to know
+    this row is different: a null reads as "unknown" through _level(), which
+    is exactly what we know about a host we have no data for. `ts` is the last
+    time it reported, which makes it enormously stale, which is what turns it
+    red once the probe or the clock agrees.
+    """
+    d = dict.fromkeys(_sample_columns(conn))
+    d.update({
+        "host": h["host"],
+        "ts": h["last_seen"],
+        "os": h["os"],
+        "source": h["source"] or "push",
+        "peer_addr": h["peer_addr"],
+        "disks": [],
+        "fleet": [],
+        "no_samples": True,
+    })
+    return d
+
+
 def latest_per_host(conn):
+    """Every known host, each with its most recent sample -- or with none.
+
+    The host list comes from `hosts`; the samples are joined onto it. That
+    order is the fix for losing machines: a host down longer than the
+    retention window has no sample to be the latest one, and a fleet built out
+    of `samples` therefore stopped including it. Now it is still in the list,
+    with no readings and a very old timestamp, and summarize() does the rest.
+    """
     rows = conn.execute(
         """SELECT s.* FROM samples s
              JOIN (SELECT host, MAX(ts) AS mts FROM samples GROUP BY host) m
@@ -606,9 +741,10 @@ def latest_per_host(conn):
            GROUP BY s.host
            ORDER BY s.host"""
     ).fetchall()
-    out = []
+    latest = {}
     for r in rows:
         d = dict(r)
+        d["no_samples"] = False
         d["disks"] = [
             dict(x)
             for x in conn.execute(
@@ -628,8 +764,52 @@ def latest_per_host(conn):
                 (r["id"],),
             ).fetchall()
         ]
-        out.append(d)
+        latest[d["host"]] = d
+
+    out = []
+    seen = set()
+    for h in conn.execute("SELECT * FROM hosts ORDER BY host"):
+        seen.add(h["host"])
+        out.append(latest.get(h["host"]) or _no_sample(conn, h))
+    # A sample whose host is somehow not registered still counts as a host.
+    # Belt and braces -- _migrate_hosts and insert_sample between them should
+    # make this impossible -- but dropping a host that is actively reporting
+    # is the one failure this whole table exists to prevent.
+    for host in sorted(set(latest) - seen):
+        out.append(latest[host])
     return out
+
+
+def forget_host(conn, host):
+    """Remove a host from the fleet and everything stored about it.
+
+    The counterpart to a register that never expires: something has to be able
+    to say a machine is gone, and now that silence no longer does it, this is
+    it. An act, deliberately, rather than a timer.
+
+    Its events are the exception, and are kept. "ubuntu22dot04server went down
+    on the 4th" stays true after the machine is decommissioned, and the event
+    log is the one part of netdash that is allowed to remember things that no
+    longer exist.
+
+    Returns False if the host was not known, so the API can answer 404 rather
+    than pretending to have done something.
+    """
+    with _WRITE:
+        known = conn.execute("SELECT 1 FROM hosts WHERE host=?", (host,)).fetchone()
+        # Explicit rather than trusting ON DELETE CASCADE: it only fires with
+        # foreign_keys=ON, which is a per-connection pragma, and orphaned disk
+        # rows would be re-attached to a future sample that happened to reuse
+        # the id.
+        for t in ("disks", "fleet"):
+            conn.execute(
+                "DELETE FROM %s WHERE sample_id IN "
+                "(SELECT id FROM samples WHERE host=?)" % t, (host,))
+        for t in ("samples", "rollups", "disk_rollups", "patch_acks",
+                  "eol_acks", "hosts"):
+            conn.execute("DELETE FROM %s WHERE host=?" % t, (host,))
+        conn.commit()
+    return bool(known)
 
 
 def history(conn, host, since_seconds):
@@ -643,7 +823,7 @@ def history(conn, host, since_seconds):
 
 
 def known_hosts(conn):
-    return [r["host"] for r in conn.execute("SELECT DISTINCT host FROM samples ORDER BY host")]
+    return [r["host"] for r in conn.execute("SELECT host FROM hosts ORDER BY host")]
 
 
 def get_patch_acks(conn, host):

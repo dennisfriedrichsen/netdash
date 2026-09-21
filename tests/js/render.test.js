@@ -422,4 +422,69 @@ check('down_row_names_the_host', function () {
   }
 });
 
+/* A host that has been down longer than the retention window: still in the
+   fleet, with nothing left to draw. The dashboard could not previously be in
+   this state at all -- such a host left the list instead -- so every panel
+   here is reading a null it used to be guaranteed a number for. */
+var GONE = { host: 'ubuntu22dot04server', os: 'Ubuntu 22.04.5 LTS',
+  status: 'down', stale: true, no_samples: true, age_seconds: 1468800,
+  down_reason: 'unreachable', uptime_seconds: null, collector_version: null,
+  virt: null, virt_source: null, is_vm: null,
+  reachability: { state: 'down', via: 'icmp', failures: 2, detail: 'no reply in 2s',
+                  address: '10.0.0.42', address_source: 'ingest', checked_at: 1788436200 },
+  cpu: { pct: null, status: 'unknown' },
+  mem: { pct: null, used_bytes: null, total_bytes: null, status: 'unknown' },
+  disk: { worst_pct: null, status: 'unknown', mounts: [] },
+  patches: { status: 'unknown', security: null, other: null, reboot_required: null,
+             checked_at: null, age_seconds: null, source: null, detail: null,
+             packages: null, entries: [], acked_count: 0, acknowledged: false,
+             acked_at: null },
+  eol: { status: 'unknown', source: null, product: null, cycle: null, eol_date: null,
+         days_left: null, ackable: false, acknowledged: false, acked_at: null } };
+
+check('detail_no_samples', function () {
+  ctx.renderDetail('ubuntu22dot04server',
+                   { now: 1788436210, thresholds: host().thresholds, current: host(GONE),
+                     history: [], minutes: 1440, resolution: 'hourly', retention_hours: 24,
+                     events: [], disk_history: {}, disk_resolution: 'daily' });
+});
+check('overview_no_samples', function () {
+  overview([host({ host: 'a' }), host(GONE)], '');
+  overview([host(GONE, 'bare')], 'bare');
+});
+
+/* An empty page under a red banner reads as a page that failed to load. It
+   has to say that the emptiness IS the information. */
+check('a_lost_host_says_its_readings_are_gone', function () {
+  ctx.renderDetail('ubuntu22dot04server',
+                   { now: 1788436210, thresholds: host().thresholds, current: host(GONE),
+                     history: [], minutes: 1440, resolution: 'hourly', retention_hours: 24,
+                     events: [], disk_history: {}, disk_resolution: 'daily' });
+  var t = textOf(ctx.root);
+  if (t.indexOf('No readings left') < 0) {
+    throw new Error('nothing explains the empty panels: ' + t.slice(0, 200));
+  }
+  if (t.indexOf('17d ago') < 0) {
+    throw new Error('seventeen days is not readable as hours: ' + t.slice(0, 200));
+  }
+});
+
+/* Nothing removes a host on its own any more, so the page has to offer it --
+   and only where the offer is honest. */
+check('a_silent_host_can_be_forgotten', function () {
+  ctx.renderDetail('ubuntu22dot04server',
+                   { now: 1788436210, thresholds: host().thresholds, current: host(GONE),
+                     history: [], minutes: 1440, resolution: 'hourly', retention_hours: 24,
+                     events: [], disk_history: {}, disk_resolution: 'daily' });
+  if (textOf(ctx.root).indexOf('Forget this host') < 0) {
+    throw new Error('a host with no data left offers no way to remove it');
+  }
+});
+check('a_reporting_host_is_not_offered_forgetting', function () {
+  ctx.renderDetail('h', detail(host()));
+  if (textOf(ctx.root).indexOf('Forget this host') >= 0) {
+    throw new Error('offered to forget a host that would re-register on its next push');
+  }
+});
+
 console.log(JSON.stringify(out));

@@ -1247,6 +1247,128 @@ PYEOF
         "assert d['detail_exposed']=='no reply in 2s', d" "$J"
 fi
 
+if want lost-host; then
+  echo "lost-host (a host that goes down must not go missing)"
+  J=$(python3 - "$ROOT" <<'PYEOF'
+import json, os, sys, tempfile, time
+root = sys.argv[1]
+sys.path.insert(0, os.path.join(root, "server"))
+import db, app
+
+conn = db.connect(os.path.join(tempfile.mkdtemp(), "t.db"))
+now = int(time.time())
+
+# The exact shape of the bug: one host reporting normally, one that stopped
+# seventeen days ago. ubuntu22dot04server locked up on a Friday, was red for a
+# day, and by Saturday the pruner had deleted its last sample -- which deleted
+# the host too, because the fleet list was built out of the samples.
+for q in range(40):
+    db.insert_sample(conn, {"host": "alive", "ts": now - q * 60, "cpu_pct": 4.0,
+                            "mem_used_bytes": 1, "mem_total_bytes": 2,
+                            "disks": [{"mount": "/", "used_bytes": 1,
+                                       "total_bytes": 2}]}, peer="10.0.0.7")
+db.insert_sample(conn, {"host": "ubuntu22dot04server", "ts": now - 17 * 86400,
+                        "os": "Ubuntu 22.04.5 LTS", "cpu_pct": 12.0,
+                        "mem_used_bytes": 1, "mem_total_bytes": 2,
+                        "patches": {"security": 1, "other": 0, "source": "apt",
+                                    "checked_at": now - 17 * 86400,
+                                    "packages": "openssl"},
+                        "disks": [{"mount": "/", "used_bytes": 1,
+                                   "total_bytes": 2}]}, peer="10.0.0.42")
+db.ack_patch(conn, "ubuntu22dot04server", ["openssl"], now - 17 * 86400)
+db.record_event(conn, "ubuntu22dot04server", "status", "ok", "down", "no icmp reply")
+
+db.prune(conn, 24)
+
+app.CONN = conn
+app.CFG = {"thresholds": {"cpu": {"warn": 80, "crit": 95}, "mem": {"warn": 85, "crit": 95},
+                          "disk": {"warn": 85, "crit": 95}},
+           "stale_after_seconds": 180, "patch_stale_hours": 48,
+           "eol": {"enabled": False},
+           "reachability": {"enabled": True, "checks": ["icmp"],
+                            "failures_before_down": 2, "down_after_seconds": 900},
+           "hosts": {}}
+
+rows = {s["host"]: s for s in db.latest_per_host(conn)}
+lost = rows.get("ubuntu22dot04server")
+
+app.REACH.clear()
+by_clock = app.summarize(lost, now) if lost else None
+app.REACH["ubuntu22dot04server"] = {
+    "state": "down", "probe": "down", "failures": 2, "detail": "no reply in 2s",
+    "address": "10.0.0.42", "address_source": "ingest", "via": "icmp",
+    "checked_at": now}
+view = app.summarize(lost, now) if lost else None
+acked_while_down = sorted(db.get_patch_acks(conn, "ubuntu22dot04server"))
+
+forgot = db.forget_host(conn, "ubuntu22dot04server")
+again = db.forget_host(conn, "ubuntu22dot04server")
+db.prune(conn, 24)
+
+print(json.dumps({
+  "hosts": sorted(rows),
+  "status": view and view["status"],
+  "reason": view and view["down_reason"],
+  "no_samples": view and view["no_samples"],
+  "clock_status": by_clock and by_clock["status"],
+  "clock_reason": by_clock and by_clock["down_reason"],
+  "cpu": view and view["cpu"]["pct"],
+  "cpu_status": view and view["cpu"]["status"],
+  "mounts": view and len(view["disk"]["mounts"]),
+  "os": view and view["os"],
+  "age_days": view and view["age_seconds"] / 86400.0,
+  "peer": lost and lost["peer_addr"],
+  "acked_while_down": acked_while_down,
+  "alive": rows["alive"]["cpu_pct"] if "alive" in rows else None,
+  "forgot": forgot,
+  "again": again,
+  "after": [s["host"] for s in db.latest_per_host(conn)],
+  "after_known": db.known_hosts(conn),
+  "acks_after": [r[0] for r in conn.execute("SELECT host FROM patch_acks")],
+  "samples_after": conn.execute(
+      "SELECT COUNT(*) FROM samples WHERE host='ubuntu22dot04server'").fetchone()[0],
+  "events_after": conn.execute(
+      "SELECT COUNT(*) FROM events WHERE host='ubuntu22dot04server'").fetchone()[0],
+}))
+PYEOF
+) || J=''
+  # The bug itself. A dashboard that drops a host once it has been down for a
+  # day is worse than one that never watched it: it shows a complete fleet,
+  # all green, with a machine quietly missing from it.
+  check "a host whose samples have all aged out is still in the fleet" \
+        "assert 'ubuntu22dot04server' in d['hosts'], d['hosts']" "$J"
+  check "and reads as DOWN, with the reason the probe gave" \
+        "assert (d['status'], d['reason'])==('down','unreachable'), d" "$J"
+  # The clock is the backstop here exactly as it is for a merely stale host: a
+  # machine absent for seventeen days is down whether or not anything confirmed
+  # it, and must not sit amber for ever waiting to be told.
+  check "and is down on the clock alone when nothing could probe it" \
+        "assert (d['clock_status'], d['clock_reason'])==('down','absent'), d" "$J"
+  # Null, not zero. "We have no readings" and "it reported 0%" are different
+  # claims and a card that draws the second is lying about the first.
+  check "its readings are gone and read as unknown, never as zero" \
+        "assert d['cpu'] is None and d['cpu_status']=='unknown' and d['mounts']==0 and d['no_samples'] is True, d" "$J"
+  # Everything needed to keep watching it outlives the data: the icon on the
+  # card, the age under it, and the address the prober aims at.
+  check "what it last told us about itself outlives its samples" \
+        "assert d['os']=='Ubuntu 22.04.5 LTS' and d['peer']=='10.0.0.42' and 16.9 < d['age_days'] < 17.1, d" "$J"
+  # An ack is a decision somebody made about a package. Being offline is not a
+  # reason to throw it away and turn the host red again on its way back up.
+  check "an acknowledgement survives the host's data ageing out" \
+        "assert d['acked_while_down']==['openssl'], d" "$J"
+  check "a host that is reporting normally is untouched by any of it" \
+        "assert d['alive']==4.0, d" "$J"
+  # Nothing expires a host any more, so something has to end one deliberately.
+  check "forgetting a host is what removes it, and it stays removed" \
+        "assert d['forgot'] is True and d['again'] is False and d['after']==['alive'] and d['after_known']==['alive'], d" "$J"
+  check "and takes its samples and acknowledgements with it" \
+        "assert d['samples_after']==0 and d['acks_after']==[], d" "$J"
+  # The one thing a forgotten host leaves behind. "It went down on the 4th"
+  # stays true after the machine itself is gone.
+  check "but not the record that it happened" \
+        "assert d['events_after']==1, d" "$J"
+fi
+
 if want reach-probe; then
   echo "reach-probe (a probe that cannot run is never evidence of down)"
   J=$(python3 - "$ROOT" <<'PYEOF'
@@ -1675,6 +1797,21 @@ if want render; then
           "assert d['appliances_get_their_own_icons'] is None, d['appliances_get_their_own_icons']" "$J"
     check "and those icons actually draw shapes with a colour" \
           "assert d['an_appliance_icon_actually_draws_shapes'] is None, d['an_appliance_icon_actually_draws_shapes']" "$J"
+    # A host that has been down for longer than the retention window. Every
+    # panel on the page is reading a null it used to be guaranteed a number
+    # for, because until now such a host simply left the dashboard.
+    check "the detail view renders for a host with no readings left" \
+          "assert d['detail_no_samples'] is None, d['detail_no_samples']" "$J"
+    check "and both overviews render it too" \
+          "assert d['overview_no_samples'] is None, d['overview_no_samples']" "$J"
+    # An empty page under a red banner reads as a page that failed to load.
+    check "the empty panels say the readings are gone, not nothing at all" \
+          "assert d['a_lost_host_says_its_readings_are_gone'] is None, d['a_lost_host_says_its_readings_are_gone']" "$J"
+    # Nothing takes a host off the dashboard on its own any more.
+    check "a silent host offers a way to be forgotten" \
+          "assert d['a_silent_host_can_be_forgotten'] is None, d['a_silent_host_can_be_forgotten']" "$J"
+    check "and a reporting one does not, since it would come straight back" \
+          "assert d['a_reporting_host_is_not_offered_forgetting'] is None, d['a_reporting_host_is_not_offered_forgetting']" "$J"
     check "a down row still names its host" \
           "assert d['down_row_names_the_host'] is None, d['down_row_names_the_host']" "$J"
   fi

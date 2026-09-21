@@ -196,6 +196,48 @@ unprivileged ICMP sockets (`net.ipv4.ping_group_range`). Where it does not, the
 systemctl edit netdash    # [Service] / AmbientCapabilities=CAP_NET_RAW
 ```
 
+### A host never leaves on its own
+
+A machine that is down stays on the dashboard, red, for as long as it is down.
+That sounds obvious and it was not: the fleet list used to be *derived* from the
+samples, so it expired with them. A host would go **DOWN**, sit red for
+`retention_hours`, and then the pruner would delete its last sample — and with
+it the only evidence the host existed. ubuntu22dot04server locked up on a
+Friday and by Saturday morning the wall panel showed a complete, all-green
+fleet with a machine missing from it. Nothing looked wrong, which is the worst
+thing an outage can manage to look like.
+
+Membership is now its own fact, in its own table, and it expires on no timer:
+
+- **the register** (`hosts`) — one row per host netdash has heard from, with
+  its last OS string, source and push address. Written on every ingest.
+- **the samples** — what it reported, kept for `retention_hours`.
+
+Samples age out underneath the register and the row stays. A host with no data
+left is still listed, still probed, and still reads **DOWN**; its card carries
+`no readings left` and every metric reads `–` rather than `0%`, because "we
+have no readings" and "it reported zero" are different claims. Its
+acknowledgements survive too — being offline is not a reason to discard a
+decision somebody made about a package and turn the host red on its way back
+up.
+
+The one thing that removes a host is a person saying so: **Forget this host**,
+at the foot of its detail page, offered only while a host is silent — one that
+is still pushing would re-register itself on its next sample, so the button
+would be a lie. Forgetting drops its samples, rollups and acknowledgements. Its
+events are kept: "it went down on the 4th" stays true after the machine is
+decommissioned, and the event log is the one part of netdash allowed to
+remember things that no longer exist.
+
+To put back a host that was lost before the register existed, give it a row and
+its last-seen time; it reappears as **DOWN** and is probed from the next sweep:
+
+```sh
+sudo -u netdash python3 -c "import sys, time; sys.path.insert(0, '/opt/netdash/server'); \
+  import db; c = db.connect('/var/lib/netdash/netdash.db'); \
+  db.register_host(c, 'ubuntu22dot04server', int(time.time()) - 86400, 'Ubuntu 22.04'); c.commit()"
+```
+
 ### API
 
 | route | purpose |
@@ -206,6 +248,7 @@ systemctl edit netdash    # [Service] / AmbientCapabilities=CAP_NET_RAW
 | `POST /api/host/<name>/patches/ack?package=<name>` | acknowledge one pending package; without `package`, every one pending now |
 | `POST /api/host/<name>/patches/unack?package=<name>` | back to pending; without `package`, the whole host |
 | `POST /api/host/<name>/eol/ack`, `/eol/unack` | the same for an end-of-life warning, which is one per host |
+| `POST /api/host/<name>/forget` | remove a host from the fleet, with its samples, history and acknowledgements; its events are kept |
 | `GET /api/health` | liveness |
 
 Payload shape:

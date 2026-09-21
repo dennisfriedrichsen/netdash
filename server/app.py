@@ -35,6 +35,7 @@ CONN = None
 # /api/host/<name>/ack keeps meaning patches, so links and muscle memory from
 # before end-of-life became acknowledgeable still work.
 _ACK_PATH = re.compile(r"^/api/host/([^/]+)/(?:(patches|eol)/)?(ack|unack)$")
+_FORGET_PATH = re.compile(r"^/api/host/([^/]+)/forget$")
 
 
 # Defaults for keys added after the first release. deploy.sh never overwrites an
@@ -506,6 +507,11 @@ def summarize(sample, now=None):
         "ts": sample["ts"],
         "age_seconds": int(age),
         "stale": stale,
+        # Every reading on this card is null because the samples behind them
+        # have aged out, not because the host reported nulls. The difference
+        # matters on the page: one is "we do not know", the other is "it could
+        # not tell us", and only the first means the numbers are simply gone.
+        "no_samples": bool(sample.get("no_samples")),
         "expect_up": expect_up,
         # None when the host is up or merely stale; else why it reads as down.
         "down_reason": down_reason,
@@ -610,6 +616,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._ack(m.group(1), m.group(2) or "patches",
                              m.group(3) == "ack", pkg)
 
+        m = _FORGET_PATH.match(path)
+        if m:
+            return self._forget(m.group(1))
+
         if path != "/api/ingest":
             return self._json(404, {"error": "not found"})
 
@@ -633,6 +643,27 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return self._fail(500, "ingest %s" % payload["host"], e)
         return self._json(200, {"ok": True, "host": payload["host"]})
+
+    def _forget(self, host):
+        """Drop a host from the fleet. The only way one ever leaves.
+
+        Needed because nothing removes a host automatically any more: the
+        register outlives the samples on purpose, so a decommissioned machine
+        would otherwise sit red on the wall for ever. It is not a way to
+        silence an outage -- a host that is still pushing re-registers itself
+        on its very next sample, within a minute -- and the event log keeps
+        the record either way.
+        """
+        try:
+            if not db.forget_host(CONN, host):
+                return self._json(404, {"error": "unknown host"})
+            db.record_event(CONN, host, "host", None, "forgotten",
+                            "removed from the dashboard")
+        except Exception as e:
+            return self._fail(500, "forget %s" % host, e)
+        with REACH_LOCK:
+            REACH.pop(host, None)
+        return self._json(200, {"ok": True, "host": host})
 
     # No auth beyond what the rest of the dashboard has: this is a
     # click-a-button-on-the-page action, not a collector credential, and every
@@ -954,7 +985,8 @@ def reach_prober():
                     for host, sample in targets:
                         pool.submit(_probe_one, host, sample, cfg, now)
 
-            # Hosts pruned out of the rolling window leave stale verdicts behind.
+            # A forgotten host leaves a stale verdict behind. Nothing else
+            # removes hosts now, so this is the only way an entry goes away.
             live = {s["host"] for s in db.latest_per_host(CONN)}
             with REACH_LOCK:
                 for gone in set(REACH) - live:

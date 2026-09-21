@@ -351,3 +351,19 @@ button.link:hover { color: var(--text-1); }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
+/* ---------- forget ----------
+   Deliberately the quietest thing on the page and the last thing on it: it is
+   the one control here that destroys data, and it sits below the panels so it
+   is never next to anything you click while reading. Muted until hovered,
+   then red -- the colour arrives with the intent, not before it. */
+.forget {
+  padding: 0 22px 30px; margin-top: -18px;
+  font-size: 12.5px; color: var(--muted);
+}
+.forget button.link {
+  background: none; border: none; padding: 0; margin-right: 4px;
+  font: inherit; color: var(--muted); text-decoration: underline; cursor: pointer;
+}
+.forget button.link:hover { color: var(--st-crit); }
+.forget button.link:disabled { color: var(--muted); text-decoration: none; cursor: default; }
+

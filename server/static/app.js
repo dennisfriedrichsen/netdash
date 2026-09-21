@@ -284,7 +284,11 @@ function fmtAge(s) {
   if (s === null || s === undefined) return '';
   if (s < 90) return s + 's ago';
   if (s < 5400) return Math.round(s / 60) + 'm ago';
-  return Math.round(s / 3600) + 'h ago';
+  /* Days past two of them. A host that has gone down no longer leaves the
+     dashboard when its samples age out, so these numbers now run to weeks,
+     and "408h ago" is a number you have to stop and divide. */
+  if (s < 172800) return Math.round(s / 3600) + 'h ago';
+  return Math.round(s / 86400) + 'd ago';
 }
 /* A length of time, not a moment in the past -- "silent for 3h", where
    fmtAge's trailing " ago" would read as "silent for 3h ago". */
@@ -292,7 +296,8 @@ function fmtDur(s) {
   if (s === null || s === undefined) return '';
   if (s < 90) return s + 's';
   if (s < 5400) return Math.round(s / 60) + 'm';
-  return Math.round(s / 3600) + 'h';
+  if (s < 172800) return Math.round(s / 3600) + 'h';
+  return Math.round(s / 86400) + 'd';
 }
 function fmtUptime(s) {
   if (!s) return '';
@@ -661,7 +666,10 @@ function renderOverview(data, tab) {
     var sub = el('div', 'sub', (h.stale ? 'last seen ' : 'updated ') + fmtAge(h.age_seconds) +
       // Any source but 'push' is an appliance this server polled, rather than
       // a host that installed a collector and reported in.
-      (h.source && h.source !== 'push' ? ' · via API' : ''));
+      (h.source && h.source !== 'push' ? ' · via API' : '') +
+      // Down for longer than the retention window: the meters above are empty
+      // because the data is gone, not because the host reported zeroes.
+      (h.no_samples ? ' · no readings left' : ''));
     if (why) {
       var wl = el('div', 'sub why', why);
       wl.style.color = h.status === 'down' ? s.css : 'var(--muted)';
@@ -874,13 +882,65 @@ function renderDetailWhy(c) {
   b.style.setProperty('--st', s.css);
   if (c.stale) {
     var r = c.reachability || {};
-    b.appendChild(el('div', 'why-sub',
-      'Readings below are from ' + fmtAge(c.age_seconds) + ' ago' +
-      (r.checked_at ? '. Last probe ' + fmtAge(Math.max(0, (c.ts + c.age_seconds) - r.checked_at)) +
+    /* Two different sentences, because "these numbers are old" and "there are
+       no numbers" send you to look at different things. A host down for longer
+       than the retention window keeps its place here with nothing left to
+       show, and that empty page is the register doing its job -- not a panel
+       that failed to load. */
+    var probe = r.checked_at
+      ? ' Last probe ' + fmtAge(Math.max(0, (c.ts + c.age_seconds) - r.checked_at)) +
         ' ago via ' + (r.via || '?') +
-        (r.address_source ? ', address from ' + r.address_source : '') : '') + '.'));
+        (r.address_source ? ', address from ' + r.address_source : '') + '.'
+      : '';
+    b.appendChild(el('div', 'why-sub',
+      (c.no_samples
+        ? 'No readings left: everything this host reported has aged out. It ' +
+          'last reported ' + fmtAge(c.age_seconds) + '.'
+        : 'Readings below are from ' + fmtAge(c.age_seconds) + '.') + probe));
   }
   return b;
+}
+
+/* Removing a host from the dashboard -- the counterpart to a fleet list that
+   no longer forgets anyone on its own.
+
+   Offered only while a host is silent. One that is still reporting would
+   re-register itself on its next push, within the minute, so the button would
+   be a lie; and "is this machine still ours?" is a question only ever asked
+   about a card that has gone quiet. */
+function forgetRow(host, c) {
+  if (!c.stale) return null;
+  var row = el('div', 'forget');
+  var b = el('button', 'link', 'Forget this host');
+  b.type = 'button';
+  b.title = 'Remove ' + host + ' from netdash, with its samples, history and ' +
+            'acknowledgements. The event log keeps what happened.';
+  b.onclick = function () {
+    if (!window.confirm('Forget ' + host + '?\n\nIt leaves the dashboard along ' +
+        'with its samples, history and acknowledgements. What happened to it ' +
+        'stays in the event log, and if it ever reports again it comes back.')) {
+      return;
+    }
+    b.disabled = true;
+    fetch('/api/host/' + encodeURIComponent(host) + '/forget', { method: 'POST' })
+      .then(function (res) {
+        if (!res.ok) {
+          return res.json().then(function (body) {
+            throw new Error(body.error || res.status);
+          });
+        }
+        window.location.hash = '#/';
+      })
+      .catch(function (e) {
+        b.disabled = false;
+        alert('Could not forget ' + host + ': ' + e.message);
+      });
+  };
+  row.appendChild(b);
+  row.appendChild(el('span', null, c.no_samples
+    ? ' — silent for ' + fmtDur(c.age_seconds) + ', and nothing it reported is left'
+    : ' — silent for ' + fmtDur(c.age_seconds)));
+  return row;
 }
 
 function renderDetail(host, data, range) {
@@ -1183,6 +1243,8 @@ function renderDetail(host, data, range) {
   }
 
   frag.appendChild(panels);
+  var fg = forgetRow(host, c);
+  if (fg) frag.appendChild(fg);
   root.replaceChildren(frag);
 }
 
