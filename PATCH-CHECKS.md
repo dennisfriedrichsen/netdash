@@ -44,6 +44,24 @@ as *unknown* — never as OK. On macOS the same trap has a second door:
 `AutomaticCheckEnabled` being false freezes the cached counts forever, so that
 key gates the whole reading.
 
+The same rule runs against a second clock: a check whose `checked_at` is older
+than the host's own boot (`ts` minus the `uptime_seconds` in the same sample —
+all three from that host, so there is no skew to reason about) is describing a
+machine that is no longer there, and also reads *unknown*. `reboot_required` is
+why it earns its own rule rather than waiting for the next scheduled check: it
+comes from `/var/run/reboot-required`, which is tmpfs and is emptied by the
+very reboot that satisfied it, so a pending reboot dated before the last boot
+is not merely doubtful but known to be wrong. It is dropped rather than
+repeated, and the counts go with it — if the reboot ended a patch run, what was
+pending beforehand is precisely what just got installed. The card says *checked
+before reboot* rather than the bare *check stale* it would otherwise share with
+a host nobody has looked at in a fortnight.
+
+This is not airtight, and errs the same way the rest of this does. A host whose
+refresh failed dates its counts by the package cache rather than by the run
+(see `CHECKED` in the script), so a cache older than the last boot lands here
+too — which is the honest reading of counts that really are that old.
+
 **The check is far too expensive for the collector.** Every mechanism below
 either hits the network or parses the entire package database; the fast ones
 still take seconds. At a 30–60s collector cadence that is untenable. So the

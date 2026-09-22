@@ -278,7 +278,39 @@ def patch_summary(sample, now):
     checked = sample.get("patch_checked_at")
     age = int(now - checked) if checked else None
 
-    if checked is None or age is None or age > CFG["patch_stale_hours"] * 3600:
+    # A check that ran before this machine last booted is describing a machine
+    # that is no longer there. Same rule as patch_stale_hours -- an old check
+    # is unknown, never ok -- measured against the host's own clock instead of
+    # ours. Both timestamps come from the same host, so there is no skew to
+    # reason about: `ts` and `checked_at` are its date(1), and the boot moment
+    # is `ts` minus the uptime it reported in the same sample.
+    #
+    # reboot_required is why this earns a rule of its own rather than waiting
+    # for tomorrow's check. It is read from /var/run/reboot-required, which is
+    # tmpfs and is emptied by the very reboot that satisfied it, so a pending
+    # reboot dated before the last boot is not merely doubtful -- it is known
+    # to be wrong. Cleared to None here ("no way to answer"), because the card
+    # and its tooltip would otherwise go on asking for a reboot that already
+    # happened. ubuntu22dot04server did exactly that for two hours.
+    #
+    # The counts go with it rather than being shown beside a stale flag: if
+    # the reboot was the end of a patch run, whatever was pending before it is
+    # the thing that just got installed.
+    #
+    # Not airtight, and deliberately erring the same way the rest of this
+    # does. A host whose refresh failed dates its counts by the package cache
+    # rather than by the run (see CHECKED in netdash-patchcheck.sh), so a
+    # cache older than the last boot lands here too. Its counts really are
+    # that old, which is the reading this gives them.
+    up = sample.get("uptime_seconds")
+    booted_at = sample["ts"] - up if up and sample.get("ts") else None
+    predates_boot = bool(checked and booted_at and checked < booted_at)
+    if predates_boot:
+        reboot = None
+
+    if (checked is None or age is None
+            or age > CFG["patch_stale_hours"] * 3600
+            or predates_boot):
         status = "unknown"
     elif sec:
         status = "security"
@@ -350,6 +382,10 @@ def patch_summary(sample, now):
         "reboot_required": reboot,
         "checked_at": checked,
         "age_seconds": age,
+        # Why this one is unknown, so the card can say "checked before the
+        # reboot" rather than the bare "check stale" it shares with a host
+        # nobody has looked at in a fortnight.
+        "predates_boot": predates_boot,
         "source": sample.get("patch_source"),
         "detail": sample.get("patch_detail"),
         # The names the check reported, for the card's one-line summary. Built

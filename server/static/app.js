@@ -120,9 +120,13 @@ function patchText(p) {
     return n + ' update' + (n === 1 ? '' : 's');
   }
   if (p.status === 'ok') return 'up to date';
-  /* Two very different unknowns, and the difference is the whole point: one
-     host has never been checked, the other was checked so long ago that the
-     answer is no longer worth believing. Neither is "up to date". */
+  /* Three very different unknowns, and the difference is the whole point: one
+     host has never been checked, one was checked so long ago that the answer
+     is no longer worth believing, and one was checked before it last rebooted
+     -- which is the common case of patching a box, and the one where the old
+     answer is not merely old but describes a machine that is gone. None of
+     them is "up to date". */
+  if (p.predates_boot) return 'checked before reboot';
   return p.checked_at ? 'check stale' : 'not checked';
 }
 
@@ -140,6 +144,10 @@ function patchTitle(p) {
   if (p.packages) bits.push(p.packages);
   if (p.reboot_required) bits.push('reboot required for installed updates');
   bits.push('checked ' + fmtAge(p.age_seconds));
+  if (p.predates_boot) {
+    bits.push('which was before this host last booted, so it describes the ' +
+              'machine as it was beforehand — the next check will say');
+  }
   if (p.source) bits.push('via ' + p.source);
   if (p.detail) bits.push(p.detail);
   if (p.acknowledged) {

@@ -1216,6 +1216,73 @@ PY
         "assert d['rows'] > 12, d" "$J"
 fi
 
+if want patches-preboot; then
+  echo "patches-preboot (a check older than the boot describes a machine that is gone)"
+  J=$(python3 - "$ROOT" <<'PY'
+import sys,json,time; sys.path.insert(0,f"{sys.argv[1]}/server")
+import app, db
+app.CONN = None
+app.CFG = {"thresholds":{"cpu":{"warn":80,"crit":95},"mem":{"warn":85,"crit":95},
+                         "disk":{"warn":85,"crit":95}},
+           "stale_after_seconds":180,"patch_stale_hours":48,
+           "eol":{"enabled":False},"hosts":{}}
+now = time.time()
+
+def pc(uptime, checked_ago, sec=6, reboot=True):
+    return app.patch_summary({
+        "host":"h","ts":int(now),"uptime_seconds":uptime,
+        "patch_security":sec,"patch_other":0,
+        "patch_checked_at":int(now - checked_ago),
+        "patch_source":"apt","patch_detail":None,"patch_reboot":reboot,
+        "patch_packages":None}, now)
+
+H = 3600
+# The live case: up 2h, checked 12h ago -- ten hours before the reboot.
+rebooted   = pc(2*H, 12*H)
+# The ordinary case: up 25h, checked 12h ago, well after the boot.
+steady     = pc(25*H, 12*H)
+# Boundary: checked one second after the boot still counts as after it.
+just_after = pc(2*H, 2*H - 1)
+just_befor = pc(2*H, 2*H + 1)
+# A host that reports no uptime cannot be judged this way, and must not be
+# demoted on a guess.
+no_uptime  = pc(None, 12*H)
+# Already stale on the clock -- the older rule still wins, and reads the same.
+ancient    = pc(2000*H, 100*H)
+
+print(json.dumps({
+  "rebooted":        [rebooted["status"], rebooted["predates_boot"], rebooted["reboot_required"]],
+  "steady":          [steady["status"], steady["predates_boot"], steady["reboot_required"]],
+  "just_after":      [just_after["status"], just_after["predates_boot"]],
+  "just_before":     [just_befor["status"], just_befor["predates_boot"]],
+  "no_uptime":       [no_uptime["status"], no_uptime["predates_boot"]],
+  "ancient":         [ancient["status"], ancient["predates_boot"]],
+  "rebooted_entries": rebooted["entries"],
+}))
+PY
+) || J=''
+  # The live symptom: up two hours, still asking to be rebooted on the strength
+  # of a check that ran ten hours before it went down.
+  check "a check from before the last boot reads unknown, not its old verdict" \
+        "assert d['rebooted'][0]=='unknown' and d['rebooted'][1] is True, d" "$J"
+  # /var/run/reboot-required is tmpfs: the reboot that satisfied it emptied it,
+  # so a pending reboot dated before that boot is known to be wrong, not merely old.
+  check "and its reboot flag is dropped rather than repeated" \
+        "assert d['rebooted'][2] is None, d" "$J"
+  check "while a check from after the boot is left entirely alone" \
+        "assert d['steady']==['security', False, True], d" "$J"
+  check "the boundary is the boot moment itself, not a fudge around it" \
+        "assert d['just_after'][1] is False and d['just_before'][1] is True, d" "$J"
+  # A host reporting no uptime gives us nothing to compare against.
+  check "a host that reports no uptime is not demoted on a guess" \
+        "assert d['no_uptime']==['security', False], d" "$J"
+  check "and a check already stale on the clock still reads unknown" \
+        "assert d['ancient'][0]=='unknown', d" "$J"
+  # Nothing is offered for acknowledgement on a reading we have just disowned.
+  check "nothing on a disowned reading is offered for acknowledgement" \
+        "assert d['rebooted_entries']==[], d" "$J"
+fi
+
 if want patch-pending; then
   echo "patch-pending (the package list lives at the rate it changes)"
   J=$(python3 - "$ROOT" <<'PY'
@@ -2087,6 +2154,8 @@ if want render; then
           "assert d['every_pending_package_gets_its_own_ack_row'] is None, d['every_pending_package_gets_its_own_ack_row']" "$J"
     # The page used to carry a row for the packages the capped list never
     # named, with an acknowledge link beside it.
+    check "a check from before the boot says so, and drops the reboot flag" \
+          "assert d['a_check_from_before_the_boot_says_so_and_drops_the_reboot_flag'] is None, d['a_check_from_before_the_boot_says_so_and_drops_the_reboot_flag']" "$J"
     check "a check that names nothing at all still explains its red badge" \
           "assert d['a_check_that_names_nothing_still_explains_its_red_badge'] is None, d['a_check_that_names_nothing_still_explains_its_red_badge']" "$J"
     check "a counted-but-unnamed remainder is stated, with no way to ack it" \

@@ -405,6 +405,28 @@ check('every_pending_package_gets_its_own_ack_row', function () {
   }
 });
 
+/* "check stale" and "checked before reboot" are both unknown, and telling them
+   apart is the point: one host has been ignored for a fortnight, the other was
+   patched and rebooted ten minutes ago and its old verdict is simply gone. The
+   card said "reboot required" through the reboot that satisfied it. */
+check('a_check_from_before_the_boot_says_so_and_drops_the_reboot_flag', function () {
+  var p = { status: 'unknown', security: 6, other: 0, reboot_required: null,
+            checked_at: 1788400000, age_seconds: 43200, predates_boot: true,
+            source: 'apt', detail: null, packages: null, entries: [],
+            acked_count: 0, unnamed_count: 0, acknowledged: false, acked_at: null };
+  ctx.renderDetail('h', detail(host({ patches: p })));
+  var t = textOf(ctx.root);
+  if (t.indexOf('checked before reboot') < 0) {
+    throw new Error('does not say why it is unknown: ' + t.slice(0, 300));
+  }
+  if (t.indexOf('reboot required') >= 0) {
+    throw new Error('still asks for the reboot that already happened: ' + t.slice(0, 300));
+  }
+  if (t.indexOf('check stale') >= 0) {
+    throw new Error('reads as a neglected host rather than a rebooted one');
+  }
+});
+
 /* openSUSE Leap counts security patches and names none of them, so there are
    no entries at all to hang the explanation off -- and a red badge with an
    empty panel is the least useful thing the page could show. */

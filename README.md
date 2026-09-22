@@ -347,8 +347,12 @@ It also installs `netdash-patchcheck` on a **daily schedule and at every boot**
 and runs it once so the card shows something before tomorrow. The boot run is
 what makes patch-then-reboot show up promptly: nothing else updates the state
 file, so without it a rebooted host keeps reporting the pending counts — and
-the `reboot required` badge — it had before it went down. See *Two failure
-modes this design exists to avoid* in PATCH-CHECKS.md.
+the `reboot required` badge — it had before it went down. The server catches
+that case independently: a check older than the host's own boot reads *checked
+before reboot* rather than repeating a verdict about a machine that is gone, so
+a host still on the old daily-only schedule stops showing a stale `reboot
+required` even before its collector is upgraded. See *Two failure modes this
+design exists to avoid* in PATCH-CHECKS.md.
 
 The installer refuses to proceed if the host has no `curl`, `wget` or `fetch`,
 and names the right command for that package manager (`apk`, `dnf`, `pacman`,
