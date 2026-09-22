@@ -1029,6 +1029,74 @@ PY
         "assert (d['host_wins'],d['host_src'])==('bhyve','host'), d" "$J"
 fi
 
+if want concurrency; then
+  echo "concurrency (one connection, many threads, no SQLITE_MISUSE)"
+  # The reachability prober, the event watcher, the roller, the pruner, three
+  # appliance pollers and every HTTP handler share one sqlite3 connection.
+  # A connection is not safe to use from two threads at once, and unguarded
+  # reads raised "bad parameter or other API misuse" out of the prober -- which
+  # caught it, skipped the probing, and left the hosts that had stopped
+  # reporting sitting at "unknown". Exactly the ones it exists to judge.
+  J=$(python3 - "$ROOT" <<'PY'
+import sys,json,os,time,threading,tempfile; sys.path.insert(0,f"{sys.argv[1]}/server")
+import db
+
+conn = db.connect(os.path.join(tempfile.mkdtemp(), "race.db"))
+now = int(time.time())
+HOSTS = ["h%02d" % i for i in range(12)]
+for h in HOSTS:
+    db.insert_sample(conn, {"host":h,"ts":now,"os":"x","cpu_pct":1.0,
+        "disks":[{"mount":"/","used_bytes":1,"total_bytes":2}],
+        "patches":{"security":3,"other":1,"checked_at":now,"source":"apt",
+                   "packages":"a, b, c"}})
+
+errors = []
+stop = threading.Event()
+
+def guard(fn):
+    def run():
+        while not stop.is_set():
+            try:
+                fn()
+            except Exception as e:
+                errors.append("%s: %s" % (type(e).__name__, e))
+                return
+    return run
+
+def reader():
+    for s in db.latest_per_host(conn):
+        db.patch_pending(conn, s["host"])
+        db.get_patch_acks(conn, s["host"])
+
+def writer():
+    h = HOSTS[int(time.time() * 1000) % len(HOSTS)]
+    db.insert_sample(conn, {"host":h,"ts":int(time.time()),"os":"x","cpu_pct":2.0,
+        "disks":[{"mount":"/","used_bytes":1,"total_bytes":2}],
+        "patches":{"security":3,"other":1,"checked_at":int(time.time()),
+                   "source":"apt","packages":"a, b, c"}})
+
+def events():
+    db.recent_events(conn, limit=20); db.last_states(conn); db.known_hosts(conn)
+
+threads = ([threading.Thread(target=guard(reader)) for _ in range(4)] +
+           [threading.Thread(target=guard(writer)) for _ in range(2)] +
+           [threading.Thread(target=guard(events)) for _ in range(2)])
+for t in threads: t.start()
+time.sleep(3.0)
+stop.set()
+for t in threads: t.join(10)
+
+# The write path still has to have worked, not merely not crashed.
+rows = conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
+print(json.dumps({"errors": errors[:5], "error_count": len(errors), "rows": rows}))
+PY
+) || J=''
+  check "hammering one connection from eight threads raises nothing" \
+        "assert d['error_count']==0, d['errors']" "$J"
+  check "and the writes actually landed rather than merely not crashing" \
+        "assert d['rows'] > 12, d" "$J"
+fi
+
 if want patch-pending; then
   echo "patch-pending (the package list lives at the rate it changes)"
   J=$(python3 - "$ROOT" <<'PY'
@@ -1144,7 +1212,7 @@ def sample(sec, pkgs, host=HOST):
 def patches(sec, pkgs, host=HOST):
     # What insert_sample does with the reported string, without the sample:
     # the pending list is per host now, not a column on every row.
-    with db._WRITE:
+    with db._DB:
         db._set_patch_pending(app.CONN, host, pkgs)
         app.CONN.commit()
     return app.summarize(sample(sec, pkgs, host), now)["patches"]

@@ -352,7 +352,7 @@ def split_packages(packages):
 
 
 def _set_patch_pending(conn, host, packages):
-    """Replace the host's pending security package list. Caller holds _WRITE.
+    """Replace the host's pending security package list. Caller holds _DB.
 
     Rewritten only when it actually differs. The list arrives on every sample,
     once or twice a minute, and is the same string all day -- the check behind
@@ -373,8 +373,9 @@ def _set_patch_pending(conn, host, packages):
 
 def patch_pending(conn, host):
     """The security packages this host's latest check named, in report order."""
-    return [r["package"] for r in conn.execute(
-        "SELECT package FROM patch_pending WHERE host=? ORDER BY ord", (host,))]
+    with _DB:
+        return [r["package"] for r in conn.execute(
+            "SELECT package FROM patch_pending WHERE host=? ORDER BY ord", (host,))]
 
 
 def _migrate_patch_pending(conn):
@@ -427,19 +428,41 @@ def _migrate_patch_acks(conn):
     )
 
 
-# One connection is shared by every request thread (check_same_thread=False), so
-# a write that spans more than one statement has to be serialised by hand.
-# sqlite3's own locking makes each statement atomic, but nothing stops another
-# thread from slipping a statement between two of ours -- and insert_sample
-# reads lastrowid, a *connection*-level value, after its INSERT. Two collectors
-# posting in the same second (cron fires them all at :01) raced there: the
-# second INSERT moved lastrowid before the first thread had read it, so one
-# sample's disk rows were written against the other sample's id. The dashboard
-# showed "no mounts reported" for the robbed host and a doubled mount list for
-# the other. Held across the commit too: a commit from another thread would
-# otherwise end our transaction early, publishing a sample with only some of
-# its disks attached.
-_WRITE = threading.Lock()
+# One connection is shared by every request thread (check_same_thread=False) and
+# by six background loops, so every use of it is serialised by hand.
+#
+# Writes need this because a write that spans more than one statement is not
+# atomic on its own. sqlite3's own locking makes each *statement* atomic, but
+# nothing stops another thread from slipping a statement between two of ours --
+# and insert_sample reads lastrowid, a *connection*-level value, after its
+# INSERT. Two collectors posting in the same second (cron fires them all at :01)
+# raced there: the second INSERT moved lastrowid before the first thread had
+# read it, so one sample's disk rows were written against the other sample's id.
+# The dashboard showed "no mounts reported" for the robbed host and a doubled
+# mount list for the other. Held across the commit too: a commit from another
+# thread would otherwise end our transaction early, publishing a sample with
+# only some of its disks attached.
+#
+# Reads need it for a blunter reason: a sqlite3 connection is not safe to use
+# from two threads at once at all. Unguarded reads raised
+# "InterfaceError: bad parameter or other API misuse" (SQLITE_MISUSE) and the
+# occasional "IndexError: tuple index out of range" out of the reachability
+# prober and /api/overview -- rarely enough to look like a fluke, until a
+# change that added one query per host to summarize() turned it into every
+# sweep. The prober caught the exception, skipped the actual probing, and left
+# exactly the hosts that had stopped reporting sitting at "unknown": the ones
+# it exists to make a verdict about.
+#
+# Reentrant, because the guarded writes call the guarded reads. prune() holds
+# this and calls latest_per_host() and patch_pending(); insert_sample() holds
+# it and calls _set_patch_pending(), which reads before it writes. A plain
+# Lock deadlocks on all three.
+#
+# Serialising every read is affordable here and would not be everywhere: these
+# are small indexed queries over a fleet of tens, and WAL means the writer
+# never blocks on a reader at the file level. The honest fix at a larger size
+# is a connection per thread.
+_DB = threading.RLock()
 
 
 def connect(path):
@@ -467,7 +490,7 @@ def register_host(conn, host, ts, os_string=None, source="push", peer=None):
     a sample carrying no OS string or arriving without a peer address must not
     erase the ones the prober and the card have been using.
 
-    Caller holds _WRITE and commits -- this is part of storing the sample, not
+    Caller holds _DB and commits -- this is part of storing the sample, not
     a write of its own.
     """
     conn.execute(
@@ -492,7 +515,7 @@ def insert_sample(conn, payload, source="push", peer=None):
     p = payload.get("patches") or {}
     if not isinstance(p, dict):
         p = {}
-    with _WRITE:
+    with _DB:
         cur = conn.execute(
             """INSERT INTO samples
                  (host, ts, os, source, cpu_pct, mem_used_bytes, mem_total_bytes, mem_pct,
@@ -563,7 +586,7 @@ def prune(conn, retention_hours, rollup_days=None, event_days=None):
     events are almost free and are the one thing worth keeping indefinitely,
     which is what `event_days=None` means.
     """
-    with _WRITE:
+    with _DB:
         cutoff = int(time.time()) - retention_hours * 3600
         conn.execute(
             "DELETE FROM disks WHERE sample_id IN (SELECT id FROM samples WHERE ts < ?)",
@@ -638,7 +661,7 @@ def rollup(conn, window_hours):
     always a complete bucket.
     """
     since = int(time.time()) - int(window_hours) * HOUR
-    with _WRITE:
+    with _DB:
         conn.execute(
             """INSERT OR REPLACE INTO rollups
                  (host, bucket, samples, cpu_min, cpu_avg, cpu_max,
@@ -672,23 +695,25 @@ def rollup(conn, window_hours):
 
 def rollup_series(conn, host, since):
     """Hourly points for one host, shaped like history() so the UI can share code."""
-    rows = conn.execute(
-        """SELECT bucket AS ts, cpu_avg AS cpu_pct, mem_avg AS mem_pct,
-                  cpu_min, cpu_max, mem_min, mem_max, samples
-             FROM rollups WHERE host=? AND bucket >= ? ORDER BY bucket ASC""",
-        (host, int(since)),
-    ).fetchall()
-    return [dict(r) for r in rows]
+    with _DB:
+        rows = conn.execute(
+            """SELECT bucket AS ts, cpu_avg AS cpu_pct, mem_avg AS mem_pct,
+                      cpu_min, cpu_max, mem_min, mem_max, samples
+                 FROM rollups WHERE host=? AND bucket >= ? ORDER BY bucket ASC""",
+            (host, int(since)),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def disk_series(conn, host, since):
     """Daily per-mount points, oldest first."""
-    rows = conn.execute(
-        """SELECT mount, bucket AS ts, pct_avg, pct_max, used_avg, total_bytes
-             FROM disk_rollups WHERE host=? AND bucket >= ? ORDER BY mount, bucket ASC""",
-        (host, int(since)),
-    ).fetchall()
-    return [dict(r) for r in rows]
+    with _DB:
+        rows = conn.execute(
+            """SELECT mount, bucket AS ts, pct_avg, pct_max, used_avg, total_bytes
+                 FROM disk_rollups WHERE host=? AND bucket >= ? ORDER BY mount, bucket ASC""",
+            (host, int(since)),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def disk_history(conn, host, since, bucket=HOUR):
@@ -704,27 +729,28 @@ def disk_history(conn, host, since, bucket=HOUR):
     how close this got, and an average across an hour hides the spike that
     filled it.
     """
-    rows = conn.execute(
-        """SELECT d.mount AS mount, s.ts - (s.ts % ?) AS ts,
-                  MAX(100.0 * d.used_bytes / d.total_bytes) AS pct,
-                  MAX(d.used_bytes) AS used_bytes, MAX(d.total_bytes) AS total_bytes
-             FROM samples s JOIN disks d ON d.sample_id = s.id
-            WHERE s.host = ? AND s.ts >= ? AND d.total_bytes > 0
-                  AND d.used_bytes IS NOT NULL
-            GROUP BY d.mount, s.ts - (s.ts % ?)
-            ORDER BY d.mount, ts ASC""",
-        (int(bucket), host, int(since), int(bucket)),
-    ).fetchall()
-    out = {}
-    for r in rows:
-        out.setdefault(r["mount"], []).append(
-            {"ts": r["ts"], "pct": r["pct"],
-             "used_bytes": r["used_bytes"], "total_bytes": r["total_bytes"]})
-    return out
+    with _DB:
+        rows = conn.execute(
+            """SELECT d.mount AS mount, s.ts - (s.ts % ?) AS ts,
+                      MAX(100.0 * d.used_bytes / d.total_bytes) AS pct,
+                      MAX(d.used_bytes) AS used_bytes, MAX(d.total_bytes) AS total_bytes
+                 FROM samples s JOIN disks d ON d.sample_id = s.id
+                WHERE s.host = ? AND s.ts >= ? AND d.total_bytes > 0
+                      AND d.used_bytes IS NOT NULL
+                GROUP BY d.mount, s.ts - (s.ts % ?)
+                ORDER BY d.mount, ts ASC""",
+            (int(bucket), host, int(since), int(bucket)),
+        ).fetchall()
+        out = {}
+        for r in rows:
+            out.setdefault(r["mount"], []).append(
+                {"ts": r["ts"], "pct": r["pct"],
+                 "used_bytes": r["used_bytes"], "total_bytes": r["total_bytes"]})
+        return out
 
 
 def record_event(conn, host, kind, from_state, to_state, detail=None, ts=None):
-    with _WRITE:
+    with _DB:
         conn.execute(
             """INSERT INTO events (ts, host, kind, from_state, to_state, detail)
                VALUES (?,?,?,?,?,?)""",
@@ -734,17 +760,18 @@ def record_event(conn, host, kind, from_state, to_state, detail=None, ts=None):
 
 
 def recent_events(conn, host=None, limit=100, since=None):
-    q = "SELECT * FROM events WHERE 1=1"
-    args = []
-    if host:
-        q += " AND host=?"
-        args.append(host)
-    if since:
-        q += " AND ts >= ?"
-        args.append(int(since))
-    q += " ORDER BY ts DESC, id DESC LIMIT ?"
-    args.append(int(limit))
-    return [dict(r) for r in conn.execute(q, args)]
+    with _DB:
+        q = "SELECT * FROM events WHERE 1=1"
+        args = []
+        if host:
+            q += " AND host=?"
+            args.append(host)
+        if since:
+            q += " AND ts >= ?"
+            args.append(int(since))
+        q += " ORDER BY ts DESC, id DESC LIMIT ?"
+        args.append(int(limit))
+        return [dict(r) for r in conn.execute(q, args)]
 
 
 def last_states(conn):
@@ -754,12 +781,13 @@ def last_states(conn):
     first sweep silently treats whatever it finds as the starting state -- so a
     machine that went down during a deploy would never produce an event at all.
     """
-    rows = conn.execute(
-        """SELECT host, to_state FROM events e
-            WHERE kind='status' AND id = (SELECT MAX(id) FROM events
-                                           WHERE host=e.host AND kind='status')"""
-    ).fetchall()
-    return {r["host"]: r["to_state"] for r in rows}
+    with _DB:
+        rows = conn.execute(
+            """SELECT host, to_state FROM events e
+                WHERE kind='status' AND id = (SELECT MAX(id) FROM events
+                                               WHERE host=e.host AND kind='status')"""
+        ).fetchall()
+        return {r["host"]: r["to_state"] for r in rows}
 
 
 # Cached because latest_per_host runs in four background loops and the answer
@@ -806,50 +834,51 @@ def latest_per_host(conn):
     of `samples` therefore stopped including it. Now it is still in the list,
     with no readings and a very old timestamp, and summarize() does the rest.
     """
-    rows = conn.execute(
-        """SELECT s.* FROM samples s
-             JOIN (SELECT host, MAX(ts) AS mts FROM samples GROUP BY host) m
-               ON s.host = m.host AND s.ts = m.mts
-           GROUP BY s.host
-           ORDER BY s.host"""
-    ).fetchall()
-    latest = {}
-    for r in rows:
-        d = dict(r)
-        d["no_samples"] = False
-        d["disks"] = [
-            dict(x)
-            for x in conn.execute(
-                "SELECT mount, used_bytes, total_bytes FROM disks WHERE sample_id=? ORDER BY mount",
-                (r["id"],),
-            ).fetchall()
-        ]
-        # Ordered by the controller's own naming rather than by health: a list
-        # that reorders itself when a switch goes offline is one you cannot
-        # scan for the device you were looking for.
-        d["fleet"] = [
-            dict(x)
-            for x in conn.execute(
-                """SELECT name, model, state, cpu_pct, mem_pct, uptime_seconds,
-                          firmware, firmware_updatable
-                     FROM fleet WHERE sample_id=? ORDER BY name""",
-                (r["id"],),
-            ).fetchall()
-        ]
-        latest[d["host"]] = d
+    with _DB:
+        rows = conn.execute(
+            """SELECT s.* FROM samples s
+                 JOIN (SELECT host, MAX(ts) AS mts FROM samples GROUP BY host) m
+                   ON s.host = m.host AND s.ts = m.mts
+               GROUP BY s.host
+               ORDER BY s.host"""
+        ).fetchall()
+        latest = {}
+        for r in rows:
+            d = dict(r)
+            d["no_samples"] = False
+            d["disks"] = [
+                dict(x)
+                for x in conn.execute(
+                    "SELECT mount, used_bytes, total_bytes FROM disks WHERE sample_id=? ORDER BY mount",
+                    (r["id"],),
+                ).fetchall()
+            ]
+            # Ordered by the controller's own naming rather than by health: a list
+            # that reorders itself when a switch goes offline is one you cannot
+            # scan for the device you were looking for.
+            d["fleet"] = [
+                dict(x)
+                for x in conn.execute(
+                    """SELECT name, model, state, cpu_pct, mem_pct, uptime_seconds,
+                              firmware, firmware_updatable
+                         FROM fleet WHERE sample_id=? ORDER BY name""",
+                    (r["id"],),
+                ).fetchall()
+            ]
+            latest[d["host"]] = d
 
-    out = []
-    seen = set()
-    for h in conn.execute("SELECT * FROM hosts ORDER BY host"):
-        seen.add(h["host"])
-        out.append(latest.get(h["host"]) or _no_sample(conn, h))
-    # A sample whose host is somehow not registered still counts as a host.
-    # Belt and braces -- _migrate_hosts and insert_sample between them should
-    # make this impossible -- but dropping a host that is actively reporting
-    # is the one failure this whole table exists to prevent.
-    for host in sorted(set(latest) - seen):
-        out.append(latest[host])
-    return out
+        out = []
+        seen = set()
+        for h in conn.execute("SELECT * FROM hosts ORDER BY host"):
+            seen.add(h["host"])
+            out.append(latest.get(h["host"]) or _no_sample(conn, h))
+        # A sample whose host is somehow not registered still counts as a host.
+        # Belt and braces -- _migrate_hosts and insert_sample between them should
+        # make this impossible -- but dropping a host that is actively reporting
+        # is the one failure this whole table exists to prevent.
+        for host in sorted(set(latest) - seen):
+            out.append(latest[host])
+        return out
 
 
 def forget_host(conn, host):
@@ -867,7 +896,7 @@ def forget_host(conn, host):
     Returns False if the host was not known, so the API can answer 404 rather
     than pretending to have done something.
     """
-    with _WRITE:
+    with _DB:
         known = conn.execute("SELECT 1 FROM hosts WHERE host=?", (host,)).fetchone()
         # Explicit rather than trusting ON DELETE CASCADE: it only fires with
         # foreign_keys=ON, which is a per-connection pragma, and orphaned disk
@@ -885,23 +914,26 @@ def forget_host(conn, host):
 
 
 def history(conn, host, since_seconds):
-    cutoff = int(time.time()) - since_seconds
-    rows = conn.execute(
-        """SELECT id, ts, cpu_pct, mem_used_bytes, mem_total_bytes, mem_pct
-             FROM samples WHERE host=? AND ts >= ? ORDER BY ts ASC""",
-        (host, cutoff),
-    ).fetchall()
-    return [dict(r) for r in rows]
+    with _DB:
+        cutoff = int(time.time()) - since_seconds
+        rows = conn.execute(
+            """SELECT id, ts, cpu_pct, mem_used_bytes, mem_total_bytes, mem_pct
+                 FROM samples WHERE host=? AND ts >= ? ORDER BY ts ASC""",
+            (host, cutoff),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def known_hosts(conn):
-    return [r["host"] for r in conn.execute("SELECT host FROM hosts ORDER BY host")]
+    with _DB:
+        return [r["host"] for r in conn.execute("SELECT host FROM hosts ORDER BY host")]
 
 
 def get_patch_acks(conn, host):
     """{package: acked_at} for every package acknowledged on this host."""
-    rows = conn.execute("SELECT package, acked_at FROM patch_acks WHERE host=?", (host,))
-    return {r["package"]: r["acked_at"] for r in rows}
+    with _DB:
+        rows = conn.execute("SELECT package, acked_at FROM patch_acks WHERE host=?", (host,))
+        return {r["package"]: r["acked_at"] for r in rows}
 
 
 def ack_patch(conn, host, packages, now):
@@ -912,7 +944,7 @@ def ack_patch(conn, host, packages, now):
     made at one moment, and writing it as one statement keeps every row in it
     carrying the same timestamp.
     """
-    with _WRITE:
+    with _DB:
         conn.executemany(
             """INSERT INTO patch_acks (host, package, acked_at) VALUES (?,?,?)
                ON CONFLICT(host, package) DO UPDATE SET acked_at=excluded.acked_at""",
@@ -923,7 +955,7 @@ def ack_patch(conn, host, packages, now):
 
 def unack_patch(conn, host, package=None):
     """One package back to pending, or the whole host when package is None."""
-    with _WRITE:
+    with _DB:
         if package is None:
             conn.execute("DELETE FROM patch_acks WHERE host=?", (host,))
         else:
@@ -933,14 +965,15 @@ def unack_patch(conn, host, package=None):
 
 
 def get_eol_ack(conn, host):
-    r = conn.execute("SELECT * FROM eol_acks WHERE host=?", (host,)).fetchone()
-    return dict(r) if r else None
+    with _DB:
+        r = conn.execute("SELECT * FROM eol_acks WHERE host=?", (host,)).fetchone()
+        return dict(r) if r else None
 
 
 def ack_eol(conn, host, status, product, cycle, eol_date, now):
     """Silence the host's current end-of-life phase -- this phase, on this
     release, with this date. See the note on the table."""
-    with _WRITE:
+    with _DB:
         conn.execute(
             """INSERT INTO eol_acks (host, status, product, cycle, eol_date, acked_at)
                  VALUES (?,?,?,?,?,?)
@@ -954,6 +987,6 @@ def ack_eol(conn, host, status, product, cycle, eol_date, now):
 
 
 def unack_eol(conn, host):
-    with _WRITE:
+    with _DB:
         conn.execute("DELETE FROM eol_acks WHERE host=?", (host,))
         conn.commit()
