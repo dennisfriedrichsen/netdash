@@ -1,8 +1,11 @@
 #!/bin/sh
 # netdash patch check -- macOS.
 #
-# Runs DAILY, not at collector cadence. Writes a small JSON file that
-# netdash-collector reads back and inlines. See PATCH-CHECKS.md.
+# Runs DAILY and once at every boot, not at collector cadence. Writes a small
+# JSON file that netdash-collector reads back and inlines. The boot run matters
+# because nothing else updates that file: after a patch-and-reboot the
+# dashboard would otherwise keep reporting what was pending beforehand.
+# See PATCH-CHECKS.md.
 #
 #   netdash-patchcheck.sh            # check, write the state file
 #   netdash-patchcheck.sh --print    # check, print, write nothing

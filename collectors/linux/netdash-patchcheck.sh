@@ -1,9 +1,15 @@
 #!/bin/sh
 # netdash patch check -- Linux (apt, dnf, pacman, zypper, apk).
 #
-# Runs DAILY, not at collector cadence: every backend below either hits the
-# network or parses the whole package database, which is untenable every 30s.
-# It writes a small JSON file that netdash-collector reads back and inlines.
+# Runs DAILY and once at every boot, not at collector cadence: every backend
+# below either hits the network or parses the whole package database, which is
+# untenable every 30s. It writes a small JSON file that netdash-collector reads
+# back and inlines.
+#
+# The boot run is not an optimisation. Nothing but this script updates that
+# file, so after a patch-and-reboot the dashboard keeps reporting what was
+# pending beforehand -- including reboot_required, which is read from
+# /var/run/reboot-required and is exactly what the reboot cleared.
 #
 #   netdash-patchcheck.sh            # check, write the state file
 #   netdash-patchcheck.sh --print    # check, print, write nothing

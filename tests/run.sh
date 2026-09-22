@@ -1029,6 +1029,125 @@ PY
         "assert (d['host_wins'],d['host_src'])==('bhyve','host'), d" "$J"
 fi
 
+if want schedule; then
+  echo "schedule (the patch check runs at boot as well as daily)"
+  # The state file is written by the patch check and by nothing else, so
+  # between a reboot and the next daily run the dashboard describes the machine
+  # as it was before it went down. reboot_required is the loudest case: it is
+  # read from /var/run/reboot-required, which a reboot clears, so a patched and
+  # rebooted host kept asking to be rebooted for up to a day.
+  J=$(python3 - "$ROOT" <<'PY'
+import re,sys,json
+root=sys.argv[1]
+src=open(f"{root}/collectors/install.sh").read()
+
+def unit(name):
+    m=re.search(r"cat > /etc/systemd/system/%s <<EOF\n(.*?)\nEOF" % re.escape(name), src, re.S)
+    return m.group(1) if m else ""
+
+pt=unit("netdash-patchcheck.timer")
+ps=unit("netdash-patchcheck.service")
+ct=unit("netdash-collector.timer")
+cron=re.search(r"schedule_cron\(\) \{(.*?)\n\}", src, re.S).group(1)
+
+print(json.dumps({
+  "patch_timer": pt,
+  "patch_boot":  bool(re.search(r"^OnBootSec=", pt, re.M)),
+  "patch_daily": bool(re.search(r"^OnCalendar=", pt, re.M)),
+  # A randomised delay applies to every elapse point including the boot one,
+  # so it would put the reboot verdict up to an hour behind the reboot.
+  "patch_randomised": bool(re.search(r"^RandomizedDelaySec=", pt, re.M)),
+  "patch_persistent": bool(re.search(r"^Persistent=true", pt, re.M)),
+  "svc_wants_network": bool(re.search(r"^Wants=network-online.target", ps, re.M)),
+  "svc_after_network": bool(re.search(r"^After=network-online.target", ps, re.M)),
+  # The collector's own schedule must be untouched by any of this.
+  "collector_interval": bool(re.search(r"^OnUnitActiveSec=", ct, re.M)),
+  "cron_reboot": bool(re.search(r'RCRON_LINE="@reboot', cron)),
+  "cron_daily":  bool(re.search(r'PCRON_LINE="\$PMIN 3 \* \* \*', cron)),
+  # A cron without @reboot must lose the boot run, not the whole crontab.
+  "cron_fallback": "noreboot" in cron,
+  # The filter that clears an older install has to catch the @reboot line too,
+  # or re-running the installer stacks up a second one every time.
+  "cron_filters_old": cron.count("grep -v 'netdash-patchcheck'") == 1,
+}))
+PY
+) || J=''
+  check "the patch check timer fires at boot" \
+        "assert d['patch_boot'] is True, d['patch_timer']" "$J"
+  check "and still on its daily schedule" \
+        "assert d['patch_daily'] is True and d['patch_persistent'] is True, d['patch_timer']" "$J"
+  # Spreading the fleet moved into the calendar minute for this reason.
+  check "with no randomised delay, which would also delay the boot run" \
+        "assert d['patch_randomised'] is False, d['patch_timer']" "$J"
+  # After= alone orders nothing unless something pulls the target in, and a
+  # refresh that runs before the network is up keeps the previous result --
+  # including the stale reboot flag the boot run exists to clear.
+  check "the check is ordered after the network, and pulls it in" \
+        "assert d['svc_wants_network'] is True and d['svc_after_network'] is True, d" "$J"
+  check "the collector's own cadence is left alone" \
+        "assert d['collector_interval'] is True, d" "$J"
+  check "cron hosts get an @reboot line beside the daily one" \
+        "assert d['cron_reboot'] is True and d['cron_daily'] is True, d" "$J"
+  # BusyBox and the BSDs all have @reboot; one that does not would reject the
+  # whole file and take the collector's schedule down with it.
+  check "and a cron that rejects @reboot keeps the rest of the schedule" \
+        "assert d['cron_fallback'] is True, d" "$J"
+  check "re-running the installer replaces the boot line rather than stacking it" \
+        "assert d['cron_filters_old'] is True, d" "$J"  # The text assertions above say the line is written; these run the real
+  # function against a stub crontab and say what ends up scheduled.
+  CRONDIR=$(mktemp -d)
+  mkdir -p "$CRONDIR/bin"
+  cat > "$CRONDIR/bin/crontab" <<'SH'
+#!/bin/sh
+if [ "$1" = "-l" ]; then cat "$CRONSTORE" 2>/dev/null || exit 1; exit 0; fi
+if [ -n "$STRICT" ] && grep -q '^@reboot' "$1"; then
+  echo "crontab: bad minute" >&2; exit 1
+fi
+cp "$1" "$CRONSTORE"
+SH
+  chmod +x "$CRONDIR/bin/crontab"
+  sed -n '/^schedule_cron() {/,/^}/p' "$ROOT/collectors/install.sh" > "$CRONDIR/fn.sh"
+
+  run_cron() { # store, strict -> prints the resulting crontab
+    CRONSTORE="$1" STRICT="${2:-}" PATH="$CRONDIR/bin:/usr/bin:/bin" \
+      BIN=/usr/local/bin/netdash-collector PBIN=/usr/local/bin/netdash-patchcheck \
+      PMIN=17 sh -c ". $CRONDIR/fn.sh; schedule_cron" >/dev/null 2>&1
+    cat "$1" 2>/dev/null
+  }
+
+  OUT=$(run_cron "$CRONDIR/a")
+  J=$(printf '%s' "$OUT" | python3 -c "
+import sys,json
+lines=[l for l in sys.stdin.read().splitlines() if l.strip()]
+print(json.dumps({'lines':lines}))
+")
+  check "a fresh cron install schedules collector, daily check and @reboot" \
+        "assert len(d['lines'])==3 and d['lines'][2].startswith('@reboot') and '/netdash-patchcheck' in d['lines'][2], d" "$J"
+
+  # Running the installer again must replace those lines, not stack a second
+  # @reboot onto every upgrade.
+  OUT=$(run_cron "$CRONDIR/a")
+  J=$(printf '%s' "$OUT" | python3 -c "
+import sys,json
+lines=[l for l in sys.stdin.read().splitlines() if l.strip()]
+print(json.dumps({'lines':lines,'reboots':sum(1 for l in lines if l.startswith('@reboot'))}))
+")
+  check "and re-running it leaves exactly one of each, not two" \
+        "assert len(d['lines'])==3 and d['reboots']==1, d" "$J"
+
+  # The failure that would matter: a cron that rejects @reboot must cost the
+  # boot run only. Losing the whole file would stop the collector reporting.
+  OUT=$(run_cron "$CRONDIR/b" strict)
+  J=$(printf '%s' "$OUT" | python3 -c "
+import sys,json
+lines=[l for l in sys.stdin.read().splitlines() if l.strip()]
+print(json.dumps({'lines':lines}))
+")
+  check "a cron that rejects @reboot still gets its collector and daily check" \
+        "assert len(d['lines'])==2 and d['lines'][0].startswith('* * * * *') and '/netdash-collector' in d['lines'][0], d" "$J"
+  rm -rf "$CRONDIR"
+fi
+
 if want concurrency; then
   echo "concurrency (one connection, many threads, no SQLITE_MISUSE)"
   # The reachability prober, the event watcher, the roller, the pruner, three

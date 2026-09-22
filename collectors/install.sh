@@ -107,13 +107,30 @@ schedule_cron() {
   # on OpenBSD fetches the syspatch index from the mirror. Its output is a file
   # the collector reads, so nothing is lost by running it rarely.
   PCRON_LINE="$PMIN 3 * * * $PBIN >/dev/null 2>&1"
+  # And once per boot. Between a reboot and the next daily run the state file
+  # still describes the machine as it was before it went down -- above all
+  # reboot_required, which is precisely what rebooting clears. See the longer
+  # note on the systemd timer below.
+  RCRON_LINE="@reboot $PBIN >/dev/null 2>&1"
   TMP=$(mktemp 2>/dev/null || echo /tmp/netdash.cron.$$)
   crontab -l 2>/dev/null | grep -v 'netdash-collector' | grep -v 'netdash-patchcheck' > "$TMP" || true
   echo "$CRON_LINE" >> "$TMP"
   echo "$PCRON_LINE" >> "$TMP"
-  crontab "$TMP"
-  rm -f "$TMP"
-  echo "scheduled: root crontab, collector every 60s, patch check daily at 03:$PMIN"
+  cp "$TMP" "$TMP.noreboot"
+  echo "$RCRON_LINE" >> "$TMP"
+  # @reboot is a Vixie extension. Every cron this installer targets has it --
+  # the three BSDs and BusyBox crond -- but a cron that does not would reject
+  # the *whole* file, taking the collector's own schedule down with it over an
+  # optimisation. So the fallback is the schedule that was there before, not a
+  # failed install.
+  if crontab "$TMP" 2>/dev/null; then
+    BOOTED="and at boot"
+  else
+    crontab "$TMP.noreboot"
+    BOOTED="(this cron rejected @reboot; daily only)"
+  fi
+  rm -f "$TMP" "$TMP.noreboot"
+  echo "scheduled: root crontab, collector every 60s, patch check daily at 03:$PMIN $BOOTED"
 }
 
 if [ "$OS" = "Linux" ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
@@ -140,9 +157,16 @@ Unit=netdash-collector.service
 [Install]
 WantedBy=timers.target
 EOF
+  # Wants= as well as After=: ordering alone does nothing unless something
+  # pulls network-online.target into the transaction, and nothing else here
+  # does. It matters for the boot run specifically -- a refresh that fires
+  # before the network is up falls back to dating the counts by the package
+  # cache, which is the "keeping the previous result" path, and the stale
+  # reboot flag this boot trigger exists to clear would survive it.
   cat > /etc/systemd/system/netdash-patchcheck.service <<EOF
 [Unit]
 Description=netdash patch check
+Wants=network-online.target
 After=network-online.target
 
 [Service]
@@ -151,15 +175,30 @@ ExecStart=$PBIN
 EOF
   # Daily, because this refreshes package metadata and can take seconds --
   # unlike the collector, which must stay cheap. Persistent so a machine that
-  # was asleep at 03:00 runs the check on wake rather than skipping the day,
-  # and randomised so a fleet does not hit the mirrors in lockstep.
+  # was asleep at 03:00 runs the check on wake rather than skipping the day.
+  #
+  # And once at every boot, which is the case the daily schedule reads wrong.
+  # The state file is written by this check and only by this check, so between
+  # a reboot and the next daily run the dashboard is still describing the
+  # machine as it was *before* the reboot -- most visibly reboot_required,
+  # which is read from /var/run/reboot-required and is exactly the flag a
+  # reboot clears. ubuntu22dot04server sat on the wall for two hours after
+  # coming back up still asking to be rebooted, on the strength of a check
+  # that had run ten hours before it went down. Patch, reboot, and the card
+  # is right within a couple of minutes now instead of by tomorrow morning.
+  #
+  # The spread across the fleet moved from RandomizedDelaySec into the
+  # calendar minute, the same per-host minute the cron branch below uses. A
+  # randomised delay applies to every elapse point in the timer, boot included,
+  # so keeping it would have meant waiting up to an hour after a reboot to see
+  # the thing you rebooted for.
   cat > /etc/systemd/system/netdash-patchcheck.timer <<EOF
 [Unit]
-Description=Run the netdash patch check daily
+Description=Run the netdash patch check daily and at boot
 
 [Timer]
-OnCalendar=daily
-RandomizedDelaySec=1h
+OnBootSec=2min
+OnCalendar=*-*-* 3:${PMIN}:00
 Persistent=true
 Unit=netdash-patchcheck.service
 
@@ -169,7 +208,7 @@ EOF
   systemctl daemon-reload
   systemctl enable --now netdash-collector.timer
   systemctl enable --now netdash-patchcheck.timer
-  echo "scheduled: systemd timer every ${SEC}s, patch check daily"
+  echo "scheduled: systemd timer every ${SEC}s, patch check at 03:${PMIN} and at boot"
   systemctl list-timers netdash-collector.timer netdash-patchcheck.timer --no-pager 2>/dev/null | head -4 || true
 
 elif command -v rc-update >/dev/null 2>&1; then

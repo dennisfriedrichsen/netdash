@@ -342,9 +342,13 @@ it schedules anything, so a broken host fails immediately rather than silently.
   would otherwise silently do nothing
 - **FreeBSD / OpenBSD / NetBSD** → root crontab, every 60s
 
-It also installs `netdash-patchcheck` on a **daily** schedule
-(`netdash-patchcheck.timer`, or a root crontab entry at 03:xx) and runs it once
-so the card shows something before tomorrow.
+It also installs `netdash-patchcheck` on a **daily schedule and at every boot**
+(`netdash-patchcheck.timer`, or root crontab entries at 03:xx and `@reboot`),
+and runs it once so the card shows something before tomorrow. The boot run is
+what makes patch-then-reboot show up promptly: nothing else updates the state
+file, so without it a rebooted host keeps reporting the pending counts — and
+the `reboot required` badge — it had before it went down. See *Two failure
+modes this design exists to avoid* in PATCH-CHECKS.md.
 
 The installer refuses to proceed if the host has no `curl`, `wget` or `fetch`,
 and names the right command for that package manager (`apk`, `dnf`, `pacman`,
@@ -575,7 +579,8 @@ Two rules hold everywhere:
 **The check is daily, never per-sample.** Every mechanism above either hits the
 network or parses the whole package database — `apt-get --just-print
 dist-upgrade` alone takes ~3s on an idle Debian box. So `netdash-patchcheck`
-runs once a day and writes `/var/lib/netdash-collector/patches.json`
+runs once a day (and once at boot, which is when the answer most often changes)
+and writes `/var/lib/netdash-collector/patches.json`
 (`/var/db/netdash-collector` on the BSDs); the collector only reads that file
 back. That is deliberately not `/var/lib/netdash`, which belongs to the server
 on a host running both.

@@ -47,13 +47,39 @@ key gates the whole reading.
 **The check is far too expensive for the collector.** Every mechanism below
 either hits the network or parses the entire package database; the fast ones
 still take seconds. At a 30–60s collector cadence that is untenable. So the
-work is split: a separate daily `netdash-patchcheck` writes a small JSON file,
-and the collector — which must stay fast — only reads that file back.
+work is split: a separate `netdash-patchcheck` writes a small JSON file, and
+the collector — which must stay fast — only reads that file back.
 
 ```
-netdash-patchcheck  (daily, root, network)  ->  patches.json
-netdash-collector   (every 30-60s)          ->  reads patches.json, inlines it
+netdash-patchcheck  (daily + at boot, root, network)  ->  patches.json
+netdash-collector   (every 30-60s)                    ->  reads it, inlines it
 ```
+
+**And once at every boot**, because the daily schedule reads one situation
+badly. Patching a machine and rebooting it is the single most common way its
+patch state changes, and nothing about a reboot updates the state file — so
+until the next daily run the dashboard is still describing the machine as it
+was before it went down. `reboot_required` is the worst of it: it comes from
+`/var/run/reboot-required`, which lives on tmpfs and is cleared by the very
+reboot that satisfied it, so a patched and rebooted host goes on asking to be
+rebooted for up to a day. One live host sat that way for two hours on the
+strength of a check that had run ten hours before it went down.
+
+The boot run is ordered after `network-online.target` and pulls it in
+(`Wants=`, not only `After=`, which orders nothing on a timer-started unit
+unless something else brings the target into the transaction). A refresh that
+runs before the network is up falls back to dating the counts by the package
+cache, and on that path the check keeps the previous result rather than
+overwriting it — which would leave exactly the stale reboot flag the boot run
+is there to clear.
+
+The fleet spread moved out of `RandomizedDelaySec` and into the calendar minute
+to make room for this. A randomised delay applies to every elapse point in a
+timer, boot included, so keeping it would have meant waiting up to an hour
+after a reboot to see the thing you rebooted for. Non-systemd hosts get an
+`@reboot` crontab line beside the daily one; every cron the installer targets
+(the three BSDs, BusyBox) has that extension, and a cron that rejects it falls
+back to the daily line alone rather than losing the whole crontab.
 
 The state file lives at `/var/lib/netdash-collector/patches.json` on Linux,
 `/var/db/netdash-collector/patches.json` on the BSDs, and
