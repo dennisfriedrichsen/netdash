@@ -105,11 +105,16 @@ schedules anything. It installs the following schedule:
 - Alpine/OpenRC: root crontab, every 60 seconds; `crond` is enabled and started
 - FreeBSD, OpenBSD, and NetBSD: root crontab, every 60 seconds
 
-It also installs `netdash-patchcheck` and schedules it **daily** — as
-`netdash-patchcheck.timer` under systemd, otherwise a root crontab entry at
-03:xx — then runs it once so the patch badge is populated immediately. A
-failure there is not fatal: the host still reports CPU, memory, and disk, and
-its patch badge reads "not checked" until the check succeeds.
+It also installs `netdash-patchcheck` and schedules it **daily and at every
+boot** — as `netdash-patchcheck.timer` under systemd, otherwise root crontab
+entries at 03:xx and `@reboot` — then runs it once so the patch badge is
+populated immediately. A failure there is not fatal: the host still reports
+CPU, memory, and disk, and its patch badge reads "not checked" until the check
+succeeds.
+
+The boot run is what makes patch-then-reboot show up promptly. Nothing but the
+check writes its state file, so without it a rebooted host keeps reporting the
+counts — and the `reboot required` badge — it had before it went down.
 
 The daily job refreshes package metadata (`apt-get update`, `dnf5 makecache`,
 `zypper refresh`, `apk update`, `pkg audit -F`, `syspatch -c`,
@@ -162,16 +167,23 @@ and restarts its launchd job.
 ### Patch check on macOS
 
 `collectors/macos/netdash-patchcheck.sh` reads the software-update scan macOS
-already performs every six hours, so it is fast and needs no root. **The tap
-formula does not install or schedule it yet** — until it does, a Mac shows
-"not checked". To wire it up by hand:
+already performs every six hours, so it is fast and needs no root. It has its
+own formula in the tap — separate from the collector because a formula may
+define only one service, and these run on very different clocks:
 
 ```sh
-sudo cp collectors/macos/netdash-patchcheck.sh \
-        "$(brew --prefix)/bin/netdash-patchcheck"
+brew install dennisfriedrichsen/tap/netdash-patchcheck
 netdash-patchcheck --print          # confirm it reads the cached scan
-(crontab -l 2>/dev/null; echo "17 3 * * * $(brew --prefix)/bin/netdash-patchcheck >/dev/null 2>&1") | crontab -
+brew services start netdash-patchcheck
 ```
+
+That schedules it at 03:17 daily *and* whenever launchd loads the job, which
+Homebrew arranges by default (`RunAtLoad` is on unless a formula turns it off,
+and it is emitted alongside the calendar entry, not instead of it). The formula
+sets no `require_root`, so `brew services start` run as your user installs a
+LaunchAgent and "load" means login rather than boot — which for a Mac you
+reboot and sign back into amounts to the same thing. `sudo brew services start`
+would make it a LaunchDaemon and move that to boot proper.
 
 If `AutomaticCheckEnabled` is off on that Mac, the cached counts never advance;
 the check reports the age of the last scan and the badge ages into "unknown"
