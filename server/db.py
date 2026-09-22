@@ -449,9 +449,17 @@ def _migrate_patch_acks(conn):
 # occasional "IndexError: tuple index out of range" out of the reachability
 # prober and /api/overview -- rarely enough to look like a fluke, until a
 # change that added one query per host to summarize() turned it into every
-# sweep. The prober caught the exception, skipped the actual probing, and left
-# exactly the hosts that had stopped reporting sitting at "unknown": the ones
-# it exists to make a verdict about.
+# sweep.
+#
+# Where the collision lands is itself a race, so what it costs varies. On the
+# sweeps caught in the act it landed on reach_prober's last statement -- the
+# latest_per_host() that drops verdicts for forgotten hosts -- because the fast
+# path marking reporting hosts up had already run for all 28 of them, and with
+# the whole fleet reporting there was nothing left to probe. Land it a few
+# statements earlier, on a sweep that does have a silent host to probe, and the
+# probing is what gets skipped instead, leaving exactly the host the prober
+# exists to make a verdict about sitting at "unknown". Either way the prober
+# catches it and says nothing but one line on stderr.
 #
 # Reentrant, because the guarded writes call the guarded reads. prune() holds
 # this and calls latest_per_host() and patch_pending(); insert_sample() holds
