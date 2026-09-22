@@ -222,22 +222,23 @@ import re,subprocess,sys,json
 root=sys.argv[1]
 src=open(f"{root}/collectors/linux/netdash-patchcheck.sh").read()
 prog=re.search(r'"\$UPG" \| awk \'(.*?)\'\)', src, re.S).group(1)
-names=re.search(r"SECPKGS=\$\(printf[^|]*\| awk '(.*?)' \| cap_names\)", src, re.S).group(1)
-capfn=re.search(r"(NAME_CAP=\d+\ncap_names\(\) \{.*?\n\})", src, re.S).group(1)
+names=re.search(r"SECPKGS=\$\(printf[^|]*\| awk '(.*?)' \| join_names\)", src, re.S).group(1)
+joinfn=re.search(r"(join_names\(\) \{.*?\n\})", src, re.S).group(1)
 fixture=open(f"{root}/tests/fixtures/linux/apt-dist-upgrade.txt").read()
 out=subprocess.run(["awk",prog],input=fixture,capture_output=True,text=True)
 sec,oth=out.stdout.split()
 
-def cap(text):
-    return subprocess.run(["sh","-c",capfn+"\ncap_names"],input=text,
+def join(text):
+    return subprocess.run(["sh","-c",joinfn+"\njoin_names"],input=text,
                           capture_output=True,text=True).stdout
 raw=subprocess.run(["awk",names],input=fixture,capture_output=True,text=True).stdout
 # What a naive whole-line match would have counted, for the contrast below.
 naive=sum(1 for l in fixture.splitlines() if l.startswith("Inst ") and "-security" in l)
 print(json.dumps({"security":int(sec),"other":int(oth),"naive":naive,
-  "names": cap(raw),
-  "over_cap": cap("".join("pkg-%d\n" % i for i in range(1,10))),
-  "no_quotes": cap('ok-1.0\nbad"quote\\\\slash\n'),
+  "names": join(raw),
+  "nine_names": join("".join("pkg-%d\n" % i for i in range(1,10))),
+  "no_quotes": join('ok-1.0\nbad"quote\\\\slash\n'),
+  "portepoch": join("gimp-2.10.38,2\nopenssl\n"),
 }))
 PY
 ) || J=''
@@ -254,9 +255,15 @@ PY
   # without logging into it. Only the security ones are listed.
   check "the three security packages are named, and only those" \
         "assert d['names']=='openssl-provider-legacy, libssl3t64, openssl', d" "$J"
-  # A tooltip is not a report: fifty names must not ride along on every sample.
-  check "the list is capped, with the remainder counted" \
-        "assert d['over_cap']=='pkg-1, pkg-2, pkg-3, pkg-4, pkg-5, pkg-6 (+3 more)', d" "$J"
+  # The cap this replaces stopped at six and summarised the rest as "(+3 more)",
+  # which the server then had to offer as a single anonymous ack target -- a
+  # package you cannot see is a package you cannot review. Every name now rides.
+  check "every name is reported, none summarised into a group" \
+        "assert d['nine_names']=='pkg-1, pkg-2, pkg-3, pkg-4, pkg-5, pkg-6, pkg-7, pkg-8, pkg-9', d" "$J"
+  # The join is ", " precisely so a name containing a bare comma survives it:
+  # FreeBSD carries PORTEPOCH that way and db.split_packages splits to match.
+  check "a PORTEPOCH comma is not mistaken for a separator" \
+        "assert d['portepoch']=='gimp-2.10.38,2, openssl', d" "$J"
   # The names go into a JSON string built by printf in shell, so a quote or
   # backslash in a package name would produce malformed JSON.
   check "quotes and backslashes are stripped before the names reach JSON" \
@@ -1022,6 +1029,95 @@ PY
         "assert (d['host_wins'],d['host_src'])==('bhyve','host'), d" "$J"
 fi
 
+if want patch-pending; then
+  echo "patch-pending (the package list lives at the rate it changes)"
+  J=$(python3 - "$ROOT" <<'PY'
+import sys,json,os,time,sqlite3,tempfile; sys.path.insert(0,f"{sys.argv[1]}/server")
+import app, db
+
+path = os.path.join(tempfile.mkdtemp(), "nd.db")
+conn = db.connect(path)
+now = int(time.time())
+HOST = "cerium"
+SIX = "a, b, c, d, e, f"
+
+def push(pkgs, sec=6, checked=True, host=HOST):
+    p = {"security":sec,"other":0,"source":"pkg-audit"}
+    if checked: p["checked_at"] = now
+    if pkgs is not None: p["packages"] = pkgs
+    db.insert_sample(conn, {"host":host,"ts":now,"os":"x","patches":p})
+
+push(SIX)
+stored = db.patch_pending(conn, HOST)
+# The names must not also be riding on the sample any more: that column is the
+# 4 MB this moved, written 2,880 times a day to be read once.
+on_sample = conn.execute(
+    "SELECT patch_packages FROM samples WHERE host=?", (HOST,)).fetchone()[0]
+
+# The same list arrives on every sample all day while the check behind it runs
+# daily. Rewriting it each time would be 2,880 pointless writes a host.
+rowids = [r[0] for r in conn.execute("SELECT rowid FROM patch_pending WHERE host=?", (HOST,))]
+push(SIX); push(SIX)
+rowids_after = [r[0] for r in conn.execute("SELECT rowid FROM patch_pending WHERE host=?", (HOST,))]
+
+# A real change does land.
+push("a, b, zzz", sec=3)
+changed = db.patch_pending(conn, HOST)
+
+# A collector whose patchcheck has never run, or has stopped reporting, has
+# told us nothing about what is pending -- and wiping the list on that silence
+# would drop every ack with it the moment the check came back.
+db.ack_patch(conn, HOST, ["a"], now)
+push(None, checked=False)
+after_silence = db.patch_pending(conn, HOST)
+acks_after_silence = sorted(db.get_patch_acks(conn, HOST))
+
+# Forgetting a host takes its pending list with it, or the next machine to
+# reuse the name inherits a list nobody checked.
+push(SIX, host="gone")
+db.forget_host(conn, "gone")
+after_forget = db.patch_pending(conn, "gone")
+
+# Upgrading a live box: the names are in the old column and nowhere else. Left
+# unseeded, every host would read as nothing-pending until its next daily
+# check, and prune() would take that as licence to drop all its acks.
+old = os.path.join(tempfile.mkdtemp(), "old.db")
+c = sqlite3.connect(old); c.executescript(db.SCHEMA)
+c.execute("INSERT INTO samples (host, ts, patch_security, patch_checked_at, patch_packages) VALUES (?,?,?,?,?)",
+          ("oldhost", now, 6, now, SIX))
+c.commit(); c.close()
+migrated = db.patch_pending(db.connect(old), "oldhost")
+
+print(json.dumps({
+  "stored": stored, "on_sample": on_sample,
+  "not_rewritten": rowids == rowids_after and len(rowids) == 6,
+  "changed": changed,
+  "after_silence": after_silence, "acks_after_silence": acks_after_silence,
+  "after_forget": after_forget,
+  "migrated": migrated,
+}))
+PY
+) || J=''
+  check "the names a check reported are stored once, in report order" \
+        "assert d['stored']==['a','b','c','d','e','f'], d" "$J"
+  check "and no longer ride along on every sample row" \
+        "assert d['on_sample'] is None, d" "$J"
+  check "an unchanged list is not rewritten on every sample" \
+        "assert d['not_rewritten'] is True, d" "$J"
+  check "while a list that actually moved is" \
+        "assert d['changed']==['a','b','zzz'], d" "$J"
+  check "a sample carrying no check does not erase what is pending" \
+        "assert d['after_silence']==['a','b','zzz'], d" "$J"
+  check "nor the acknowledgements made against it" \
+        "assert d['acks_after_silence']==['a'], d" "$J"
+  check "forgetting a host takes its pending list with it" \
+        "assert d['after_forget']==[], d" "$J"
+  # Otherwise an upgrade reads as nothing-pending everywhere for up to a day,
+  # and the pruner clears every ack on the fleet on the strength of it.
+  check "an upgrade seeds the list from the column it used to live in" \
+        "assert d['migrated']==['a','b','c','d','e','f'], d" "$J"
+fi
+
 if want patch-ack; then
   echo "patch-ack (acknowledging silences one package, not the whole list)"
   J=$(python3 - "$ROOT" <<'PY'
@@ -1046,6 +1142,11 @@ def sample(sec, pkgs, host=HOST):
             "patch_packages":pkgs,"collector_version":None,"disks":[]}
 
 def patches(sec, pkgs, host=HOST):
+    # What insert_sample does with the reported string, without the sample:
+    # the pending list is per host now, not a column on every row.
+    with db._WRITE:
+        db._set_patch_pending(app.CONN, host, pkgs)
+        app.CONN.commit()
     return app.summarize(sample(sec, pkgs, host), now)["patches"]
 
 def acked(p):
@@ -1072,14 +1173,41 @@ after_one_unack = patches(3, THREE)
 db.unack_patch(app.CONN, HOST)
 after_unack = patches(3, THREE)
 
-# The names are capped at six, so anything past that can only be acknowledged
-# as a group -- keyed on how many there are, which is as strong as the old
-# whole-state ack and the only part of this that still is.
+# The six-name cap this replaces made everything past the sixth one anonymous
+# group, keyed on how many there were. Which packages fell into it was
+# positional -- no check sorts its output -- so the count could hold still
+# while the membership changed underneath, and an ack made about one set of
+# packages silently covered another. Nine names, all of them ackable.
 BIG = "bighost"
-big_before = patches(9, "a, b, c, d, e, f (+3 more)", BIG)
+NINE = ", ".join("abcdefghi")
+big_before = patches(9, NINE, BIG)
 db.ack_patch(app.CONN, BIG, [i["package"] for i in big_before["entries"]], int(now))
-big_acked = patches(9, "a, b, c, d, e, f (+3 more)", BIG)
-big_moved = patches(10, "a, b, c, d, e, f (+4 more)", BIG)
+big_acked = patches(9, NINE, BIG)
+# One package swapped for a different one, count unchanged. Under the group ack
+# this host stayed silent; the newcomer was never reviewed by anybody.
+big_swapped = patches(9, ", ".join("abcdefgh") + ", zzz", BIG)
+
+# A collector upgrades on its own schedule, so the capped form keeps arriving
+# for a while yet. Its "(+3 more)" tail is a count, not a package, and must not
+# become an ack target again on the way in.
+LEG = "legacyhost"
+legacy = patches(9, "a, b, c, d, e, f (+3 more)", LEG)
+# Six names against a count of nine: three pending items nobody can review.
+# Acknowledging the six must not read as "this host has been reviewed" -- that
+# is the blind ack coming back through the side door.
+db.ack_patch(app.CONN, LEG, [i["package"] for i in legacy["entries"]], int(now))
+legacy_all_acked = patches(9, "a, b, c, d, e, f (+3 more)", LEG)
+# openSUSE Leap's patch-check: a count and no names at all, ever.
+leap = patches(2, None, "leaphost")
+
+# A check old enough to read as unknown is not a security state, so there is
+# nothing to acknowledge and nothing unnamed to complain about -- but the names
+# it last reported are still worth showing on the card.
+STALE = "stalehost"
+patches(3, THREE, STALE)
+stale_sample = sample(3, THREE, STALE)
+stale_sample["patch_checked_at"] = now - 90 * 3600
+stale = app.summarize(stale_sample, now)["patches"]
 
 # A FreeBSD PORTEPOCH is part of the package name, not a separator. Splitting
 # on a bare comma broke gimp-2.10.38,2 on a live host into a package and a
@@ -1123,9 +1251,21 @@ print(json.dumps({
   "one_unack_kept":     acked(after_one_unack),
   "after_unack_acked":  acked(after_unack),
   "big_entries":        [i["package"] for i in big_before["entries"]],
-  "big_unnamed":        [i["unnamed"] for i in big_before["entries"]],
   "big_acked":          big_acked["acknowledged"],
-  "big_moved_acked":    big_moved["acknowledged"],
+  "big_swapped_acked":  big_swapped["acknowledged"],
+  "big_swapped_new":    [i["package"] for i in big_swapped["entries"]
+                         if not i["acknowledged"]],
+  "legacy_entries":     [i["package"] for i in legacy["entries"]],
+  "legacy_unnamed":     legacy["unnamed_count"],
+  "legacy_all_acked":   legacy_all_acked["acknowledged"],
+  "legacy_acked_count": legacy_all_acked["acked_count"],
+  "leap_entries":       [i["package"] for i in leap["entries"]],
+  "leap_unnamed":       leap["unnamed_count"],
+  "leap_acked":         leap["acknowledged"],
+  "stale_status":       stale["status"],
+  "stale_entries":      [i["package"] for i in stale["entries"]],
+  "stale_unnamed":      stale["unnamed_count"],
+  "stale_packages":     stale["packages"],
   "epoch_entries":      [i["package"] for i in epoch["entries"]],
   "after_prune":        after_prune,
   "migrated":           migrated,
@@ -1155,12 +1295,34 @@ PY
         "assert d['one_unack_whole'] is False and d['one_unack_kept']==['py312-setuptools-63.1.0_3','python312-3.12.14'], d" "$J"
   check "un-acknowledging the host clears the lot" \
         "assert d['after_unack_acked']==[], d" "$J"
-  check "the packages past the collector's cap are one group, counted" \
-        "assert d['big_entries'][-1]=='(+3 more)' and d['big_unnamed'][-1]==3 and d['big_unnamed'][0] is None, d" "$J"
-  check "acknowledging that group silences the host" \
+  # An ack is a person saying they reviewed a specific thing, so there has to
+  # be a specific thing. Nothing is summarised into a group you cannot inspect.
+  check "every pending package is named, however many there are" \
+        "assert d['big_entries']==list('abcdefghi'), d" "$J"
+  check "acknowledging all nine silences the host" \
         "assert d['big_acked'] is True, d" "$J"
-  check "and the group ack lapses as soon as how many there are moves" \
-        "assert d['big_moved_acked'] is False, d" "$J"
+  # The group ack was keyed on the count alone, and membership was positional,
+  # so this swap kept the host silent about a package nobody had ever seen.
+  check "a package swapped in at an unchanged count is not silently covered" \
+        "assert d['big_swapped_acked'] is False and d['big_swapped_new']==['zzz'], d" "$J"
+  # A collector still on the old build keeps sending "(+3 more)". It is a
+  # count, not a package, and it is not something anyone can acknowledge.
+  check "a not-yet-upgraded collector's (+N more) tail never becomes an entry" \
+        "assert d['legacy_entries']==list('abcdef') and d['legacy_unnamed']==3, d" "$J"
+  # The blind ack coming back through the side door: six of nine ticked is not
+  # a reviewed host, and a card that went quiet here would be the original bug.
+  check "acknowledging every *named* package still leaves the host loud" \
+        "assert d['legacy_all_acked'] is False and d['legacy_acked_count']==6, d" "$J"
+  # openSUSE Leap counts security patches and can name none of them. There is
+  # nothing to key an ack on, so it stays loud rather than offering a group.
+  check "a check that names nothing at all offers nothing to acknowledge" \
+        "assert d['leap_entries']==[] and d['leap_unnamed']==2 and d['leap_acked'] is False, d" "$J"
+  # A stale check is "unknown", never a security state -- so it offers no acks,
+  # and must not claim packages went unnamed when it simply went unread.
+  check "a stale check still shows what it last named, and complains of nothing" \
+        "assert d['stale_status']=='unknown' and d['stale_entries']==[] and d['stale_unnamed']==0, d" "$J"
+  check "and keeps those names on the card" \
+        "assert d['stale_packages']==', '.join(['python312-3.12.14','giflib-6.1.3','py312-setuptools-63.1.0_3']), d" "$J"
   # Otherwise a package fixed in March comes back vulnerable in July already
   # silenced, by a decision made about a different advisory.
   check "pruning drops acks for packages that are no longer pending" \
@@ -1736,8 +1898,14 @@ if want render; then
     # own, and still acknowledged when the rest of the list has moved on.
     check "every pending package gets its own acknowledge link" \
           "assert d['every_pending_package_gets_its_own_ack_row'] is None, d['every_pending_package_gets_its_own_ack_row']" "$J"
-    check "and the packages past the cap read as a group, not as \"(+3 more)\"" \
-          "assert d['the_unnamed_remainder_reads_as_a_group'] is None, d['the_unnamed_remainder_reads_as_a_group']" "$J"
+    # The page used to carry a row for the packages the capped list never
+    # named, with an acknowledge link beside it.
+    check "a check that names nothing at all still explains its red badge" \
+          "assert d['a_check_that_names_nothing_still_explains_its_red_badge'] is None, d['a_check_that_names_nothing_still_explains_its_red_badge']" "$J"
+    check "a counted-but-unnamed remainder is stated, with no way to ack it" \
+          "assert d['a_counted_but_unnamed_remainder_is_stated_and_not_ackable'] is None, d['a_counted_but_unnamed_remainder_is_stated_and_not_ackable']" "$J"
+    check "and nothing on the page asks for an ack on a package it cannot show" \
+          "assert d['every_listed_package_is_named_and_separately_ackable'] is None, d['every_listed_package_is_named_and_separately_ackable']" "$J"
     check "and for a host that is down" \
           "assert d['detail_down'] is None, d['detail_down']" "$J"
     check "and for one that is away" \

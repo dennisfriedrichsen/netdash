@@ -624,11 +624,20 @@ host falls quiet on its own with nothing to re-acknowledge.
 It is still *not* a snooze on the host. Each ack is keyed to the package name
 exactly as the check reports it, version and all — a package that changes
 underneath an ack is new information about the thing that was reviewed, so it
-comes back. The names past the collector's cap of six (`+3 more`) can only be
-acknowledged as a group, keyed on how many there are, so that ack lapses as
-soon as the number moves. And an ack for a package that stops being pending is
-dropped by the next prune, so that package's *next* advisory arrives loud
-rather than pre-silenced by a decision about an older one.
+comes back. And an ack for a package that stops being pending is dropped by the
+next prune, so that package's *next* advisory arrives loud rather than
+pre-silenced by a decision about an older one.
+
+Every pending package is named and acknowledged on its own. Until 0.4.1 the
+checks capped the list at six names and summarised the rest as `(+3 more)`,
+which the dashboard then offered as a single acknowledge link — asking an admin
+to sign off on packages it could not show them. It was also unsound: that group
+was keyed on the *count*, and which packages fell into it was positional, since
+no check sorts its output. One package fixed and a different one turning up
+vulnerable left the count where it was, and the ack made about the first set
+silently covered the second. The names are uncapped now, and the server stores
+them per host rather than on every sample — see *Naming the packages* in
+PATCH-CHECKS.md.
 
 Only offered for **security** — a **reboot required** badge clears itself the
 moment the host reboots, so there is nothing there worth silencing.

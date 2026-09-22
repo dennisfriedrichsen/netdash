@@ -93,7 +93,7 @@ check('detail_eol_acked', function () {
 });
 /* One entry of a pending security list, as patch_summary() sends it. */
 function item(name, acked) {
-  return { package: name, unnamed: null, acknowledged: !!acked,
+  return { package: name, acknowledged: !!acked,
            acked_at: acked ? 1788430000 : null };
 }
 function SEC(entries, extra) {
@@ -405,14 +405,74 @@ check('every_pending_package_gets_its_own_ack_row', function () {
   }
 });
 
-/* The capped tail is a group, and printing the collector's "(+3 more)" at the
-   reader is not the same as telling them what it means. */
-check('the_unnamed_remainder_reads_as_a_group', function () {
-  ctx.renderDetail('h', detail(host({ patches: SEC(
-    [item('a'), { package: '(+3 more)', unnamed: 3, acknowledged: false, acked_at: null }]) })));
+/* openSUSE Leap counts security patches and names none of them, so there are
+   no entries at all to hang the explanation off -- and a red badge with an
+   empty panel is the least useful thing the page could show. */
+check('a_check_that_names_nothing_still_explains_its_red_badge', function () {
+  var p = SEC([]);
+  p.security = 2;
+  p.unnamed_count = 2;
+  p.packages = null;
+  p.source = 'zypper-patches';
+  p.acknowledged = false;
+  ctx.renderDetail('h', detail(host({ patches: p })));
   var t = textOf(ctx.root);
-  if (t.indexOf('3 further packages') < 0) {
-    throw new Error('the remainder is not spelled out: ' + t.slice(0, 200));
+  if (t.indexOf('2 further security updates were counted but not named by zypper-patches') < 0) {
+    throw new Error('nothing explains the badge: ' + t.slice(0, 300));
+  }
+  if (countClass(ctx.root, 'ackrow') !== 0) {
+    throw new Error('offers an ack with nothing named: ' +
+                    countClass(ctx.root, 'ackrow') + ' rows');
+  }
+});
+
+/* A check that counts more than it names -- openSUSE Leap, or a host still on
+   the old capped collector -- leaves packages nobody can review. The page says
+   so, and offers no way to acknowledge them. */
+check('a_counted_but_unnamed_remainder_is_stated_and_not_ackable', function () {
+  var p = SEC([item('a', true), item('b', true)]);
+  p.security = 5;
+  p.unnamed_count = 3;
+  p.acknowledged = false;
+  p.acked_count = 2;
+  ctx.renderDetail('h', detail(host({ patches: p })));
+  var t = textOf(ctx.root);
+  if (t.indexOf('3 further security updates were counted but not named') < 0) {
+    throw new Error('the remainder is not explained: ' + t.slice(0, 300));
+  }
+  /* A row for each named package plus the bulk un-acknowledge one, and
+     nothing beyond that: the remainder gets a sentence, never a link. */
+  if (countClass(ctx.root, 'ackrow') !== 3) {
+    throw new Error('wanted 3 ack rows, got ' + countClass(ctx.root, 'ackrow'));
+  }
+  /* "un-acknowledge all" is fine and expected -- both named packages are
+     acked. What must not appear is a bulk *acknowledge* link. */
+  if (/(^|[^-])acknowledge all \d/.test(t)) {
+    throw new Error('offers a bulk ack while packages are unnamed: ' + t.slice(0, 300));
+  }
+});
+
+/* Every entry is a package by name, and every one of them gets its own
+   acknowledge link. The page used to carry a seventh row standing in for the
+   packages the capped list never named -- "3 further packages the check did
+   not name" -- with an acknowledge link beside it, which asked an admin to
+   sign off on something the page could not show them. */
+check('every_listed_package_is_named_and_separately_ackable', function () {
+  var names = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'];
+  ctx.renderDetail('h', detail(host({ patches: SEC(names.map(function (n) {
+    return item(n);
+  })) })));
+  var t = textOf(ctx.root);
+  if (t.indexOf('further package') >= 0 || t.indexOf('more)') >= 0) {
+    throw new Error('a group stands in for named packages: ' + t.slice(0, 200));
+  }
+  names.forEach(function (n) {
+    if (t.indexOf(n) < 0) { throw new Error('package ' + n + ' is not shown'); }
+  });
+  /* A row per package, plus the bulk one -- and not a tenth for a group. */
+  if (countClass(ctx.root, 'ackrow') !== names.length + 1) {
+    throw new Error('wanted ' + (names.length + 1) + ' ack rows, got ' +
+                    countClass(ctx.root, 'ackrow'));
   }
 });
 

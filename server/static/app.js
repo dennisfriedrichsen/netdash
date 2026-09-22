@@ -151,6 +151,9 @@ function patchTitle(p) {
     bits.push(p.acked_count + ' of ' + (p.entries ? p.entries.length : p.security) +
               ' acknowledged');
   }
+  if (p.unnamed_count) {
+    bits.push(p.unnamed_count + ' not named by the check');
+  }
   return bits.join(' · ');
 }
 
@@ -241,16 +244,6 @@ function ackButton(host, kind, label, acknowledge, pkg) {
   return b;
 }
 
-/* The package the collector named, or the group standing in for the ones it
-   did not: the list is capped at six names with a "(+3 more)" tail, and those
-   three can only be acknowledged together, so say that in words rather than
-   printing the collector's shorthand at the reader. */
-function pkgLabel(item) {
-  if (!item.unnamed) return item.package;
-  return item.unnamed + ' further package' + (item.unnamed === 1 ? '' : 's') +
-         ' the check did not name';
-}
-
 /* "acknowledged 3h ago — un-acknowledge", or an "acknowledge" button.
 
    With an item -- one entry of the pending package list, which is also the
@@ -260,7 +253,7 @@ function ackRow(host, kind, state, item) {
   var row = el('div', 'sub ackrow');
   var pkg = item ? item.package : null;
   if (item) {
-    row.appendChild(el('span', 'pkg', pkgLabel(item)));
+    row.appendChild(el('span', 'pkg', item.package));
     row.appendChild(document.createTextNode(' — '));
   }
   if (state.acknowledged) {
@@ -1124,6 +1117,21 @@ function renderDetail(host, data, range) {
       }
     } else if (pp.packages) {
       p4.appendChild(el('div', 'sub', pp.packages));
+    }
+    /* The check counted more than it named, so this host stays loud however
+       much of the list is acknowledged. Said plainly, because otherwise it
+       reads as a bug: every package on the page is ticked and the badge is
+       still red. No acknowledge link -- an unnamed package is one nobody can
+       review, which is the whole reason the "(+N more)" group is gone.
+       Outside the branch above because the count can be the *whole* story:
+       openSUSE Leap's patch-check names nothing at all, so there are no
+       entries to hang this off. */
+    if (pp.status === 'security' && pp.unnamed_count) {
+      p4.appendChild(el('div', 'sub',
+        pp.unnamed_count + ' further security ' +
+        (pp.unnamed_count === 1 ? 'update was' : 'updates were') +
+        ' counted but not named by ' + (pp.source || 'the check') +
+        ' — this host cannot be fully acknowledged until it names them'));
     }
     if (pp.reboot_required) {
       p4.appendChild(el('div', 'sub',

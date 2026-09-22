@@ -65,7 +65,10 @@ CREATE TABLE IF NOT EXISTS samples (
     patch_detail       TEXT,
     -- 1 / 0 / NULL. NULL means the host has no way to answer, not "no".
     patch_reboot       INTEGER,
-    -- Names of the security-relevant packages, capped by the collector.
+    -- Vestigial. The security package names used to ride here on every sample,
+    -- capped at six by the collector because of what that cost; they live in
+    -- patch_pending now and this is written NULL. Kept only so a rollback onto
+    -- the previous server can still read the rows it wrote. See patch_pending.
     patch_packages     TEXT,
     -- Which netdash-collector produced this sample, for spotting hosts left
     -- behind on an old one. NULL for TrueNAS, which has no collector.
@@ -205,6 +208,34 @@ CREATE TABLE IF NOT EXISTS patch_acks (
     PRIMARY KEY (host, package)
 );
 
+-- The security-relevant packages a host's latest check named, one row each.
+--
+-- These used to ride on every sample as a comma-joined string in
+-- samples.patch_packages, which is why they were capped at six names with a
+-- "(+N more)" tail: fifty names on a 30-second sample is fifty names written
+-- 2,880 times a day. But only the newest row's copy was ever read -- the ack
+-- path and the prune both start from latest_per_host -- so the cap was paying
+-- for storage nothing looked at, and charging an admin the difference: the
+-- packages past the sixth could only be acknowledged as an anonymous group,
+-- keyed on how many of them there were.
+--
+-- That group was not merely unreadable, it was unsound. Which packages fell
+-- into it is positional -- the checks emit backend order and none of them
+-- sort -- so the count could hold steady while the membership changed, and an
+-- ack made about one set of packages would silently cover another. That is the
+-- landmine prune() exists to defuse, reintroduced inside the one entry nobody
+-- could inspect.
+--
+-- Keyed per host rather than per sample because that is the rate the data
+-- actually moves at: the check runs daily, the sample every thirty seconds.
+CREATE TABLE IF NOT EXISTS patch_pending (
+    host     TEXT    NOT NULL,
+    ord      INTEGER NOT NULL,
+    package  TEXT    NOT NULL,
+    PRIMARY KEY (host, package)
+);
+CREATE INDEX IF NOT EXISTS idx_patch_pending ON patch_pending(host, ord);
+
 -- A silenced end-of-life warning, one per host. Narrow in the same way and
 -- for the same reason as patch_acks, but the state it pins down is different:
 -- the phase, the release, and the date.
@@ -288,57 +319,86 @@ def _migrate_hosts(conn):
         )
 
 
-# The tail the collectors append once the name list is capped: "openssl, zlib1g
-# (+3 more)". See "Naming the packages" in PATCH-CHECKS.md for why it is capped.
-# Not anchored to the end of the string: FreeBSD's base-system branch appends
-# its staged patch to the list after the cap has already been applied, so the
-# tail can land in the middle.
+# The tail older collectors appended once the name list was capped: "openssl,
+# zlib1g (+3 more)". Nothing emits it any more -- the cap is gone, and every
+# security package is named -- but a collector upgrades on its own schedule and
+# netdash has to keep reading whatever the fleet is still sending. Stripped on
+# the way in rather than stored: the count is not a package, and making it an
+# ack target is the bug this replaced.
+#
+# Not anchored to the end of the string: FreeBSD's base-system branch appended
+# its staged patch after the cap had already been applied, so on those payloads
+# the tail can land in the middle.
 _MORE_RE = re.compile(r"\s*\(\+(\d+) more\)\s*")
 
-# What cap_names() joins names with. A comma alone is part of a name.
+# What the collectors join names with. A comma alone is part of a name.
 _JOIN_RE = re.compile(r",\s+")
 
 
-def patch_entries(packages, security):
-    """The individual things an ack can be made against, in the order reported.
+def split_packages(packages):
+    """The package names in a check's reported string, in the order reported.
 
     A check reports one string -- "openssl, zlib1g, python312-3.12.14" -- and an
-    ack is now made against one package at a time, so that string has to come
-    apart the same way everywhere it is used: the read that decides whether a
-    host is silenced, the write that records an ack, and the prune that drops
-    acks for packages nobody is waiting on any more.
+    ack is made against one package at a time, so that string has to come apart
+    the same way everywhere it is used.
 
-    The capped tail is an entry in its own right, and the count is part of its
-    name. Six names are all a collector will ever send, so on a host with nine
-    vulnerable packages the other three can only be acknowledged as a group --
-    keyed on how many there are, so that group ack lapses the moment the number
-    moves. That is exactly as strong as the whole-state ack this replaces, and
-    it is the only part of this that still is. A platform that classifies a
-    count but names nothing (a staged base update, an unparsed check) lands in
-    the same group for the same reason.
+    Split on the ", " the collectors join with, never on a bare comma: a FreeBSD
+    package name carries its PORTEPOCH as one, and a live host had exactly that
+    -- "gimp-2.10.38,2" came apart into a package and a stray "2", each
+    separately acknowledgeable and neither meaning anything.
     """
-    text = (packages or "").strip()
-    m = _MORE_RE.search(text)
-    if m:
-        rest = text[m.end():]
-        text = text[:m.start()] + (", " + rest if rest else "")
-    # Split on the ", " the collectors join with, never on a bare comma: a
-    # FreeBSD package name carries its PORTEPOCH as one, and a live host had
-    # exactly that -- "gimp-2.10.38,2" came apart into a package and a stray
-    # "2", each separately acknowledgeable and neither meaning anything.
-    names = [n.strip() for n in _JOIN_RE.split(text) if n.strip()]
-    unnamed = int(m.group(1)) if m else 0
-    if security:
-        unnamed = max(unnamed, int(security) - len(names))
-    if unnamed > 0:
-        names.append("(+%d more)" % unnamed)
-    return names
+    text = _MORE_RE.sub(", ", (packages or "").strip())
+    return [n.strip() for n in _JOIN_RE.split(text) if n.strip()]
 
 
-def patch_entry_unnamed(entry):
-    """How many unnamed packages an entry stands for, or None for a real name."""
-    m = _MORE_RE.fullmatch(entry or "")
-    return int(m.group(1)) if m else None
+def _set_patch_pending(conn, host, packages):
+    """Replace the host's pending security package list. Caller holds _WRITE.
+
+    Rewritten only when it actually differs. The list arrives on every sample,
+    once or twice a minute, and is the same string all day -- the check behind
+    it runs daily. Comparing first turns 2,880 pointless rewrites a day per
+    host into the handful that mean something.
+    """
+    names = split_packages(packages)
+    have = [r["package"] for r in conn.execute(
+        "SELECT package FROM patch_pending WHERE host=? ORDER BY ord", (host,))]
+    if have == names:
+        return
+    conn.execute("DELETE FROM patch_pending WHERE host=?", (host,))
+    conn.executemany(
+        "INSERT INTO patch_pending (host, ord, package) VALUES (?,?,?)",
+        [(host, i, n) for i, n in enumerate(names)],
+    )
+
+
+def patch_pending(conn, host):
+    """The security packages this host's latest check named, in report order."""
+    return [r["package"] for r in conn.execute(
+        "SELECT package FROM patch_pending WHERE host=? ORDER BY ord", (host,))]
+
+
+def _migrate_patch_pending(conn):
+    """Seed the pending list from the newest sample that still carries one.
+
+    Without this an upgrade would show every host with zero pending packages
+    until its next patchcheck -- up to a day -- and prune() would read that
+    empty list as "nothing is pending here" and delete every ack on the box.
+
+    Reads the newest row that has a non-NULL patch_packages, not simply the
+    newest row: the new insert_sample writes NULL there, so by the time this
+    runs on a second start the recent rows are all empty and the last real
+    answer is further back. A table that already holds anything has been
+    seeded, which is what makes this safe to run on every connect.
+    """
+    if conn.execute("SELECT 1 FROM patch_pending LIMIT 1").fetchone():
+        return
+    rows = conn.execute(
+        """SELECT host, patch_packages FROM samples
+            WHERE id IN (SELECT MAX(id) FROM samples
+                          WHERE patch_packages IS NOT NULL GROUP BY host)"""
+    ).fetchall()
+    for r in rows:
+        _set_patch_pending(conn, r["host"], r["patch_packages"])
 
 
 def _migrate_patch_acks(conn):
@@ -358,7 +418,7 @@ def _migrate_patch_acks(conn):
     rows = [
         (r["host"], pkg, r["acked_at"])
         for r in old
-        for pkg in patch_entries(r["packages"], r["security"])
+        for pkg in split_packages(r["packages"])
     ]
     conn.execute("DROP TABLE patch_acks")
     conn.executescript(SCHEMA)
@@ -393,6 +453,7 @@ def connect(path):
     conn.executescript(SCHEMA)
     _migrate(conn)
     _migrate_patch_acks(conn)
+    _migrate_patch_pending(conn)
     _migrate_hosts(conn)
     conn.commit()
     return conn
@@ -455,7 +516,12 @@ def insert_sample(conn, payload, source="push", peer=None):
                 p.get("source"),
                 p.get("detail") or None,
                 None if p.get("reboot_required") is None else int(bool(p["reboot_required"])),
-                p.get("packages") or None,
+                # Vestigial: the names live in patch_pending now, at the rate
+                # they change rather than the rate samples arrive. Kept as a
+                # column so a rollback onto the previous server still reads its
+                # own rows, and left NULL so the 4 MB of duplicated strings
+                # already in the window ages out with the window.
+                None,
                 payload.get("collector_version"),
                 payload.get("virt"),
                 peer,
@@ -463,6 +529,12 @@ def insert_sample(conn, payload, source="push", peer=None):
         )
         sid = cur.lastrowid
         register_host(conn, payload["host"], ts, payload.get("os"), source, peer)
+        # Only a sample that actually carries a check may speak for what is
+        # pending. A collector whose patchcheck has never run, or has stopped
+        # reporting, has told us nothing -- and wiping the list on that silence
+        # would drop every ack with it the moment the check came back.
+        if p.get("checked_at") is not None:
+            _set_patch_pending(conn, payload["host"], p.get("packages"))
         for d in payload.get("disks") or []:
             conn.execute(
                 "INSERT INTO disks (sample_id, mount, used_bytes, total_bytes) VALUES (?,?,?,?)",
@@ -523,7 +595,7 @@ def prune(conn, retention_hours, rollup_days=None, event_days=None):
         for s in latest_per_host(conn):
             if s["patch_checked_at"] is None:
                 continue
-            keep = patch_entries(s["patch_packages"], s["patch_security"])
+            keep = patch_pending(conn, s["host"])
             if keep:
                 conn.execute(
                     "DELETE FROM patch_acks WHERE host=? AND package NOT IN (%s)"
@@ -806,7 +878,7 @@ def forget_host(conn, host):
                 "DELETE FROM %s WHERE sample_id IN "
                 "(SELECT id FROM samples WHERE host=?)" % t, (host,))
         for t in ("samples", "rollups", "disk_rollups", "patch_acks",
-                  "eol_acks", "hosts"):
+                  "patch_pending", "eol_acks", "hosts"):
             conn.execute("DELETE FROM %s WHERE host=?" % t, (host,))
         conn.commit()
     return bool(known)

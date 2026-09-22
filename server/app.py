@@ -304,26 +304,44 @@ def patch_summary(sample, now):
     # package turning up vulnerable is not the thing that got reviewed, so it
     # arrives unacknowledged and the badge goes back to red until it too has
     # been looked at. Nothing has to be re-acknowledged for that to work.
-    entries = (db.patch_entries(sample.get("patch_packages"), sec)
-               if status == "security" else [])
-    acks = (db.get_patch_acks(CONN, sample["host"])
-            if entries and CONN is not None and sample.get("host") else {})
+    #
+    # Every entry is a package the check actually named. There is no longer a
+    # group standing in for the ones it did not: an ack is a person saying they
+    # reviewed a specific thing, and an anonymous "+2 more" is not something
+    # anyone can review. See the note on patch_pending.
+    named = (db.patch_pending(CONN, sample["host"])
+             if CONN is not None and sample.get("host") else [])
+    # Only a live security state is acknowledgeable. The names are still read
+    # for a stale check, because "what was pending when we last heard" is the
+    # useful thing to show on a card that has gone unknown -- it just is not
+    # something anyone gets to sign off on.
+    entries = named if status == "security" else []
+    acks = (db.get_patch_acks(CONN, sample["host"]) if entries else {})
     items = [
         {
             "package": e,
-            # How many packages this entry stands for when the check named none
-            # of them, so the page can say "3 further packages" rather than
-            # printing the collector's "(+3 more)" shorthand at the reader.
-            "unnamed": db.patch_entry_unnamed(e),
             "acknowledged": e in acks,
             "acked_at": acks.get(e),
         }
         for e in entries
     ]
     acked = [i for i in items if i["acknowledged"]]
+    # A check that counts more security items than it can name has told us
+    # something is pending that nobody can review, and a host cannot be
+    # silenced over packages it never named. Two ways to get here: openSUSE
+    # Leap's patch-check, which reports a count and no names at all, and the
+    # window after a server upgrade while a host is still running the old
+    # capped collector -- its last stored list stops at six and the rest exist
+    # only in the count. Acknowledging the six would otherwise read as
+    # "reviewed" for a host with more still pending.
+    #
+    # Loud, rather than an ack target for the remainder: an anonymous group is
+    # what this replaced, and it could not be reviewed either.
+    unnamed_count = (max(0, sec - len(items))
+                     if status == "security" and sec is not None else 0)
     # The host is silenced only when every pending item is: one unreviewed
     # package is a reason to look, however much of the list is already known.
-    acknowledged = bool(items) and len(acked) == len(items)
+    acknowledged = bool(items) and len(acked) == len(items) and not unnamed_count
 
     return {
         "status": status,
@@ -334,9 +352,15 @@ def patch_summary(sample, now):
         "age_seconds": age,
         "source": sample.get("patch_source"),
         "detail": sample.get("patch_detail"),
-        "packages": sample.get("patch_packages"),
+        # The names the check reported, for the card's one-line summary. Built
+        # from the same list the entries are, so the summary and the things you
+        # can act on can never disagree.
+        "packages": ", ".join(named) or None,
         "entries": items,
         "acked_count": len(acked),
+        # How many pending security items the check counted but did not name.
+        # Zero on a healthy host; non-zero means this card cannot go quiet.
+        "unnamed_count": unnamed_count,
         "acknowledged": acknowledged,
         # When the whole state is silenced, the moment it became so -- the last
         # of the packages to be acknowledged, not the first.

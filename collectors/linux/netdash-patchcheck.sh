@@ -12,7 +12,7 @@
 set -eu
 
 # Kept in sync with the repository VERSION file by tests/run.sh.
-NETDASH_VERSION="0.4.0"
+NETDASH_VERSION="0.4.1"
 
 MODE="${1:-}"
 
@@ -50,15 +50,22 @@ run() { "$@" 2>/dev/null || true; }
 
 mtime() { [ -e "$1" ] && stat -c %Y "$1" 2>/dev/null || true; }
 
-# Names of the security-relevant packages, capped. A tooltip is not a report:
-# one host with fifty vulnerable packages must not push a fifty-name string
-# through every 30-second sample for the rest of the day. Reads names on stdin,
-# one per line.
-NAME_CAP=6
-cap_names() {
-  tr -cd 'A-Za-z0-9._+:~,()\- \n' | awk -v max="$NAME_CAP" '
-    NF { n++; if (n <= max) out = out (out ? ", " : "") $0 }
-    END { if (n > max) out = out " (+" n - max " more)"; printf "%s", out }'
+# Names of the security-relevant items -- every one of them, uncapped. An
+# acknowledgement in netdash is made against a package by name, so a name that
+# never arrives is a package nobody can review: the old six-name cap with its
+# "(+N more)" tail did not just hide the rest, it made them acknowledgeable
+# only as an anonymous group keyed on how many there were. The cap bought
+# nothing worth that -- the server wrote this string into every sample and only
+# ever read the newest, and it keeps the list per host now.
+#
+# Reads names on stdin, one per line, and strips anything that could break out
+# of the JSON string: the payload is assembled by printf in shell, so a quote or
+# a backslash in a package name would produce malformed JSON that the server
+# then rejects, losing the whole sample -- metrics included -- over this field.
+join_names() {
+  tr -cd 'A-Za-z0-9._+:~,()\- \n' | awk '
+    NF { out = out (out ? ", " : "") $0 }
+    END { printf "%s", out }'
 }
 SECPKGS=""
 
@@ -95,7 +102,7 @@ if command -v apt-get >/dev/null 2>&1; then
     END { printf "%d %d\n", sec+0, n-sec+0 }')
   SEC=${1:-0}; OTH=${2:-0}
   SECPKGS=$(printf '%s\n' "$UPG" | awk '
-    /^Inst / { s=$0; sub(/^[^(]*\(/,"",s); if (s ~ /-security/) print $2 }' | cap_names)
+    /^Inst / { s=$0; sub(/^[^(]*\(/,"",s); if (s ~ /-security/) print $2 }' | join_names)
 
 # ---------------------------------------------------------------- dnf ----
 elif command -v dnf5 >/dev/null 2>&1 || command -v dnf >/dev/null 2>&1; then
@@ -117,7 +124,7 @@ elif command -v dnf5 >/dev/null 2>&1 || command -v dnf >/dev/null 2>&1; then
   done
   SECOUT=$(run $DNF -q check-update --security)
   SEC=$(printf '%s\n' "$SECOUT" | awk 'NF==3 && $1 ~ /\./ {n++} END{print n+0}')
-  SECPKGS=$(printf '%s\n' "$SECOUT" | awk 'NF==3 && $1 ~ /\./ {print $1}' | cap_names)
+  SECPKGS=$(printf '%s\n' "$SECOUT" | awk 'NF==3 && $1 ~ /\./ {print $1}' | join_names)
   ALL=$(count_dnf)
   OTH=$((ALL - SEC)); [ "$OTH" -ge 0 ] || OTH=0
 
@@ -168,7 +175,7 @@ elif command -v pacman >/dev/null 2>&1; then
     # success too.
     if [ "$rc" -eq 0 ] || [ -n "$AA" ]; then
       SEC=$(printf '%s' "$AA" | grep -c . || true)
-      SECPKGS=$(printf '%s\n' "$AA" | cap_names)
+      SECPKGS=$(printf '%s\n' "$AA" | join_names)
       REFRESHED=1
       SRC="pacman+arch-audit"
     else

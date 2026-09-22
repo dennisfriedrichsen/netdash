@@ -626,7 +626,7 @@ than leaving a booted system running stale code.
 ## Naming the packages
 
 A count alone means going to the box to find out what it is. Each check also
-reports the *security-relevant names*, capped at six with a `(+N more)` tail:
+reports the *security-relevant names* — all of them:
 
 | platform | names come from |
 |---|---|
@@ -644,14 +644,43 @@ security ones in the first place.
 These names are also the key an acknowledgement is stored against — one row per
 package, so acknowledging a months-old `pkg audit` hit on `python312` survives
 the rest of the list changing around it (see *Acknowledging a security state* in
-the README). The cap has a consequence there: the packages past the sixth can
-only be acknowledged as a group, keyed on how many of them there are. A platform
-that reports a count and names nothing is that same group, for the same reason —
-there is nothing else to key on.
+the README).
 
-The cap is not cosmetic: this string rides on *every* sample, once or twice a
-minute, forever. A host with fifty vulnerable packages would otherwise push
-fifty names through the ingest path and into every row of the rolling window.
+### Why the cap is gone
+
+Until 0.4.1 this list stopped at six names and summarised the rest as
+`(+N more)`. The server turned that tail into an ack target of its own, so the
+packages past the sixth could only be acknowledged as an anonymous group keyed
+on how many of them there were — which asks an admin to sign off on packages
+the dashboard cannot show them, and an acknowledgement nobody can inspect is
+not a review.
+
+It was also unsound. Which packages landed in the group is *positional*, and
+none of these backends sort their output, so the membership shifts while the
+count stays put. cerium showed exactly that in a day: `srt-1.5.5` was fixed and
+`qt6-webengine` moved up out of the group into the named six. The reverse
+slide is the dangerous one — a package sliding *in* while the count lands back
+on the same number inherits an ack made about a different set of packages.
+That is the landmine `prune()` exists to defuse, reintroduced inside the one
+entry nobody could read.
+
+What the cap bought was not worth that, and on inspection it was not buying
+much. The justification was that the string rides on *every* sample, once or
+twice a minute, forever — true, but only the newest sample's copy was ever
+read, by `summarize()` and by `prune()`, both of which start from
+`latest_per_host`. On a live 30-host server that was 4.36 MB of a 37.3 MB
+database, of which thirty rows mattered.
+
+So the names moved to their own table, `patch_pending`, keyed per host and
+rewritten only when the list actually changes — which is once a day, when the
+check behind it runs, rather than 2,880 times. `samples.patch_packages` is
+vestigial and written NULL; the old copies age out with the window. Uncapping
+the list now costs nothing that was not already being paid, and the worst host
+in that fleet went from 131 bytes to about 800.
+
+A platform that reports a count and names nothing (openSUSE Leap's
+`zypper patch-check`) still cannot be acknowledged package by package — there
+is nothing to key on. It reports its count and stays loud.
 
 Names are also stripped of anything outside a safe character set before they
 reach the JSON. The payload is assembled by `printf` in shell, so a quote or a

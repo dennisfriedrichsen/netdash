@@ -4,7 +4,7 @@
 set -eu
 
 # Kept in sync with the repository VERSION file by tests/run.sh.
-NETDASH_VERSION="0.4.0"
+NETDASH_VERSION="0.4.1"
 
 MODE="${1:-}"
 
