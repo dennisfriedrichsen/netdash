@@ -55,7 +55,11 @@ is not merely doubtful but known to be wrong. It is dropped rather than
 repeated, and the counts go with it — if the reboot ended a patch run, what was
 pending beforehand is precisely what just got installed. The card says *checked
 before reboot* rather than the bare *check stale* it would otherwise share with
-a host nobody has looked at in a fortnight.
+a host nobody has looked at in a fortnight — unless the check is already past
+`patch_stale_hours` too, in which case it says *check stale*. The reboot
+explains a check that was current until the host went down; one that had
+already stopped arriving before that has a different problem, and naming the
+reboot sends you looking in the wrong place.
 
 This is not airtight, and errs the same way the rest of this does. A host whose
 refresh failed dates its counts by the package cache rather than by the run

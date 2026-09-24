@@ -1249,6 +1249,9 @@ just_befor = pc(2*H, 2*H + 1)
 no_uptime  = pc(None, 12*H)
 # Already stale on the clock -- the older rule still wins, and reads the same.
 ancient    = pc(2000*H, 100*H)
+# rhenium: up three days on a check twenty days old. Stale on the clock AND
+# from before the boot -- stale is the reason given.
+stale_pre  = pc(72*H, 480*H)
 
 print(json.dumps({
   "rebooted":        [rebooted["status"], rebooted["predates_boot"], rebooted["reboot_required"]],
@@ -1257,6 +1260,7 @@ print(json.dumps({
   "just_before":     [just_befor["status"], just_befor["predates_boot"]],
   "no_uptime":       [no_uptime["status"], no_uptime["predates_boot"]],
   "ancient":         [ancient["status"], ancient["predates_boot"]],
+  "stale_preboot":   [stale_pre["status"], stale_pre["predates_boot"], stale_pre["reboot_required"]],
   "rebooted_entries": rebooted["entries"],
 }))
 PY
@@ -1278,6 +1282,12 @@ PY
         "assert d['no_uptime']==['security', False], d" "$J"
   check "and a check already stale on the clock still reads unknown" \
         "assert d['ancient'][0]=='unknown', d" "$J"
+  # rhenium: checked 20 days ago, rebooted 3 days ago. The cause is the patch
+  # check job that stopped running, not the reboot, so the card says stale.
+  check "a stale check that also predates the boot is reported as stale" \
+        "assert d['stale_preboot'][:2]==['unknown', False], d" "$J"
+  check "while still dropping its reboot flag" \
+        "assert d['stale_preboot'][2] is None, d" "$J"
   # Nothing is offered for acknowledgement on a reading we have just disowned.
   check "nothing on a disowned reading is offered for acknowledgement" \
         "assert d['rebooted_entries']==[], d" "$J"

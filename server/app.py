@@ -304,13 +304,22 @@ def patch_summary(sample, now):
     # that old, which is the reading this gives them.
     up = sample.get("uptime_seconds")
     booted_at = sample["ts"] - up if up and sample.get("ts") else None
-    predates_boot = bool(checked and booted_at and checked < booted_at)
-    if predates_boot:
+    before_boot = bool(checked and booted_at and checked < booted_at)
+    if before_boot:
         reboot = None
 
-    if (checked is None or age is None
-            or age > CFG["patch_stale_hours"] * 3600
-            or predates_boot):
+    # Stale wins over the reboot as the stated reason. "Checked before reboot"
+    # is for a check that was current until the host went down; one already
+    # past patch_stale_hours had stopped arriving before that, and blaming the
+    # reboot sends whoever reads the card after the wrong cause. rhenium read
+    # "checked before reboot" on a check twenty days old, because its patch
+    # check job had stopped running seventeen days before the reboot.
+    # The reboot flag above is still dropped either way.
+    stale = (checked is None or age is None
+             or age > CFG["patch_stale_hours"] * 3600)
+    predates_boot = before_boot and not stale
+
+    if stale or predates_boot:
         status = "unknown"
     elif sec:
         status = "security"
@@ -384,7 +393,8 @@ def patch_summary(sample, now):
         "age_seconds": age,
         # Why this one is unknown, so the card can say "checked before the
         # reboot" rather than the bare "check stale" it shares with a host
-        # nobody has looked at in a fortnight.
+        # nobody has looked at in a fortnight. False once the check is stale
+        # on the clock anyway: that is the reason worth giving.
         "predates_boot": predates_boot,
         "source": sample.get("patch_source"),
         "detail": sample.get("patch_detail"),
