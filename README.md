@@ -77,9 +77,14 @@ nothing you cannot read from the number above it — the useful question is neve
 in. The scale stays fixed at 0–100 for the same reason: fitting it to the data
 would make two points of idle CPU jitter fill the panel and read as an event.
 
-A host's overall status is the worst of its three metrics. CPU is the noisiest
-signal at a 30–60s sample rate — if the grid flickers amber, raise the CPU warn
-threshold rather than lowering the sample interval.
+A host's overall status is the worst of its three metrics. CPU is judged on
+what has **held**, not on the latest reading: it is a warning only when every
+reading over `thresholds.cpu.sustain_seconds` (default 300) was over warn, and
+critical only when every one was over crit. A single spike — a build, a backup
+starting — is normal operation and leaves the card green; the number still
+shows it. A host that has been reporting for less than the window reads ok.
+Set `sustain_seconds` to 0, globally or per host, to judge every reading on
+its own. Memory and disk are judged on the latest reading: they do not spike.
 
 ### Per-host overrides
 

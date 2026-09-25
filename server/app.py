@@ -219,6 +219,14 @@ def _level(pct, t):
     return "ok"
 
 
+# How long CPU must stay over warn or crit before it counts as either.
+# A default in code, not in DEFAULTS: thresholds is a required block that every
+# existing config already has, so setdefault would never reach inside it.
+# thresholds.cpu.sustain_seconds overrides it, per host too; 0 restores the
+# old one-reading behaviour.
+CPU_SUSTAIN_SECONDS = 300
+
+
 # "down" outranks "critical": a host at 99% disk is a problem you can still log
 # in and fix, a host that is not answering is not. "stale" sits below both --
 # it is the honest middle state, a host we have lost track of but have no
@@ -529,6 +537,24 @@ def summarize(sample, now=None):
         })
 
     cpu_status = _level(sample.get("cpu_pct"), th["cpu"])
+    # One high reading is a spike, and a spike is normal operation: a package
+    # build, a backup starting, a cron job -- every host does it daily. So CPU
+    # is judged on what has held for sustain_seconds, not on the latest
+    # reading: warning and critical each mean every reading across that span
+    # was over the line. A host that has not been reporting that long has
+    # nothing that has held, and reads ok.
+    #
+    # Only CPU. Memory and disk do not spike and fall back inside a minute;
+    # when they are over the line they are over it.
+    cpu_brief = False
+    if cpu_status in ("warning", "critical"):
+        sustain = th["cpu"].get("sustain_seconds", CPU_SUSTAIN_SECONDS)
+        if sustain:
+            floor = (db.cpu_floor(CONN, sample["host"], sample["ts"], sustain)
+                     if CONN is not None else None)
+            held = "ok" if floor is None else _level(floor, th["cpu"])
+            cpu_brief = held != cpu_status
+            cpu_status = held
     mem_status = _level(mem_pct, th["mem"])
     disk_status = _level(worst_disk_pct, th["disk"])
 
@@ -591,7 +617,9 @@ def summarize(sample, now=None):
         "reachability": r or {"state": "unknown", "detail":
                               "not probed" if expect_up else "not expected up"},
         "uptime_seconds": sample.get("uptime_seconds"),
-        "cpu": {"pct": sample.get("cpu_pct"), "status": cpu_status},
+        # brief: over a line right now, but not for long enough to count.
+        "cpu": {"pct": sample.get("cpu_pct"), "status": cpu_status,
+                "brief": cpu_brief},
         "mem": {
             "pct": mem_pct,
             "used_bytes": sample.get("mem_used_bytes"),

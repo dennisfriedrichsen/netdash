@@ -20,7 +20,8 @@
   "thresholds": {
     "cpu": {
       "warn": 80,
-      "crit": 95
+      "crit": 95,
+      "sustain_seconds": 300
     },
     "mem": {
       "warn": 85,

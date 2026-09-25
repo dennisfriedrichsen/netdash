@@ -950,6 +950,62 @@ PY
         "assert d['reported']=={'warn':92,'crit':95}, d" "$J"
 fi
 
+if want cpu-sustain; then
+  echo "cpu-sustain (a spike is normal operation; only held load changes colour)"
+  J=$(python3 - "$ROOT" <<'PY'
+import sys,json,time; sys.path.insert(0,f"{sys.argv[1]}/server")
+import app, db
+app.CFG={"thresholds":{"cpu":{"warn":80,"crit":95},
+                       "mem":{"warn":85,"crit":95},
+                       "disk":{"warn":85,"crit":95}},
+         "stale_after_seconds":180,"patch_stale_hours":48,
+         "eol":{"enabled":False},"reachability":{"enabled":False},
+         "hosts":{"legacy":{"thresholds":{"cpu":{"sustain_seconds":0}}}}}
+app.CONN=db.connect(":memory:")
+now=int(time.time())
+def host(name, readings):
+    """readings: newest last, one per minute, ending now."""
+    for i,c in enumerate(readings):
+        db.insert_sample(app.CONN, {"host":name,"ts":now-60*(len(readings)-1-i),
+                                    "os":"x","cpu_pct":c,"disks":[]})
+    s=[x for x in db.latest_per_host(app.CONN) if x["host"]==name][0]
+    v=app.summarize(s, now)
+    return [v["cpu"]["status"], v["cpu"]["brief"], v["status"]]
+print(json.dumps({
+  "spike_crit":   host("spike",   [5,5,5,5,5,5,99]),
+  "spike_warn":   host("warm",    [5,5,5,5,5,5,85]),
+  "held_crit":    host("held",    [99,98,97,99,99,98,99]),
+  "held_warn":    host("busy",    [85,99,90,99,86,97,99]),
+  "dip_in_window":host("dip",     [99,99,99,40,99,99,99]),
+  # Six minutes of history is enough; four is not, however high.
+  "too_new":      host("new",     [99,99,99,99,99]),
+  "quiet":        host("quiet",   [3,4,5]),
+  "legacy":       host("legacy",  [5,5,5,5,5,5,99]),
+}))
+PY
+) || J=''
+  # The complaint this exists for: one sample over crit turned a card red.
+  check "a single reading over crit leaves the host ok" \
+        "assert d['spike_crit']==['ok',True,'ok'], d" "$J"
+  check "and a single reading over warn does not turn it amber either" \
+        "assert d['spike_warn']==['ok',True,'ok'], d" "$J"
+  check "crit held for the whole window is critical" \
+        "assert d['held_crit']==['critical',False,'critical'], d" "$J"
+  # Each level needs its own line held, so a host swinging between 85 and 99
+  # has held warn, not crit.
+  check "readings all over warn but not all over crit is a warning" \
+        "assert d['held_warn']==['warning',True,'warning'], d" "$J"
+  check "one dip inside the window means it did not hold" \
+        "assert d['dip_in_window'][0]=='ok', d" "$J"
+  # A host that has not been reporting for the window has nothing that held.
+  check "a host newer than the window cannot be held" \
+        "assert d['too_new'][0]=='ok', d" "$J"
+  check "a quiet host is simply ok" \
+        "assert d['quiet']==['ok',False,'ok'], d" "$J"
+  check "sustain_seconds 0 restores one-reading behaviour, per host" \
+        "assert d['legacy']==['critical',False,'critical'], d" "$J"
+fi
+
 if want virt; then
   echo "virt (unknown must not read as bare metal)"
   J=$(python3 - "$ROOT" <<'PY'

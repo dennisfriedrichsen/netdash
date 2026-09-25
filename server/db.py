@@ -378,6 +378,24 @@ def patch_pending(conn, host):
             "SELECT package FROM patch_pending WHERE host=? ORDER BY ord", (host,))]
 
 
+def cpu_floor(conn, host, ts, seconds):
+    """The lowest CPU reading this host has had over the `seconds` up to `ts`.
+
+    None when the host has not been reporting that long, so a first sample can
+    never count as a condition that has persisted. The window reaches back to
+    the last sample AT OR BEFORE its start -- the reading that was in effect
+    when it opened -- rather than only to samples inside it: a collector on a
+    60s cadence may have nothing that lands exactly on the boundary, and one
+    missing edge sample would otherwise make five minutes look like four.
+    """
+    with _DB:
+        return conn.execute(
+            """SELECT MIN(cpu_pct) FROM samples
+                WHERE host=? AND ts <= ?
+                  AND ts >= (SELECT MAX(ts) FROM samples WHERE host=? AND ts <= ?)""",
+            (host, ts, host, ts - seconds)).fetchone()[0]
+
+
 def _migrate_patch_pending(conn):
     """Seed the pending list from the newest sample that still carries one.
 
