@@ -2416,8 +2416,13 @@ except hubitat.HubitatError as e:
 fresh(); hubitat._get = serve({"/hub2/hubData": "hubData.json"})
 partial = hubitat.collect(cfg)
 
+# An up-to-date hub answers with the status alone and no "upgrade" key.
+fresh(); hubitat._get = serve(dict(SERVED, **{
+    "/hub/cloud/checkForUpdate": "checkForUpdate-none.json"}))
+current = hubitat.collect(cfg)
+
 print(json.dumps({"ok": ok, "notot": notot, "secured": secured,
-                  "partial": partial}))
+                  "partial": partial, "current": current}))
 PYEOF
 )
   check "cpu is the load average over the core count, not the raw column" \
@@ -2430,6 +2435,8 @@ PYEOF
         "assert d['notot']['mem_used_bytes'] is None and d['notot']['mem_total_bytes'] is None, d['notot']" "$J"
   check "an available update is one uncategorised patch, never zero security" \
         "assert d['ok']['patches']['other']==1 and d['ok']['patches']['security'] is None, d['ok']['patches']" "$J"
+  check "an up-to-date hub is checked with nothing pending, not left unchecked" \
+        "p=d['current']['patches']; assert p and p['other']==0 and p['security'] is None and p['checked_at'], p" "$J"
   check "no uptime and no invented disk row" \
         "assert d['ok']['uptime_seconds'] is None and d['ok']['disks']==[], d['ok']" "$J"
   check "the os string carries model and platform version" \

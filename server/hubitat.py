@@ -198,16 +198,17 @@ def _patches(cfg):
         return _PATCH_CACHE["value"]
     _PATCH_CACHE["error"] = None
 
-    # "UPDATE_AVAILABLE" is the only status string seen on a live hub, so the
-    # up-to-date case is taken from the unambiguous boolean instead of guessing
-    # at the spelling of its opposite. Anything that matches neither leaves the
-    # previous answer standing and ages out into "unknown" on the dashboard,
-    # rather than being read as "no update" on no evidence.
+    # Both spellings are seen on a live hub. The up-to-date answer is the bare
+    # {"status":"NO_UPDATE_AVAILABLE"} with no "upgrade" key at all, so the
+    # boolean alone never reports a current hub as checked. Anything that
+    # matches none of these leaves the previous answer standing and ages out
+    # into "unknown" on the dashboard, rather than being read as "no update" on
+    # no evidence.
     status = str(r.get("status") or "").upper()
     upgrade = r.get("upgrade")
     if status == "UPDATE_AVAILABLE" or upgrade is True:
         available = 1
-    elif upgrade is False:
+    elif status == "NO_UPDATE_AVAILABLE" or upgrade is False:
         available = 0
     else:
         return _PATCH_CACHE["value"]
