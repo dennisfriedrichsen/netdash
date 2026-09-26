@@ -827,8 +827,12 @@ function sparkline(points, colorVar, th) {
     vline.style.display = '';
     dotm.setAttribute('cx', x(best)); dotm.setAttribute('cy', y(best.v));
     dotm.style.display = '';
+    /* Date and time at every range, not just the time: on a 1y chart the
+       time of day is the one part that tells you nothing. */
     tipEl.textContent = best.v.toFixed(1) + '% · ' +
-      new Date(best.ts * 1000).toLocaleTimeString();
+      new Date(best.ts * 1000).toLocaleString([], {
+        year: 'numeric', month: 'short', day: 'numeric',
+        hour: '2-digit', minute: '2-digit' });
     tipEl.style.display = 'block';
     var tw = tipEl.offsetWidth;
     var px = (ev.touches ? ev.touches[0].clientX : ev.clientX);
