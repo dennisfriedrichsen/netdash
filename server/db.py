@@ -201,10 +201,15 @@ CREATE INDEX IF NOT EXISTS idx_events_host ON events(host, ts DESC);
 -- The host reads as acknowledged only when every pending item is acked, so a
 -- newly vulnerable package still turns the badge red on its own -- without
 -- disturbing the acks already made around it.
+--
+-- missing_since is when prune() first found the package gone from the pending
+-- list, on the one source that gets a grace period for it -- see ACK_GRACE.
+-- NULL while the package is pending, and on every other source.
 CREATE TABLE IF NOT EXISTS patch_acks (
-    host      TEXT    NOT NULL,
-    package   TEXT    NOT NULL,
-    acked_at  INTEGER NOT NULL,
+    host          TEXT    NOT NULL,
+    package       TEXT    NOT NULL,
+    acked_at      INTEGER NOT NULL,
+    missing_since INTEGER,
     PRIMARY KEY (host, package)
 );
 
@@ -263,6 +268,9 @@ CREATE TABLE IF NOT EXISTS eol_acks (
 # does nothing on an existing database, so a deploy onto a live box would keep
 # the old table and every insert would fail on the unknown column.
 _ADDED_COLUMNS = {
+    "patch_acks": [
+        ("missing_since", "INTEGER"),
+    ],
     "samples": [
         ("patch_security", "INTEGER"),
         ("patch_other", "INTEGER"),
@@ -603,6 +611,22 @@ def insert_sample(conn, payload, source="push", peer=None):
         return sid
 
 
+# How long an acknowledged macOS update may be missing from the pending list
+# before its ack is dropped. softwareupdate's cached list can come up empty for
+# a day and then offer the same update again: argon reported
+# "macOS 27.0.1-26A5434", then nothing, then the same label a day later, and
+# the prune in between had deleted the ack that was made against it.
+#
+# Only macOS, because only there does the reappearance of a name prove nothing
+# changed. The label carries the version and the build, so the same label is
+# the same update that was reviewed. apt and dnf report bare names -- openssl,
+# not openssl at a version -- and a fresh openssl advisory inside the window
+# would come back already silenced. The BSDs name the installed version too,
+# and could join this list if their audits turn out to flicker the same way.
+ACK_GRACE = 3 * 86400
+GRACE_SOURCES = ("softwareupdate",)
+
+
 def prune(conn, retention_hours, rollup_days=None, event_days=None):
     """Drop raw samples past the window, and rollups past a much longer one.
 
@@ -641,18 +665,32 @@ def prune(conn, retention_hours, rollup_days=None, event_days=None):
         # reporting patches has not told us anything about what is pending, and
         # dropping its acks on that silence would un-silence the lot the moment
         # it came back.
+        #
+        # Except on macOS, where an ack outlives a short absence. See ACK_GRACE.
+        now = int(time.time())
         for s in latest_per_host(conn):
             if s["patch_checked_at"] is None:
                 continue
-            keep = patch_pending(conn, s["host"])
-            if keep:
-                conn.execute(
-                    "DELETE FROM patch_acks WHERE host=? AND package NOT IN (%s)"
-                    % ",".join("?" * len(keep)),
-                    [s["host"]] + keep,
-                )
-            else:
-                conn.execute("DELETE FROM patch_acks WHERE host=?", (s["host"],))
+            host = s["host"]
+            keep = set(patch_pending(conn, host))
+            gone = [r["package"] for r in conn.execute(
+                "SELECT package FROM patch_acks WHERE host=?", (host,))
+                if r["package"] not in keep]
+            if s["patch_source"] not in GRACE_SOURCES:
+                conn.executemany("DELETE FROM patch_acks WHERE host=? AND package=?",
+                                 [(host, p) for p in gone])
+                continue
+            # Back on the list: the absence was the blip, and the clock resets.
+            conn.executemany(
+                "UPDATE patch_acks SET missing_since=NULL WHERE host=? AND package=?",
+                [(host, p) for p in keep])
+            conn.executemany(
+                """UPDATE patch_acks SET missing_since=? WHERE host=? AND package=?
+                     AND missing_since IS NULL""",
+                [(now, host, p) for p in gone])
+            conn.executemany(
+                "DELETE FROM patch_acks WHERE host=? AND package=? AND missing_since<=?",
+                [(host, p, now - ACK_GRACE) for p in gone])
         conn.execute(
             "DELETE FROM eol_acks WHERE host NOT IN (SELECT DISTINCT host FROM samples)"
         )
@@ -973,7 +1011,8 @@ def ack_patch(conn, host, packages, now):
     with _DB:
         conn.executemany(
             """INSERT INTO patch_acks (host, package, acked_at) VALUES (?,?,?)
-               ON CONFLICT(host, package) DO UPDATE SET acked_at=excluded.acked_at""",
+               ON CONFLICT(host, package) DO UPDATE SET
+                 acked_at=excluded.acked_at, missing_since=NULL""",
             [(host, p, now) for p in packages],
         )
         conn.commit()
