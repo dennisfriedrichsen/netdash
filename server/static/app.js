@@ -111,6 +111,11 @@ function patchStyle(p) {
   return s;
 }
 
+/* Package names in reading order: case-insensitive, for Array.sort. */
+function byName(a, b) {
+  return String(a).localeCompare(String(b), undefined, { sensitivity: 'base' });
+}
+
 function patchText(p) {
   if (!p) return 'not checked';
   if (p.status === 'security') return p.security + ' security';
@@ -1111,7 +1116,11 @@ function renderDetail(host, data, range) {
        the moment the host reboots, and nothing else is the thing this was
        asked for. */
     if (pp.status === 'security' && pp.entries && pp.entries.length) {
-      pp.entries.forEach(function (it) {
+      /* Alphabetical, so a long list can be scanned. Only the display is
+         sorted: the API and the acknowledgements keep the check's order. */
+      pp.entries.slice().sort(function (a, b) {
+        return byName(a.package, b.package);
+      }).forEach(function (it) {
         p4.appendChild(ackRow(host, 'patches', it, it));
       });
       var pending = pp.entries.filter(function (it) { return !it.acknowledged; });
@@ -1128,7 +1137,9 @@ function renderDetail(host, data, range) {
         p4.appendChild(none);
       }
     } else if (pp.packages) {
-      p4.appendChild(el('div', 'sub', pp.packages));
+      /* The same order as the rows above. patch_summary joins with ', '. */
+      p4.appendChild(el('div', 'sub',
+                        pp.packages.split(', ').sort(byName).join(', ')));
     }
     /* The check counted more than it named, so this host stays loud however
        much of the list is acknowledged. Said plainly, because otherwise it

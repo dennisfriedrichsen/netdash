@@ -2228,6 +2228,8 @@ if want render; then
           "assert d['a_counted_but_unnamed_remainder_is_stated_and_not_ackable'] is None, d['a_counted_but_unnamed_remainder_is_stated_and_not_ackable']" "$J"
     check "and nothing on the page asks for an ack on a package it cannot show" \
           "assert d['every_listed_package_is_named_and_separately_ackable'] is None, d['every_listed_package_is_named_and_separately_ackable']" "$J"
+    check "pending packages are listed alphabetically, rows and summary alike" \
+          "assert d['pending_packages_are_listed_alphabetically'] is None, d['pending_packages_are_listed_alphabetically']" "$J"
     check "and for a host that is down" \
           "assert d['detail_down'] is None, d['detail_down']" "$J"
     check "and for one that is away" \

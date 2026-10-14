@@ -498,6 +498,33 @@ check('every_listed_package_is_named_and_separately_ackable', function () {
   }
 });
 
+/* The check reports in its package manager's order, which is nobody's reading
+   order. Both the per-package rows and the plain summary a stale check falls
+   back to come out alphabetical, ignoring case. */
+check('pending_packages_are_listed_alphabetically', function () {
+  var want = ['apache24', 'curl-8.9.0', 'Giflib-6.1.3', 'python312-3.12.14'];
+  function inOrder(t, what) {
+    var at = want.map(function (n) { return t.indexOf(n); });
+    for (var i = 0; i < at.length; i++) {
+      if (at[i] < 0) throw new Error(what + ': ' + want[i] + ' is missing');
+      if (i && at[i] < at[i - 1]) {
+        throw new Error(what + ': ' + want[i] + ' comes before ' + want[i - 1]);
+      }
+    }
+  }
+  ctx.renderDetail('h', detail(host({ patches: SEC(
+    [item('python312-3.12.14'), item('curl-8.9.0'), item('Giflib-6.1.3'),
+     item('apache24', true)]) })));
+  inOrder(textOf(ctx.root), 'ack rows');
+
+  var p = SEC([]);
+  p.status = 'unknown';
+  p.security = 4;
+  p.packages = 'python312-3.12.14, curl-8.9.0, Giflib-6.1.3, apache24';
+  ctx.renderDetail('h', detail(host({ patches: p })));
+  inOrder(textOf(ctx.root), 'summary line');
+});
+
 check('down_row_names_the_host', function () {
   if (textOf(ctx.compactRow(host(merge(DOWN, { host: 'hassium' })))).indexOf('hassium') < 0) {
     throw new Error('a down row must still say which host it is');
