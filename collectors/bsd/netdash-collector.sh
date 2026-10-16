@@ -92,18 +92,29 @@ OpenBSD|NetBSD)
   #
   # Field-exact matching matters here: a loose /pages free/ also matches
   # "66725 pages freed by pagedaemon", which is a lifetime counter, not a gauge.
+  #
+  # What counts as reclaimable differs. NetBSD keeps file cache on the active
+  # queue as well as the inactive one, so free + inactive counted most of the
+  # cache as used: an idle 512 MiB host with no swap in use read 77%, and 98%
+  # whenever the pagedaemon happened to have drained the inactive queue. NetBSD
+  # reports the whole cache as "cached file pages", so subtract that in place
+  # of inactive -- not as well as it: the inactive pages overlap the file
+  # pages, and subtracting both would count part of the cache twice. OpenBSD
+  # has no such counter and keeps free + inactive (issue #4).
   MEM_TOTAL=$(sysctl_n hw.physmem64); [ -n "$MEM_TOTAL" ] || MEM_TOTAL=$(sysctl_n hw.physmem)
   eval "$(vmstat -s 2>/dev/null | awk '
     $2=="bytes" && $3=="per" && $4=="page"  { ps=$1 }
     $2=="pages" && $3=="free"     && NF==3  { free=$1 }
     $2=="pages" && $3=="inactive" && NF==3  { inact=$1 }
-    END { printf "VM_PS=%.0f\nVM_FREE=%.0f\nVM_INACT=%.0f\n", ps, free, inact }')"
+    $2=="cached" && $3=="file" && $4=="pages" && NF==4 { file=$1; hasfile=1 }
+    END { printf "VM_PS=%.0f\nVM_FREE=%.0f\nVM_INACT=%.0f\nVM_FILE=%s\n", ps, free, inact, (hasfile ? sprintf("%.0f", file) : "") }')"
   VM_PS=${VM_PS:-0}; VM_FREE=${VM_FREE:-0}; VM_INACT=${VM_INACT:-0}
+  VM_RECLAIM=${VM_FILE:-$VM_INACT}
   if [ -n "$MEM_TOTAL" ] && [ "$VM_PS" -gt 0 ] && [ "$VM_FREE" -gt 0 ]; then
     # Same shape as the FreeBSD formula: physical total minus what the system
-    # can reclaim (free + inactive), so every host means the same thing.
-    MEM_USED=$(awk -v t="$MEM_TOTAL" -v ps="$VM_PS" -v f="$VM_FREE" -v i="$VM_INACT" 'BEGIN{
-      u = t - (f+i)*ps; if (u<0) u=0; printf "%.0f", u }')
+    # can reclaim, so every host means the same thing.
+    MEM_USED=$(awk -v t="$MEM_TOTAL" -v ps="$VM_PS" -v f="$VM_FREE" -v r="$VM_RECLAIM" 'BEGIN{
+      u = t - (f+r)*ps; if (u<0) u=0; printf "%.0f", u }')
   else
     MEM_TOTAL="${MEM_TOTAL:-null}"
   fi

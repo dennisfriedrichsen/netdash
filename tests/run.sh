@@ -123,6 +123,10 @@ if want netbsd; then
         "assert 'tank' in [x['mount'] for x in d['disks']], d['disks']" "$J"
   check "hw.physmem64 used for total" \
         "assert d['mem_total_bytes']==534945792, d['mem_total_bytes']" "$J"
+  # total - free - inactive read 74.5% from this capture (and 98% live once the
+  # inactive queue drained); the file cache on the active queue is not "used".
+  check "file cache counted as reclaimable, not free + inactive (issue #4)" \
+        "assert abs(100*d['mem_used_bytes']/d['mem_total_bytes'] - 46.9) < 0.2, d" "$J"
   rm -rf "$B"
 fi
 
