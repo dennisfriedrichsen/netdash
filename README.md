@@ -286,7 +286,7 @@ work.
 | NetBSD | 11.0 | cron, 60s |
 | macOS | 15 (Intel), 26 (Apple Silicon) | Homebrew + launchd, 60s |
 | TrueNAS | CORE 13.0 | server-side API poll, no collector installed |
-| FreeCORE | — | same poll as TrueNAS CORE; not yet verified against a live box |
+| FreeCORE | 15.1 | same server-side API poll as TrueNAS CORE |
 
 Architectures covered: `x86_64` (`amd64` as the BSDs spell it), `aarch64`
 (Debian), `armv7l` (Pi 3 B+), `arm64` (Apple Silicon). The collectors pass
