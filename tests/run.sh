@@ -2454,6 +2454,67 @@ PYEOF
 fi
 
 
+# --------------------------------------------------------------- TrueNAS ----
+if want truenas; then
+  echo "truenas (a FreeCORE is polled like CORE, but is not CORE)"
+  J=$(python3 - "$ROOT" <<'PYEOF'
+import json, sys, os
+root = sys.argv[1]
+sys.path.insert(0, os.path.join(root, "server"))
+import truenas
+
+# Two boxes on one API. Only the product name and the update answer differ.
+BOXES = {
+    "nas.example":      {"product": "TrueNAS",  "version": "TrueNAS-13.0-U6.8",
+                         "update": {"status": "AVAILABLE", "version": "13.0-U6.9"}},
+    "freecore.example": {"product": "FreeCORE", "version": "FreeCORE-13.3-RELEASE",
+                         "update": {"status": "UNAVAILABLE"}},
+    "old.example":      {"product": None,       "version": "TrueNAS-13.0-U5",
+                         "update": {"status": "UNAVAILABLE"}},
+}
+
+def fake(cfg, path, method="GET", body=None, timeout=15, auth="bearer"):
+    box = BOXES[cfg["host"]]
+    if path == "/system/product_name":
+        if box["product"] is None:
+            raise truenas.TrueNASError("GET %s -> HTTP 404" % path)
+        return box["product"]
+    if path == "/system/info":
+        return {"physmem": 8 << 30, "uptime_seconds": 1000, "version": box["version"]}
+    if path == "/pool/dataset":
+        return [{"name": "tank", "used": {"parsed": 1}, "available": {"parsed": 3}}]
+    if path == "/update/check_available":
+        return box["update"]
+    raise truenas.TrueNASError("%s %s -> HTTP 404" % (method, path))
+
+truenas._request = fake
+out = {h: truenas.collect({"host": h, "api_key": "k", "display_name": h.split(".")[0]})
+       for h in BOXES}
+
+sys.path.insert(0, os.path.join(root, "server"))
+import app
+app.CFG = {"truenas": [{"enabled": True, "host": "a"}, {"enabled": False, "host": "b"},
+                       {"enabled": True, "host": "c"}],
+           "hubitat": [{"enabled": True, "host": "h1"}, {"enabled": True, "host": "h2"}],
+           "unifi": {"enabled": True, "host": "g"}}
+cfgs = {n: [c["host"] for c in app.appliance_configs(n)] for n in app.CFG}
+print(json.dumps({"out": out, "cfgs": cfgs}))
+PYEOF
+)
+  check "CORE still names itself TrueNAS CORE, which the EOL override keys on" \
+        "assert d['out']['nas.example']['os']=='TrueNAS CORE 13.0 U6.8', d['out']['nas.example']['os']" "$J"
+  check "FreeCORE is named as itself, not handed CORE's end of life" \
+        "assert d['out']['freecore.example']['os']=='FreeCORE 13.3 RELEASE', d['out']['freecore.example']['os']" "$J"
+  check "a box that cannot say its product name is CORE" \
+        "assert d['out']['old.example']['os']=='TrueNAS CORE 13.0 U5', d['out']['old.example']['os']" "$J"
+  check "each box gets its own update answer, not the first one's" \
+        "assert d['out']['nas.example']['patches']['other']==1 and d['out']['freecore.example']['patches']['other']==0, d['out']" "$J"
+  check "every enabled entry of a truenas list is polled" \
+        "assert d['cfgs']['truenas']==['a','c'], d['cfgs']" "$J"
+  check "a list is refused where caches are shared, and a single block still works" \
+        "assert d['cfgs']['hubitat']==['h1'] and d['cfgs']['unifi']==['g'], d['cfgs']" "$J"
+fi
+
 # ----------------------------------------------------------------- UniFi ----
 if want unifi; then
   echo "unifi (a fleet is not five more hosts)"

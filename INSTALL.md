@@ -210,6 +210,10 @@ sudo python3 /opt/netdash/server/truenas.py /etc/netdash/server.json
 sudo systemctl restart netdash
 ```
 
+FreeCORE is set up exactly the same way. To poll more than one box, make
+`"truenas"` a list of these blocks, each with its own `display_name` (see the
+README's TrueNAS section).
+
 ## Optional: end-of-life warnings
 
 The server can flag hosts whose OS release is past end of life, using

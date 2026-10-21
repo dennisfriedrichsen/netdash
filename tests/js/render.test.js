@@ -351,7 +351,8 @@ check('a_daily_disk_range_says_daily', function () {
 // -- os icons for the polled appliances --
 check('appliances_get_their_own_icons', function () {
   var want = [['UniFi OS 5.1.31', 'gateway'], ['Hubitat C-8 Pro 2.5.1.174', 'hub'],
-              ['TrueNAS CORE 13.0-U6.8', 'nas'], ['Debian GNU/Linux 13', 'debian'],
+              ['TrueNAS CORE 13.0-U6.8', 'nas'], ['FreeCORE 13.3', 'nas'],
+              ['Debian GNU/Linux 13', 'debian'],
               ['FreeBSD 15.1', 'bsd'], ['', 'unknown']];
   want.forEach(function (c) {
     var got = ctx.osFamily(c[0]);

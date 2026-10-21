@@ -415,8 +415,10 @@ var OS_ICONS = {
 
 function osFamily(os) {
   var s = String(os || '').toLowerCase();
-  /* TrueNAS is FreeBSD underneath, so it has to be tested before bsd. */
-  if (s.indexOf('truenas') > -1) return 'nas';
+  /* TrueNAS is FreeBSD underneath, so it has to be tested before bsd. FreeCORE
+     is CORE carried on under another name, and the 'free' in it would
+     otherwise be one careless test away from FreeBSD. */
+  if (s.indexOf('truenas') > -1 || s.indexOf('freecore') > -1) return 'nas';
   /* The polled appliances. Neither string carries a kernel name, so without
      these they fall all the way through to the question mark -- which is the
      right answer for a host that could not say what it runs, and the wrong one

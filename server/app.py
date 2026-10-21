@@ -1203,8 +1203,32 @@ def disk_projection(host, mount, min_days=5):
 APPLIANCES = {"truenas": truenas, "hubitat": hubitat, "unifi": unifi}
 
 
-def appliance_poller(name, module):
-    cfg = CFG.get(name) or {}
+# Blocks that may be a list of boxes rather than one. Only modules whose caches
+# are keyed per box belong here: hubitat and unifi keep one module-wide cache,
+# so a second hub would be answered with the first one's update status.
+MULTI_BOX = {"truenas"}
+
+
+def appliance_configs(name):
+    """The enabled boxes one appliance block configures.
+
+    A `truenas` block is one box, or a list of them for a network with more
+    than one -- a TrueNAS CORE and a FreeCORE are both "truenas", polled the
+    same way and recorded under the same source, because to everything
+    downstream (the prober exclusion included) they are the same kind of thing.
+    """
+    block = CFG.get(name) or {}
+    if isinstance(block, list):
+        if name not in MULTI_BOX:
+            sys.stderr.write("config: %s takes one box, not a list; "
+                             "polling only the first\n" % name)
+            block = block[:1]
+    else:
+        block = [block]
+    return [b for b in block if isinstance(b, dict) and b.get("enabled")]
+
+
+def appliance_poller(name, module, cfg):
     interval = max(10, int(cfg.get("poll_seconds") or 60))
     # An unchanging failure repeats every interval into a journal nothing
     # rotates, so it is said once and again only when it changes -- the same
@@ -1221,7 +1245,8 @@ def appliance_poller(name, module):
         except Exception as e:
             msg = str(e)[:200]
             if msg != last:
-                sys.stderr.write("%s poll error: %s\n" % (name, msg))
+                sys.stderr.write("%s poll error (%s): %s\n"
+                                 % (name, cfg.get("display_name") or cfg.get("host"), msg))
                 last = msg
         time.sleep(interval)
 
@@ -1272,10 +1297,11 @@ def main():
         sys.stderr.write("history: rollups + event log enabled\n")
 
     for name, module in sorted(APPLIANCES.items()):
-        if (CFG.get(name) or {}).get("enabled"):
-            threading.Thread(target=appliance_poller, args=(name, module),
+        for cfg in appliance_configs(name):
+            threading.Thread(target=appliance_poller, args=(name, module, cfg),
                              daemon=True).start()
-            sys.stderr.write("%s poller started\n" % name)
+            sys.stderr.write("%s poller started (%s)\n"
+                             % (name, cfg.get("display_name") or cfg.get("host")))
 
     srv = Server((CFG["bind_host"], CFG["bind_port"]), Handler)
     sys.stderr.write("netdash listening on %s:%s\n" % (CFG["bind_host"], CFG["bind_port"]))

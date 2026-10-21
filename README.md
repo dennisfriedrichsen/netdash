@@ -286,6 +286,7 @@ work.
 | NetBSD | 11.0 | cron, 60s |
 | macOS | 15 (Intel), 26 (Apple Silicon) | Homebrew + launchd, 60s |
 | TrueNAS | CORE 13.0 | server-side API poll, no collector installed |
+| FreeCORE | — | same poll as TrueNAS CORE; not yet verified against a live box |
 
 Architectures covered: `x86_64` (`amd64` as the BSDs spell it), `aarch64`
 (Debian), `armv7l` (Pi 3 B+), `arm64` (Apple Silicon). The collectors pass
@@ -673,6 +674,21 @@ sudo python3 /opt/netdash/server/truenas.py /etc/netdash/server.json
 ```
 
 That prints exactly what the dashboard will show, or the API error.
+
+**FreeCORE** serves the same API and is configured the same way. More than one
+box makes the block a list, each entry with its own `display_name`:
+
+```json
+"truenas": [
+  { "enabled": true, "host": "truenas.example", "api_key": "1-xxxxx" },
+  { "enabled": true, "host": "freecore.example", "display_name": "freecore", "api_key": "1-yyyyy" }
+]
+```
+
+A FreeCORE box reports itself as `FreeCORE <version>`, not as TrueNAS CORE, so
+it gets the NAS icon but not CORE's end-of-life date. endoflife.date does not
+track it either, so give it its own `eol.overrides` entry if you want one.
+`truenas` is the only block that takes a list.
 
 ## Hubitat
 
