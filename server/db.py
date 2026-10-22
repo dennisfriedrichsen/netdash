@@ -880,6 +880,19 @@ def last_states(conn):
         return {r["host"]: r["to_state"] for r in rows}
 
 
+def last_service_states(conn):
+    """The most recent to_state per service check, keyed by event kind
+    ("service:<id>"). The same job last_states does for hosts: a restart must
+    not forget that Plex was down, or its recovery would never be logged."""
+    with _DB:
+        rows = conn.execute(
+            """SELECT kind, to_state FROM events e
+                WHERE kind LIKE 'service:%' AND id = (SELECT MAX(id) FROM events
+                                                      WHERE kind=e.kind)"""
+        ).fetchall()
+        return {r["kind"]: r["to_state"] for r in rows}
+
+
 # Cached because latest_per_host runs in four background loops and the answer
 # cannot change while the process is up -- the schema is settled by connect().
 _SAMPLE_COLS = None

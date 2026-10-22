@@ -2434,6 +2434,26 @@ if want render; then
           "assert d['a_reporting_host_is_not_offered_forgetting'] is None, d['a_reporting_host_is_not_offered_forgetting']" "$J"
     check "a down row still names its host" \
           "assert d['down_row_names_the_host'] is None, d['down_row_names_the_host']" "$J"
+    check "a failing service is on its card, and the host itself stays OK" \
+          "assert d['a_failing_service_is_on_its_card_and_the_host_stays_ok'] is None, d['a_failing_service_is_on_its_card_and_the_host_stays_ok']" "$J"
+    check "the header counts failing services, and is not all clear beside one" \
+          "assert d['the_header_counts_failing_services'] is None, d['the_header_counts_failing_services']" "$J"
+    check "the compact row flags the worst service and names each on hover" \
+          "assert d['the_compact_row_flags_the_worst_service_and_names_them'] is None, d['the_compact_row_flags_the_worst_service_and_names_them']" "$J"
+    check "a disabled check stays off the card but is listed on the detail page" \
+          "assert d['a_disabled_check_stays_off_the_card_but_on_the_detail_page'] is None, d['a_disabled_check_stays_off_the_card_but_on_the_detail_page']" "$J"
+    check "a down host's row still carries what its BMC says" \
+          "assert d['a_down_host_row_still_carries_its_bmc'] is None, d['a_down_host_row_still_carries_its_bmc']" "$J"
+    check "the BMC says it is separate hardware, and its unread sensors unknown" \
+          "assert d['the_bmc_says_it_is_separate_and_that_its_sensors_are_unknown'] is None, d['the_bmc_says_it_is_separate_and_that_its_sensors_are_unknown']" "$J"
+    check "a BMC reporting a failed supply is red and names the supply" \
+          "assert d['a_bmc_with_a_failed_supply_is_red_and_names_it'] is None, d['a_bmc_with_a_failed_supply_is_red_and_names_it']" "$J"
+    check "a refused sensor login reads as such, in amber" \
+          "assert d['a_refused_sensor_login_reads_as_such'] is None, d['a_refused_sensor_login_reads_as_such']" "$J"
+    check "every service state has its own word; only fail is red" \
+          "assert d['every_service_state_has_its_own_word'] is None, d['every_service_state_has_its_own_word']" "$J"
+    check "a service transition renders in the event log" \
+          "assert d['a_service_event_renders_in_the_log'] is None, d['a_service_event_renders_in_the_log']" "$J"
   fi
 fi
 
@@ -2729,6 +2749,131 @@ PYEOF
         "assert abs(d['up']-3600) <= 2, d['up']" "$J"
   check "but never older than the NAS's own boot, and unknown without a timezone" \
         "assert d['capped']==8560028 and d['nozone'] is None, d" "$J"
+fi
+
+# ------------------------------------------------------- service checks ----
+if want services; then
+  echo "services (an answering host is not an answering application)"
+  J=$(python3 "$ROOT/tests/services.py" "$ROOT" 2>/dev/null) || J=''
+  check "Home Assistant's frontend answering as itself is ok" \
+        "assert d['ha_ok'][0]=='ok', d['ha_ok']" "$J"
+  # A 401 from /api/ is a failed login to Home Assistant, and ip_ban counts
+  # them. Without a token, nothing but the public manifest is ever asked for.
+  check "and without a token nothing under /api/ is ever requested" \
+        "assert d['ha_untokened_paths']==['/manifest.json'], d['ha_untokened_paths']" "$J"
+  check "a page that is not Home Assistant's is a failure, not a pass" \
+        "assert d['ha_not_json'][0]==d['ha_other_app'][0]==d['ha_502'][0]=='fail', d" "$J"
+  check "with a token, the core's own RUNNING is what counts" \
+        "assert d['ha_token_ok'][:2]==['ok','core reports RUNNING'] and d['ha_token_header']==[True], d" "$J"
+  check "and a core that is up but not RUNNING, or in recovery, fails" \
+        "assert d['ha_not_running'][0]==d['ha_recovery'][0]=='fail', d" "$J"
+  check "a rejected token is auth, not fail -- and is not sent a second time" \
+        "a=d['ha_auth']; assert a[0][0]==a[1][0]=='auth' and a[2]==1, a" "$J"
+  check "until the token file changes" \
+        "assert d['ha_auth_fixed'][0]=='ok', d['ha_auth_fixed']" "$J"
+  check "a missing or empty token file is configuration, not the service" \
+        "assert d['ha_no_token_file'][0]==d['ha_empty_token'][0]=='config', d" "$J"
+  check "Plex /identity answering with a MediaContainer is ok, with its version" \
+        "assert d['plex_ok'][0]=='ok' and d['plex_ok'][2]['version'].startswith('1.41'), d['plex_ok']" "$J"
+  check "a 200 that is not a MediaContainer is a failure" \
+        "assert d['plex_wrong_body'][0]=='fail' and d['huge'][0]=='fail', d" "$J"
+  check "a pinned machineIdentifier catches a different Plex answering" \
+        "assert d['plex_id_match'][0]=='ok' and d['plex_id_mismatch'][0]=='fail', d" "$J"
+  check "401 is auth, 503 is fail" \
+        "assert (d['plex_401'][0],d['plex_503'][0])==('auth','fail'), d" "$J"
+  check "Transmission's 409 session dance ends in session-stats" \
+        "assert d['tx_ok'][0]=='ok' and d['tx_ok'][2]['torrentCount']==0 and d['tx_first_round_requests']==2, d" "$J"
+  check "and the session id is kept, so a round is one request after the first" \
+        "assert d['tx_sid_reused_requests']==1 and d['tx_methods']==['POST'], d" "$J"
+  check "an RPC that wants a password says so, as auth" \
+        "assert d['tx_needs_auth'][0]=='auth' and 'password_file' in d['tx_needs_auth'][1], d" "$J"
+  check "the right password works; a wrong one is refused once, then not resent" \
+        "a=d['tx_auth_bad']; assert d['tx_auth_ok'][0]=='ok' and a[0][0]==a[1][0]=='auth' and a[2]==1, d" "$J"
+  check "rpc-whitelist is auth; a non-success result and a 409 without an id fail" \
+        "assert (d['tx_whitelist'][0],d['tx_result'][0],d['tx_409_no_sid'][0])==('auth','fail','fail'), d" "$J"
+  check "a hung server is a failure inside the timeout" \
+        "assert d['timeout'][0]=='fail' and d['timeout_elapsed'] < 2.5, d" "$J"
+  # The bug the first draft had: read(n) waits for all n bytes, and a byte
+  # every 200ms never trips a per-recv timeout. It took twenty seconds.
+  check "and so is one that dribbles its reply a byte at a time" \
+        "assert d['trickle'][0]=='fail' and d['trickle_elapsed'] < 2.5, d" "$J"
+  check "refused is fail; a name that does not resolve is this server's error" \
+        "assert d['refused'][0]=='fail' and d['unresolvable'][0]=='error', d" "$J"
+  check "a check is off unless enabled is exactly true" \
+        "assert d['cfg'][0]==[False,None], d['cfg']" "$J"
+  check "each malformed entry says what is wrong with it" \
+        "e=[x[1] for x in d['cfg']]; assert e[2]=='plex needs a url' and 'credentials' in e[3] and 'unknown kind' in e[4] and 'duplicate' in e[6] and 'address' in e[7] and 'password_file' in e[8] and '64 hex' in e[9], e" "$J"
+  check "intervals and timeouts are clamped, and no block means no checks" \
+        "assert d['cfg_clamped']==[15,30] and d['cfg_none']==[[],[],[]], d" "$J"
+  check "a self-signed certificate is refused unless pinned or CA'd" \
+        "t=d['tls']; assert t['skipped'] or (t['unpinned'][0]=='config' and t['pinned'][0]=='ok' and t['ca_file'][0]=='ok'), t" "$J"
+  check "a certificate that does not match its pin is refused" \
+        "t=d['tls']; assert t['skipped'] or (t['wrong_pin'][0]=='config' and 'pinned' in t['wrong_pin'][1]), t" "$J"
+  check "and there is no setting that turns verification off" \
+        "t=d['tls']; assert t['skipped'] or t['verify_false_ignored'][0]=='config', t" "$J"
+  check "one failure is held as unknown; the second is fail; auth is shown at once" \
+        "assert [x[0] for x in d['fold']]==['ok','unknown','fail','ok','auth'] and '1 of 2' in d['fold'][1][2], d['fold']" "$J"
+  check "a verdict nobody has refreshed reads stale, not as its last answer" \
+        "assert d['view_stale'][:2]==['stale','warning'], d['view_stale']" "$J"
+  check "disabled, not yet checked and misconfigured are each their own state" \
+        "assert (d['view_disabled'][0],d['view_pending'][0],d['view_config'][0])==('disabled','pending','config'), d" "$J"
+  check "an old config with no services block changes nothing" \
+        "assert d['old_config']==[[],None,'ok'], d['old_config']" "$J"
+  check "a failing service is on its host's card, and the host stays ok" \
+        "a=d['attached']; assert a[0]=='ok' and a[1]=='critical' and a[2][0]==['Plex','fail','critical'], a" "$J"
+  check "a disabled check is listed but does not count toward severity" \
+        "assert d['attached'][2][1]==['Transmission','disabled','unknown'], d['attached']" "$J"
+  check "checks attach to their own host only" \
+        "assert d['other_host']==['Home Assistant'] and d['unattached']==[], d" "$J"
+  check "no token, and no token path, ever reaches the API" \
+        "assert d['api_has_secret']==[False,False,False], d['api_has_secret']" "$J"
+  check "settled changes are logged; a held single failure is not" \
+        "assert [e[1:3] for e in d['events']]==[['ok','fail'],['fail','ok']], d['events']" "$J"
+  check "and the log seeds the next start, so a recovery is never lost" \
+        "assert list(d['events_seed'].values())==['ok'], d['events_seed']" "$J"
+  check "a hung check holds up neither the API nor any other check" \
+        "assert d['api_while_hung_s'] < 0.5 and d['api_while_hung']==['pending'] and d['other_check_done']==['ok'], d" "$J"
+fi
+
+if want ipmi; then
+  echo "ipmi (a management controller is checked whether or not its OS is up)"
+  J=$(python3 "$ROOT/tests/ipmi.py" "$ROOT" 2>/dev/null) || J=''
+  check "the pre-session request is Get Channel Auth Capabilities, nothing more" \
+        "assert d['request']=='0600ff07000000000000000000092018c88100388e02b7', d['request']" "$J"
+  check "the real BMC's reply parses, IPMI 2.0 and all" \
+        "assert d['parsed']=={'completion_code':0,'channel':1,'ipmi20':True} and d['garbage'] is None, d" "$J"
+  check "an answer is up; silence, a closed port and a stranger are not" \
+        "assert d['ping_ok'][0] is True and not d['ping_silent'][0] and not d['ping_closed'][0] and not d['ping_not_ipmi'][0], d" "$J"
+  check "and silence ends at the timeout" \
+        "assert d['ping_silent_s'] < 2, d['ping_silent_s']" "$J"
+  check "without credentials the BMC is reachable and its sensors are unknown -- not ok" \
+        "r=d['reach_only']; assert r[0]=='ok' and r[2]['hardware']['status']=='unknown' and 'credentials' in r[2]['hardware']['reason'], r" "$J"
+  check "and a reachability-only BMC stays green: that was the choice made" \
+        "assert d['no_creds_view']==['ok','ok','unknown'], d['no_creds_view']" "$J"
+  check "a BMC that answers nothing fails" \
+        "assert d['not_answering'][0]=='fail', d['not_answering']" "$J"
+  check "sensors classify by status column and by discrete event text" \
+        "s={x[0]:x[2] for x in d['sensors']}; assert s['CPU Temp']=='ok' and s['DIMMA1 Temp']=='warning' and s['FAN4']=='critical' and s['PS2 Status']=='critical' and s['PS1 Status']=='ok', s" "$J"
+  check "an unpopulated fan header is no reading, not a failed fan" \
+        "s={x[0]:x[2] for x in d['sensors']}; assert s['FAN3'] is None and s['Chassis Intru'] is None, s" "$J"
+  check "the verdict is the worst sensor, chassis faults included" \
+        "h=d['hw']; assert h[0]=='critical' and h[1]==['Cooling/Fan Fault','DIMMA1 Temp','FAN4','PS2 Status'] and h[2]==86.0 and h[3]==2 and h[4]=='on', h" "$J"
+  check "a healthy board is ok; one with nothing readable is unknown" \
+        "assert d['hw_ok']=='ok' and d['hw_empty']['status']=='unknown' and d['chassis_junk'] is None, d" "$J"
+  check "a reachable BMC with a failed supply is a critical row" \
+        "assert d['with_creds'][2]=='critical' and d['view_hw']==['ok','critical','critical'], d" "$J"
+  check "ipmitool runs at USER privilege with the password read from its file" \
+        "a=d['argv']; assert a['user_privilege'] and a['password_from_file'] and a['password_absent'], a" "$J"
+  check "and only ever asks for sdr elist and chassis status" \
+        "assert d['argv']['only_reads']==['chassis status','sdr elist'], d['argv']" "$J"
+  check "sensors are read on their own slower clock" \
+        "assert d['sensor_reads_in_two_rounds']==2, d['sensor_reads_in_two_rounds']" "$J"
+  check "a refused BMC login is auth, latched against lockout, and shown amber" \
+        "a=d['denied']; assert a[1]=='auth' and 'not retried' in a[2] and a[3]==1 and d['denied_view']==['ok','warning'], d" "$J"
+  check "a hung ipmitool is cut off; a missing one or password file says so" \
+        "assert d['slow'][1]['status']=='unknown' and d['slow'][2] <= 7 and 'not installed' in d['no_tool']['reason'] and d['no_pw_file']['error']=='config', d" "$J"
+  check "the BMC password appears nowhere in what the check reports" \
+        "assert d['secret_in_output'] is False, d" "$J"
 fi
 
 # ----------------------------------------------------------------- UniFi ----

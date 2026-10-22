@@ -1,0 +1,10 @@
+HTTP/1.1 409 Conflict
+Server: Transmission
+X-Frame-Options: SAMEORIGIN
+Content-Security-Policy: frame-ancestors 'self'
+X-Transmission-Session-Id: EXAMPLEsessionidEXAMPLEsessionidEXAMPLEsession0
+X-Transmission-Rpc-Version: 6.0.1
+Date: Thu, 22 Oct 2026 23:27:51 GMT
+Content-Length: 581
+Content-Type: text/html; charset=ISO-8859-1
+

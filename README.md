@@ -58,6 +58,7 @@ an LLM agent instead of doing it by hand.
 | `truenas` | API polling for the NAS (see below) |
 | `hubitat` | polling for a Hubitat Elevation hub (see below) |
 | `unifi` | polling for a UniFi OS console and the devices it has adopted (see below) |
+| `services` | application and management-controller checks attached to existing hosts (see Service checks) |
 
 ### Thresholds
 
@@ -963,6 +964,186 @@ including paths that cannot exist**. A 401 therefore says nothing about
 whether the Integration API is enabled — only that UniFi OS rejected the
 request before routing it. Test with a real key or the answer is meaningless.
 
+## Service checks
+
+A host that answers is not an application that works. hassium can push a
+perfect sample every minute while Home Assistant on it has crashed, and its
+card would be green. Service checks are the server asking the application
+itself, read-only, and showing the answer **beside** the host's own status
+rather than inside it -- the same separation patches and the UniFi fleet have.
+A green host with a red Plex row says exactly that; neither is allowed to
+paint over the other.
+
+Nothing runs unless it is configured, and a check is off unless it says
+`"enabled": true`. A config with no `services` block behaves exactly as
+before, and collectors and their payload are untouched -- every check runs on
+this server.
+
+```json
+"services": {
+  "interval_seconds": 60,
+  "timeout_seconds": 5,
+  "failures_before_fail": 2,
+  "checks": [
+    { "kind": "home_assistant", "host": "hassium", "enabled": true,
+      "url": "http://10.0.0.113:8123" },
+    { "kind": "plex", "host": "plexserver", "enabled": true,
+      "url": "http://10.0.0.133:32400" },
+    { "kind": "transmission", "host": "transmission", "enabled": true,
+      "url": "http://10.0.0.152:9091" },
+    { "kind": "ipmi", "host": "mercury", "enabled": true, "address": "10.0.0.219",
+      "tls_fingerprint_sha256": "1A:24:99:54:E1:93:7F:10:...:40:33" }
+  ]
+}
+```
+
+`host` is the name the host already has on the dashboard; the check appears on
+that card and nowhere else. It is not a new host. A check whose host has never
+reported is said once at startup and shows nowhere until the host does.
+
+### What each check proves -- and does not
+
+The card and the detail page say this in the same words. None of these is
+proof the service is doing its job: a web interface that loads is not a
+download making progress.
+
+| kind | asks | ok means | does **not** mean |
+|---|---|---|---|
+| `home_assistant`, no token | `GET /manifest.json` | the HA web frontend answers as Home Assistant | the core is running, or any automation is |
+| `home_assistant`, `token_file` | `GET /api/config` (Bearer) | the core reports `state: RUNNING`, not in recovery/safe mode | integrations or automations work |
+| `plex` | `GET /identity` | Plex Media Server answers with its MediaContainer | libraries are mounted, or anything plays |
+| `transmission` | RPC `session-stats` (a read) | the daemon answers its RPC | any torrent is making progress |
+| `ipmi` | IPMI Get Channel Auth Capabilities on 623/udp, plus HTTPS `GET /` | the management controller is alive | anything about the OS -- that is the host's own status |
+
+The Transmission jail shares cerium's address, 10.0.0.152, and the check uses
+it; it is attached to the `transmission` host so it shows on the jail's card.
+
+Optional per kind: `machine_identifier` (plex) pins which Plex server must
+answer; `rpc_path` (transmission) if it is not `/transmission/rpc`;
+`username` + `password_file` (transmission, ipmi). Per check: `id` (default
+`<kind>-<host>`), `name`, `interval_seconds` (15-3600), `timeout_seconds`
+(1-30), `failures_before_fail`, `stale_after_seconds` (default three intervals).
+
+### States
+
+| state | colour | meaning |
+|---|---|---|
+| answering | green | the check passed |
+| failing | **red** | the service did not answer properly: timeout, refused, 5xx, a reply that is not this service's, HA not RUNNING |
+| rechecking | grey | one failure, held until it repeats `failures_before_fail` times -- one dropped packet is not an outage |
+| auth refused | amber | the service answered and refused the credential, or needs one |
+| misconfigured | amber | the check cannot run as configured: no URL, unreadable credential file, certificate does not match its pin |
+| cannot check | amber | this server's side: name does not resolve, no route, ipmitool missing |
+| stale | amber | no result for `stale_after_seconds` -- the checker itself is stuck |
+| not checked yet | grey | the server just started |
+| disabled | grey | in config with `"enabled": false`; listed on the detail page only |
+
+Only failing is red, for the reason reach.py gives: a dashboard that paints a
+service red because of its own broken plumbing teaches you to stop believing
+red. Failures are counted in the header ("1 service failing"), flagged on the
+host's compact row, and every settled change lands in the host's event log
+(`service:<id>`). A held single failure is not logged.
+
+### Polling
+
+One thread per check, so a service that hangs holds up only itself. Every
+request has a deadline on the whole exchange, not just per read -- a server
+dribbling one byte at a time is cut off at `timeout_seconds` like a silent
+one. The API never waits on a check: it reads the last verdict from memory.
+Verdicts live in memory, like reachability; only transitions are written.
+
+### Credentials
+
+Never in `server.json`, never in the API, never in a log. Each lives in its
+own file, named in config and read at check time:
+
+```sh
+install -m 0440 -o root -g netdash /dev/null /usr/local/etc/netdash/hass.token
+# then put the token in it with an editor, not on a command line
+```
+
+* **Home Assistant**: optional. Without one, the check is the public manifest
+  and nothing under `/api/` is ever requested -- an unauthenticated `/api/`
+  request is a failed login to HA, and with `ip_ban_enabled` enough of them
+  ban this server. With one (Profile -> Security -> Long-lived access tokens,
+  ideally for a dedicated non-admin user), set `token_file`.
+* **Transmission**: only if `rpc-authentication-required` is on; then
+  `username` + `password_file`.
+* **IPMI sensors**: a BMC account with **USER** privilege -- created by you on
+  the BMC; netdash never touches BMC settings -- plus `username` +
+  `password_file`, and `ipmitool` installed on this server
+  (`pkg install ipmitool` / `apt install ipmitool`).
+
+A credential that is refused is **not sent again** until its file changes, so
+a typo cannot walk into HA's ip_ban, Transmission's brute-force lockout or a
+BMC's account lockout one poll at a time. Fix the file; the next round
+retries.
+
+### TLS
+
+Always verified; there is no setting to turn that off. For a device with a
+self-signed certificate -- every BMC -- pin it:
+
+```sh
+echo | openssl s_client -connect 10.0.0.219:443 2>/dev/null \
+  | openssl x509 -noout -fingerprint -sha256
+```
+
+and put the result in `tls_fingerprint_sha256` (colons optional). The pin is
+compared right after the handshake, before a byte of the request is sent; a
+certificate that stops matching is reported as misconfigured, which is what a
+firmware update that regenerates the certificate looks like -- and also what
+someone else answering at that address looks like. Or give `ca_file`.
+
+### The BMC
+
+mercury's management controller (a Supermicro at 10.0.0.219) is a check
+attached to mercury, shown as a **BMC** row on its card and a section of its
+detail page that says in words it is separate hardware. It is checked whether
+or not mercury is up, and when mercury is DOWN its row says what the BMC says:
+`DOWN · no reply from 10.0.0.2 · BMC answers, power on` is a hung OS;
+`power off` is a different trip to the rack.
+
+Two levels, and the second may stay unknown indefinitely without that being a
+fault:
+
+* **Reachable** -- no credentials. The IPMI pre-session Get Channel
+  Authentication Capabilities on 623/udp (the first packet of every ipmitool
+  session; it changes nothing) and the HTTPS interface, pinned. Either
+  answering is enough; neither is a failure.
+* **Hardware** -- with credentials and ipmitool: `ipmitool -I lanplus -L USER
+  sdr elist` and `chassis status`, every `sensor_interval_seconds` (default
+  300). Temperatures, fans, power supplies and voltages are graded by
+  ipmitool's threshold status and by discrete event text ("Failure detected",
+  "AC lost"); chassis faults (power, cooling, drive) are critical. A
+  reachable BMC reporting a failed supply is a red row. An unpopulated fan
+  header ("No Reading") is not a failed fan. The password goes to ipmitool as
+  `-f <file>`, never in argv or the environment, and USER privilege means the
+  session cannot issue a single write.
+
+Without credentials the row reads `reachable · sensors unknown` and stays
+green -- reachability-only was the choice made. Configured credentials that
+fail (refused login, ipmitool missing) turn it amber. Nothing is ever shown
+as `sensors ok` that was not read.
+
+Redfish was tried first and is not usable on this BMC: even the
+unauthenticated service root answers `OemLicenseNotPassed` (it wants
+Supermicro's SUM/DCMS/OOB licence).
+
+### Troubleshooting
+
+* `services: check X cannot run: ...` at startup -- the reason is the config
+  error; the card shows it as misconfigured.
+* `service X on H: auth -- ... not retried until ... changes` -- fix the
+  credential file; the next round picks it up.
+* **cannot check / cannot resolve** -- this server cannot reach the address.
+  It is not the service, and netdash does not fix it by changing networking.
+* **stale** -- the check thread produced nothing for three intervals: look
+  for `service X:` lines in the journal.
+* To see exactly what a check does, from the server:
+  `curl -s http://10.0.0.133:32400/identity`; for the BMC
+  `ipmitool -I lanplus -H 10.0.0.219 -U <user> -f <file> -L USER sdr elist`.
+
 ## History
 
 Raw samples answer *what is it doing*. They are the wrong tool for *is this
@@ -1115,7 +1296,11 @@ glyph's geometry and fails on a path command it cannot read, an element that
 draws nothing, or a shape that leaves the 24×24 viewBox. It says nothing about
 whether an icon *looks* right — only a person looking at the PNG can say that.
 
-108 cases, no network, no root, nothing installed — `sh`, `awk` and `python3`.
+The service and IPMI cases stand up their own HTTP, HTTPS and UDP servers on
+127.0.0.1 (HTTPS only where `openssl` exists to make a certificate); nothing
+leaves the machine.
+
+The suite needs no network, no root and nothing installed — `sh`, `awk` and `python3`.
 The BSD and macOS cases run the real collector end to end against mocked
 `sysctl`/`df`/`mount`/`vmstat`; the Linux cases drive its awk programs directly,
 since `/proc` reads cannot be intercepted through `PATH`.

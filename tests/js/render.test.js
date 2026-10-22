@@ -627,4 +627,116 @@ check('stopped_jail_is_grey_and_named', function () {
   if (ctx.st('stopped').css !== 'var(--st-none)') throw new Error('stopped is not grey');
 });
 
+// -- service checks: a second axis on the card, never the host's own dot --
+function SVCV(o) {
+  var s = { id: 'plex-plexserver', kind: 'plex', name: 'Plex', host: 'h', role: 'app',
+            target: 'http://10.0.0.133:32400', auth: null, enabled: true,
+            interval_seconds: 60, timeout_seconds: 5,
+            checks: 'media server answers /identity -- not proof that libraries or playback work',
+            state: 'ok', outcome: 'ok', severity: 'ok', detail: 'media server answers',
+            failures: 0, latency_ms: 3, checked_at: 1788436200, since: 1788430000,
+            age_seconds: 10, facts: { version: '1.41.3.9314-a0bfb8370' } };
+  for (var k in o) s[k] = o[k];
+  return s;
+}
+var BMC = SVCV({ id: 'ipmi-mercury', kind: 'ipmi', name: 'BMC', role: 'bmc',
+  target: '10.0.0.219', checks: 'management controller answers (IPMI 623/udp, HTTPS); ' +
+  'sensors not read -- no credentials', detail: 'BMC answers (IPMI and HTTPS)',
+  facts: { ipmi20: true, reach: { ipmi: 'IPMI answers', https: 'web interface answers (HTTP 200)' } },
+  hardware: { status: 'unknown', reason: 'no credentials configured -- reachability only' } });
+var FAILING = SVCV({ state: 'fail', outcome: 'fail', severity: 'critical',
+                     detail: 'connection refused by 10.0.0.133:32400', failures: 2 });
+
+check('a_failing_service_is_on_its_card_and_the_host_stays_ok', function () {
+  overview([host({ host: 'plexserver', services: [FAILING], services_severity: 'critical' })], 'vms');
+  var t = textOf(ctx.root);
+  if (t.indexOf('Plex') < 0 || t.indexOf('failing') < 0) throw new Error('card read: ' + t);
+  if (t.indexOf('connection refused') < 0) throw new Error('the reason is not on hover: ' + t);
+  if (t.indexOf('OK') < 0) throw new Error('the host itself should still read OK: ' + t);
+  if (t.indexOf('not proof that libraries or playback work') < 0) {
+    throw new Error('the card does not say what was actually checked: ' + t);
+  }
+});
+check('the_header_counts_failing_services', function () {
+  overview([host({ host: 'a', services: [FAILING], services_severity: 'critical' }),
+            host({ host: 'b', services: [SVCV({ state: 'auth', outcome: 'auth',
+              severity: 'warning', detail: 'token rejected' })], services_severity: 'warning' }),
+            host({ host: 'c' })], '');
+  var m = ctx.metaEl.textContent;
+  if (m.indexOf('1 service failing') < 0) throw new Error('header read: ' + m);
+  if (m.indexOf('1 service check needs attention') < 0) throw new Error('header read: ' + m);
+  if (m.indexOf('all clear') >= 0) throw new Error('all clear beside a failing service: ' + m);
+  overview([host({ host: 'a', services: [SVCV({})], services_severity: 'ok' })], '');
+  if (ctx.metaEl.textContent.indexOf('all clear') < 0) {
+    throw new Error('answering services should leave the header clear: ' + ctx.metaEl.textContent);
+  }
+});
+check('the_compact_row_flags_the_worst_service_and_names_them', function () {
+  var row = ctx.compactRow(host({ services: [SVCV({}), FAILING], services_severity: 'critical' }));
+  var t = textOf(row);
+  if (t.indexOf('✕') < 0 || t.indexOf('Plex: failing') < 0) throw new Error('row read: ' + t);
+  var quiet = textOf(ctx.compactRow(host({ services: [SVCV({})] })));
+  if (quiet.indexOf('Plex: answering') < 0) throw new Error('quiet row read: ' + quiet);
+  var none = textOf(ctx.compactRow(host({})));
+  if (none.indexOf('Plex') >= 0) throw new Error('a host with no checks grew a flag');
+});
+check('a_disabled_check_stays_off_the_card_but_on_the_detail_page', function () {
+  var off = SVCV({ state: 'disabled', severity: 'unknown', detail: 'disabled in server.json' });
+  var card = textOf(ctx.compactRow(host({ services: [off] })));
+  if (card.indexOf('Plex') >= 0) throw new Error('a disabled check is on the row: ' + card);
+  ctx.renderDetail('h', detail(host({ services: [off] })));
+  var t = textOf(ctx.root);
+  if (t.indexOf('Services') < 0 || t.indexOf('disabled') < 0) throw new Error('detail read: ' + t);
+});
+check('a_down_host_row_still_carries_its_bmc', function () {
+  var row = ctx.compactRow(host(merge(DOWN, { host: 'mercury', services: [merge(BMC, {
+    hardware: { status: 'ok', power: 'on', counts: {}, problems: [], max_temp_c: 41 } })] })));
+  var t = textOf(row);
+  if (t.indexOf('BMC answers, power on') < 0) throw new Error('row read: ' + t);
+  if (t.indexOf('mercury') < 0) throw new Error('the down row lost its host name: ' + t);
+});
+check('the_bmc_says_it_is_separate_and_that_its_sensors_are_unknown', function () {
+  ctx.renderDetail('mercury', detail(host({ host: 'mercury', services: [BMC] })));
+  var t = textOf(ctx.root);
+  if (t.indexOf('Management controller of mercury at 10.0.0.219') < 0) throw new Error(t);
+  if (t.indexOf('Hardware sensors: unknown') < 0) throw new Error('detail read: ' + t);
+  if (t.indexOf('sensors ok') >= 0) throw new Error('unknown sensors were called ok: ' + t);
+});
+check('a_bmc_with_a_failed_supply_is_red_and_names_it', function () {
+  var bad = merge(BMC, { severity: 'critical', hardware: { status: 'critical', power: 'on',
+    max_temp_c: 45, no_reading: 1,
+    counts: { power: { ok: 1, warning: 0, critical: 1, unknown: 0 } },
+    problems: [{ name: 'PS2 Status', severity: 'critical',
+                 reading: 'Presence detected, Failure detected' }] } });
+  var row = ctx.serviceRow(bad);
+  if (row.style['--st'] !== 'var(--st-crit)') throw new Error('row colour ' + row.style['--st']);
+  if (textOf(row).indexOf('PS2 Status critical') < 0) throw new Error(textOf(row));
+  ctx.renderDetail('mercury', detail(host({ host: 'mercury', services: [bad] })));
+  var t = textOf(ctx.root);
+  if (t.indexOf('power supplies 1/2 ok') < 0 || t.indexOf('Failure detected') < 0) throw new Error(t);
+});
+check('a_refused_sensor_login_reads_as_such', function () {
+  var r = ctx.serviceRow(merge(BMC, { severity: 'warning', hardware: {
+    status: 'unknown', error: 'auth', reason: 'BMC refused the login' } }));
+  if (textOf(r).indexOf('sensors login refused') < 0) throw new Error(textOf(r));
+  if (r.style['--st'] !== 'var(--st-warn)') throw new Error('colour ' + r.style['--st']);
+});
+check('every_service_state_has_its_own_word', function () {
+  var words = ['ok', 'fail', 'auth', 'config', 'error', 'stale', 'unknown', 'pending', 'disabled']
+    .map(function (s) { return ctx.svcStyle({ state: s }).word; });
+  var uniq = words.filter(function (w, i) { return words.indexOf(w) === i; });
+  if (uniq.length !== words.length) throw new Error('shared words: ' + words.join(', '));
+  if (ctx.svcStyle({ state: 'fail' }).css !== 'var(--st-crit)') throw new Error('fail is not red');
+  ['auth', 'config', 'error', 'stale'].forEach(function (s) {
+    if (ctx.svcStyle({ state: s }).css !== 'var(--st-warn)') throw new Error(s + ' is not amber');
+  });
+});
+check('a_service_event_renders_in_the_log', function () {
+  ctx.renderDetail('plexserver', detail(host({ services: [SVCV({})] }), { events: [
+    { ts: 1788436000, host: 'plexserver', kind: 'service:plex-plexserver', from_state: 'ok',
+      to_state: 'fail', detail: 'Plex: connection refused' }] }));
+  var t = textOf(ctx.root);
+  if (t.indexOf('ok → fail') < 0 || t.indexOf('Plex: connection refused') < 0) throw new Error(t);
+});
+
 console.log(JSON.stringify(out));

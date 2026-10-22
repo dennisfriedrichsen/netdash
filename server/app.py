@@ -4,12 +4,13 @@
 Routes:
   POST /api/ingest        collector push (JSON, X-Netdash-Token header)
   GET  /api/overview      all hosts, latest sample + rolled-up status
-  GET  /api/host/<name>   one host: latest + recent history
+  GET  /api/host/<name>   one host: latest + recent history, with its service checks
   GET  /                  dashboard UI
 """
 
 import json
 import os
+import random
 import re
 import sys
 import threading
@@ -23,6 +24,7 @@ import db  # noqa: E402
 import eol  # noqa: E402
 import hubitat  # noqa: E402
 import reach  # noqa: E402
+import services  # noqa: E402
 import truenas  # noqa: E402
 import unifi  # noqa: E402
 
@@ -194,6 +196,106 @@ def reach_state(host):
     with REACH_LOCK:
         r = REACH.get(host)
         return dict(r) if r else None
+
+
+# ---------- service checks ----------
+#
+# What runs ON a host, as opposed to whether the host is up -- see services.py.
+# Same treatment as REACH and for the same reasons: live state in memory, a
+# fresh verdict within one round of a restart, and nothing written per check
+# per minute. Only transitions reach the database, as events, because "Plex
+# was down for twenty minutes at 03:00" is the thing worth keeping.
+SVC = {}
+SVC_LOCK = threading.Lock()
+_SVC_PARSED = {"block": None, "checks": []}
+
+
+def service_checks():
+    """The configured checks, parsed once per config block.
+
+    Keyed on the block itself so a test that swaps CFG gets its own checks,
+    and a server without a `services` block -- every config written before
+    this existed -- gets none and does nothing at all.
+    """
+    block = CFG.get("services")
+    if _SVC_PARSED["block"] is not block:
+        _SVC_PARSED["checks"] = services.parse_config(block)
+        _SVC_PARSED["block"] = block
+    return _SVC_PARSED["checks"]
+
+
+_SEV_RANK = {"unknown": 0, "ok": 1, "warning": 2, "critical": 3}
+
+
+def services_for(host, now):
+    """Every check attached to this host, as the API shows them, and the worst
+    severity among those that are switched on. Never raises: a broken check
+    must not take a host's card with it."""
+    out = []
+    try:
+        for c in service_checks():
+            if c["host"] != host:
+                continue
+            with SVC_LOCK:
+                live = dict(SVC[c["id"]]) if c["id"] in SVC else None
+            out.append(services.view(c, live, now))
+    except Exception as e:
+        sys.stderr.write("services view %s: %s\n" % (host, e))
+    worst = None
+    for v in out:
+        if v["state"] == "disabled":
+            continue
+        if worst is None or _SEV_RANK[v["severity"]] > _SEV_RANK[worst]:
+            worst = v["severity"]
+    return out, worst
+
+
+def service_worker(c, last_recorded=None):
+    """Run one check for ever. One thread per check, so a service that hangs
+    holds up nothing but itself -- and every request inside is bounded by its
+    own timeout, so even that ends; if it somehow does not, the check goes
+    stale on the card rather than showing its last good answer.
+
+    Transitions between settled states become events. A failure still being
+    held ("1 of 2 failed checks") is not one: it either turns into a failure,
+    which is recorded then, or it clears and nothing happened.
+    """
+    memo = {}
+    interval = c["interval_seconds"]
+    # Spread the first round so a restart does not fire every check at once.
+    time.sleep(random.uniform(0, min(10.0, interval)))
+    while True:
+        try:
+            last_recorded = service_round(c, memo, last_recorded)
+        except Exception as e:  # never let the thread die quietly
+            sys.stderr.write("service %s: %s\n" % (c["id"], e))
+        time.sleep(interval)
+
+
+def service_round(c, memo, last_recorded, now=None):
+    """One check, folded into SVC, with an event if the settled state moved.
+    Returns the state now on record."""
+    now = now or time.time()
+    outcome, detail, facts, ms = services.run(c, memo, now)
+    with SVC_LOCK:
+        prev = SVC.get(c["id"])
+        new = services.fold(prev, c, outcome, detail, facts, ms, now)
+        SVC[c["id"]] = new
+    state = new["state"]
+    if state == "unknown" or state == last_recorded:
+        return last_recorded
+    if last_recorded is not None and CONN is not None:
+        try:
+            db.record_event(CONN, c["host"], "service:" + c["id"], last_recorded,
+                            state, "%s: %s" % (c["name"], new["detail"]), ts=now)
+        except Exception as e:
+            sys.stderr.write("service event %s: %s\n" % (c["id"], e))
+    elif last_recorded is None and state != services.OK:
+        # The first verdict after a start is not a transition, but a failing
+        # one is worth a line in the journal.
+        sys.stderr.write("service %s on %s: %s -- %s\n"
+                         % (c["id"], c["host"], state, new["detail"]))
+    return state
 
 
 def guest_for(host):
@@ -739,6 +841,8 @@ def summarize(sample, now=None):
             and g["state"] == "running" and r and r["state"] == "up"):
         overall = "ok"
 
+    svcs, svc_severity = services_for(host, now)
+
     return {
         "host": sample["host"],
         "os": sample.get("os"),
@@ -806,6 +910,15 @@ def summarize(sample, now=None):
                                                  else bool(g["boot"])),
                    "address": g["address"], "seen_at": g["seen_at"],
                    "vouched": vouched} if g else None),
+        # What runs on the host, checked from here: an application answering,
+        # a management controller reachable. A separate axis on purpose, never
+        # folded into `status` -- that dot answers "is the machine up", and a
+        # running host with a dead Plex is a true statement a red dot would
+        # turn into a lie, while a green dot would hide the dead Plex. The
+        # badge, the header count and the event log carry this instead.
+        # Empty for every host nothing is configured against.
+        "services": svcs,
+        "services_severity": svc_severity,
         "status": overall,
     }
 
@@ -1426,6 +1539,41 @@ def appliance_poller(name, module, cfg):
         time.sleep(interval)
 
 
+def start_service_checks():
+    """One worker per enabled check, and a word at startup about each one
+    that cannot run -- a typo should be said once, out loud, not discovered
+    as a grey row weeks later."""
+    checks = service_checks()
+    if not checks:
+        return
+    try:
+        seen = set(db.known_hosts(CONN))
+        last = db.last_service_states(CONN)
+    except Exception:
+        seen, last = set(), {}
+    started = []
+    for c in checks:
+        if not c["host"]:
+            sys.stderr.write("services: check %s names no host; it has no card "
+                             "to appear on and is not run\n" % c["id"])
+            continue
+        if c["config_error"]:
+            sys.stderr.write("services: check %s cannot run: %s\n"
+                             % (c["id"], c["config_error"]))
+            continue
+        if not c["enabled"]:
+            continue
+        if c["host"] not in seen:
+            sys.stderr.write("services: check %s is attached to %s, which has "
+                             "never reported -- it runs, but shows nowhere until "
+                             "that host does\n" % (c["id"], c["host"]))
+        threading.Thread(target=service_worker,
+                         args=(c, last.get("service:" + c["id"])),
+                         daemon=True).start()
+        started.append("%s->%s" % (c["id"], c["host"]))
+    sys.stderr.write("service checks started (%s)\n" % (", ".join(started) or "none enabled"))
+
+
 def main():
     global CFG, CONN
     cfg_path = os.environ.get("NETDASH_CONFIG") or os.path.join(HERE, "config.json")
@@ -1470,6 +1618,8 @@ def main():
         threading.Thread(target=roller, daemon=True).start()
         threading.Thread(target=event_watcher, daemon=True).start()
         sys.stderr.write("history: rollups + event log enabled\n")
+
+    start_service_checks()
 
     for name, module in sorted(APPLIANCES.items()):
         for cfg in appliance_configs(name):

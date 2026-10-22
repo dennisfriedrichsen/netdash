@@ -245,6 +245,16 @@ button.link:hover { color: var(--text-1); }
 .patch .pglyph { margin-left: auto; color: var(--st, var(--st-none)); font-size: 12px; line-height: 1; }
 .patch .pval { color: var(--text-1); font-weight: 600; font-variant-numeric: tabular-nums; }
 
+/* Service checks stack under Patches and Fleet as one group: the first takes
+   the divider, the rest sit tight under it so three services do not read as
+   three separate sections of the card. */
+.patch.svc + .patch.svc { margin-top: 5px; padding-top: 0; border-top: none; }
+.patch.svc .pval {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.svchead { margin-top: 8px; font-size: 13px; }
+.svchead:first-of-type { margin-top: 4px; }
+
 /* Collector version: recessive when it matches the fleet, amber when behind --
    the only time it is worth a reader's attention. */
 .ver { color: var(--muted); }

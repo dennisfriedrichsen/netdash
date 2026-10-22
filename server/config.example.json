@@ -67,6 +67,38 @@
     "warn_days": 30,
     "overrides": {}
   },
+  "services": {
+    "interval_seconds": 60,
+    "timeout_seconds": 5,
+    "failures_before_fail": 2,
+    "checks": [
+      {
+        "kind": "home_assistant",
+        "host": "hassium.example",
+        "url": "http://10.0.0.42:8123",
+        "enabled": false
+      },
+      {
+        "kind": "plex",
+        "host": "plex.example",
+        "url": "http://10.0.0.43:32400",
+        "enabled": false
+      },
+      {
+        "kind": "transmission",
+        "host": "jail.example",
+        "url": "http://10.0.0.44:9091",
+        "enabled": false
+      },
+      {
+        "kind": "ipmi",
+        "host": "truenas.example",
+        "address": "10.0.0.45",
+        "tls_fingerprint_sha256": "",
+        "enabled": false
+      }
+    ]
+  },
   "hosts": {
     "laptop.example": {
       "expect_up": false,
