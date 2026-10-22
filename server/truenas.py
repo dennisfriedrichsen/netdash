@@ -12,6 +12,7 @@ Endpoints (verified live against TrueNAS CORE 13.0-U6.8):
   GET  /system/info        -> physmem, uptime_seconds, version
   POST /reporting/get_data -> cpu / memory / arcsize series
   GET  /pool/dataset       -> per-pool used+available (root datasets only)
+  GET  /boot/get_state     -> the boot pool, which /pool/dataset leaves out
   GET  /system/product_name -> "TrueNAS" on CORE, "FreeCORE" on FreeCORE
 
 Not yet verified against the live box:
@@ -155,6 +156,32 @@ def _pools(cfg):
     return out
 
 
+def _boot_pool(cfg):
+    """The OS drive, as one more disk row named for its pool.
+
+    /pool/dataset lists data pools only, so without this the boot pool -- where
+    every update leaves another boot environment behind until someone deletes
+    it -- was never shown at all. It is named freenas-boot on CORE and
+    boot-pool on FreeCORE, and both answer this endpoint the same way (verified
+    live on each). Its zpool size and allocation are used as they are: a boot
+    pool is a single disk or a mirror, with no raidz parity to make the raw
+    size overstate what is usable.
+
+    Best-effort, like the metric graphs: a box that cannot answer still reports
+    its data pools. Returns a list so the caller can simply add it on.
+    """
+    try:
+        st = _request(cfg, "/boot/get_state") or {}
+    except TrueNASError:
+        return []
+    props = st.get("properties") or {}
+    size = (props.get("size") or {}).get("parsed")
+    alloc = (props.get("allocated") or {}).get("parsed")
+    if not st.get("name") or size is None or alloc is None or int(size) <= 0:
+        return []
+    return [{"mount": st["name"], "used_bytes": int(alloc), "total_bytes": int(size)}]
+
+
 # update.check_available contacts iXsystems' update server, so it is polled on
 # its own slow interval rather than at the metric rate. The last good answer is
 # kept across metric polls; when the call fails it is returned unchanged and
@@ -271,7 +298,7 @@ def collect(cfg):
         "mem_used_bytes": mem,
         "mem_total_bytes": physmem,
         "uptime_seconds": int(info["uptime_seconds"]) if info.get("uptime_seconds") else None,
-        "disks": _pools(cfg),
+        "disks": _pools(cfg) + _boot_pool(cfg),
         "patches": _patches(cfg),
     }
 

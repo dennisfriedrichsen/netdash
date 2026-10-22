@@ -2550,9 +2550,11 @@ import truenas
 # Two boxes on one API. Only the product name and the update answer differ.
 BOXES = {
     "nas.example":      {"product": "TrueNAS",  "version": "TrueNAS-13.0-U6.8",
-                         "update": {"status": "AVAILABLE", "version": "13.0-U6.9"}},
+                         "update": {"status": "AVAILABLE", "version": "13.0-U6.9"},
+                         "boot": ("freenas-boot", 15569256448, 7939703808)},
     "freecore.example": {"product": "FreeCORE", "version": "FreeCORE-13.3-RELEASE",
-                         "update": {"status": "UNAVAILABLE"}},
+                         "update": {"status": "UNAVAILABLE"},
+                         "boot": ("boot-pool", 20937965568, 4908404736)},
     "old.example":      {"product": None,       "version": "TrueNAS-13.0-U5",
                          "update": {"status": "UNAVAILABLE"}},
 }
@@ -2569,6 +2571,15 @@ def fake(cfg, path, method="GET", body=None, timeout=15, auth="bearer"):
         return [{"name": "tank", "used": {"parsed": 1}, "available": {"parsed": 3}}]
     if path == "/update/check_available":
         return box["update"]
+    # Pool names and byte counts as the two live boxes reported them: mercury
+    # (CORE 13.0-U6.8) and freecore. old.example has no answer, so it stands in
+    # for a box where the call fails.
+    if path == "/boot/get_state" and box.get("boot"):
+        name, size, alloc = box["boot"]
+        return {"name": name, "status": "ONLINE", "healthy": True,
+                "properties": {"size": {"value": "", "rawvalue": str(size), "parsed": size},
+                               "allocated": {"value": "", "rawvalue": str(alloc), "parsed": alloc},
+                               "capacity": {"value": "", "rawvalue": "", "parsed": ""}}}
     raise truenas.TrueNASError("%s %s -> HTTP 404" % (method, path))
 
 truenas._request = fake
@@ -2593,6 +2604,12 @@ PYEOF
         "assert d['out']['old.example']['os']=='TrueNAS CORE 13.0 U5', d['out']['old.example']['os']" "$J"
   check "each box gets its own update answer, not the first one's" \
         "assert d['out']['nas.example']['patches']['other']==1 and d['out']['freecore.example']['patches']['other']==0, d['out']" "$J"
+  check "the boot pool is reported beside the data pools, under its own name" \
+        "assert [x['mount'] for x in d['out']['nas.example']['disks']]==['tank','freenas-boot'] and [x['mount'] for x in d['out']['freecore.example']['disks']]==['tank','boot-pool'], d['out']" "$J"
+  check "sized from the zpool's own size and allocation" \
+        "r=d['out']['nas.example']['disks'][1]; assert (r['used_bytes'],r['total_bytes'])==(7939703808,15569256448), r" "$J"
+  check "a box that cannot answer for its boot pool still reports its data pools" \
+        "assert [x['mount'] for x in d['out']['old.example']['disks']]==['tank'], d['out']['old.example']" "$J"
   check "every enabled entry of a truenas list is polled" \
         "assert d['cfgs']['truenas']==['a','c'], d['cfgs']" "$J"
   check "a list is refused where caches are shared, and a single block still works" \
