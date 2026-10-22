@@ -25,6 +25,10 @@ var STATUS = {
      expect_up:false -- a laptop that is closed for the night. Keeps the grey
      that 'stale' just gave up. */
   away:     { css: 'var(--st-none)', glyph: '⋯', label: 'Away' },
+  /* A jail its host reports as stopped. Grey for the same reason as 'away':
+     it is a decision, not a fault -- mercury keeps three jails stopped on
+     purpose, and three red rows would teach you to ignore red. */
+  stopped:  { css: 'var(--st-none)', glyph: '■', label: 'Stopped' },
   unknown:  { css: 'var(--st-none)', glyph: '–', label: 'n/a' }
 };
 function st(k) { return STATUS[k] || STATUS.unknown; }
@@ -34,6 +38,7 @@ function st(k) { return STATUS[k] || STATUS.unknown; }
    explanation is one hover or one click away on the card. */
 function reachShort(h) {
   var r = h.reachability || {};
+  if (h.status === 'stopped') return stoppedText(h, true);
   if (h.down_reason === 'unreachable') {
     /* A failed service check is a different diagnosis from silence, and a
        far more actionable one: the machine is there, its kernel is answering,
@@ -61,8 +66,21 @@ function hostStyle(h) {
 
 /* Why this host reads the way it does, in one line -- the sentence you want
    under a red card at 03:00 rather than a colour you have to interpret. */
+/* Whose word it is, and how it knows. "absent" is a jail its host listed
+   before and has stopped listing: on a plain FreeBSD host jls shows running
+   jails only, so that is what stopping one looks like from outside. */
+function stoppedText(h, brief) {
+  var g = h.guest || {}, on = h.parent ? ' on ' + h.parent : '';
+  if (brief) return 'stopped' + on;
+  return (g.state === 'absent'
+    ? 'not running' + on + ' — no longer in its jail list'
+    : 'stopped' + on) +
+    (g.boot === true ? ', though set to start at boot' : '');
+}
+
 function reachText(h) {
   var r = h.reachability || {};
+  if (h.status === 'stopped') return stoppedText(h, false);
   if (h.down_reason === 'unreachable') {
     return 'unreachable — ' + (r.detail || 'no answer') +
            (r.address ? ' (' + r.address + ')' : '');
@@ -512,7 +530,8 @@ function virtLabel(h) {
    attribute carries the detail you would otherwise scroll for. */
 function compactRow(h) {
   var s = hostStyle(h);
-  var a = el('a', 'crow' + (h.status === 'down' ? ' isdown' : ''));
+  var a = el('a', 'crow' + (h.status === 'down' ? ' isdown'
+                            : h.status === 'stopped' ? ' isstop' : ''));
   a.href = '#/host/' + encodeURIComponent(h.host);
   a.style.setProperty('--st', s.css);
 
@@ -529,8 +548,9 @@ function compactRow(h) {
      answering, and showing a stale 12% CPU beside a red dot invites you to
      read it as current. The row says what is wrong instead. */
   var why = reachText(h);
-  if (h.status === 'down') {
-    var w = el('span', 'cdown', s.label + ' · ' + reachShort(h));
+  if (h.status === 'down' || h.status === 'stopped') {
+    var w = el('span', h.status === 'down' ? 'cdown' : 'cdown cstop',
+               s.label + ' · ' + reachShort(h));
     w.title = why;
     name.title += '\n' + why;
     a.appendChild(w);
@@ -676,7 +696,8 @@ function renderOverview(data, tab) {
     var sub = el('div', 'sub', (h.stale ? 'last seen ' : 'updated ') + fmtAge(h.age_seconds) +
       // Any source but 'push' is an appliance this server polled, rather than
       // a host that installed a collector and reported in.
-      (h.source && h.source !== 'push' ? ' · via API' : '') +
+      (h.source === 'guest' ? ' · via ' + (h.parent || 'its host')
+        : h.source && h.source !== 'push' ? ' · via API' : '') +
       // Down for longer than the retention window: the meters above are empty
       // because the data is gone, not because the host reported zeroes.
       (h.no_samples ? ' · no readings left' : ''));

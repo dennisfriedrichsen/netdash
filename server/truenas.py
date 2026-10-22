@@ -13,6 +13,7 @@ Endpoints (verified live against TrueNAS CORE 13.0-U6.8):
   POST /reporting/get_data -> cpu / memory / arcsize series
   GET  /pool/dataset       -> per-pool used+available (root datasets only)
   GET  /boot/get_state     -> the boot pool, which /pool/dataset leaves out
+  GET  /jail               -> every iocage jail, running or not (see _jails)
   GET  /system/product_name -> "TrueNAS" on CORE, "FreeCORE" on FreeCORE
 
 Not yet verified against the live box:
@@ -28,6 +29,8 @@ Quirks this module works around, all confirmed on the live box:
 """
 
 import base64
+import datetime
+import ipaddress
 import json
 import re
 import ssl
@@ -35,6 +38,10 @@ import sys
 import time
 import urllib.error
 import urllib.request
+try:
+    import zoneinfo
+except ImportError:          # Python < 3.9: jail uptimes go unreported
+    zoneinfo = None
 
 
 class TrueNASError(Exception):
@@ -182,6 +189,90 @@ def _boot_pool(cfg):
     return [{"mount": st["name"], "used_bytes": int(alloc), "total_bytes": int(size)}]
 
 
+def _jail_address(ip4_addr):
+    """The jail's IPv4 address from iocage's ip4_addr, or None.
+
+    iocage writes "<iface>|<addr>[/<mask>]", comma-separated when there are
+    several -- "epair0b|10.0.0.133" on mercury for a running DHCP jail -- and
+    "DHCP (not running)" or "none" when there is nothing to report. The first
+    non-loopback address wins; anything that does not parse is no address,
+    rather than a string the prober would try to ping.
+    """
+    for part in str(ip4_addr or "").split(","):
+        addr = part.split("|")[-1].split("/")[0].strip()
+        try:
+            ip = ipaddress.IPv4Address(addr)
+        except ValueError:
+            continue
+        if not ip.is_loopback and not ip.is_unspecified:
+            return str(ip)
+    return None
+
+
+def _jail_uptime(last_started, info, now):
+    """Seconds since iocage last started the jail, or None.
+
+    last_started is the NAS's wall-clock time with no zone -- "2026-10-16
+    02:05:25" -- so it is read in the timezone /system/info reports. A jail
+    whose start predates the NAS's own boot cannot have been running since
+    then; iocage keeps the stamp across reboots, so that is capped at the NAS's
+    uptime rather than reported as months the jail was not running.
+    """
+    tz = info.get("timezone")
+    if not last_started or not tz or zoneinfo is None:
+        return None
+    try:
+        started = datetime.datetime.strptime(str(last_started), "%Y-%m-%d %H:%M:%S")
+        started = started.replace(tzinfo=zoneinfo.ZoneInfo(tz)).timestamp()
+    except (ValueError, zoneinfo.ZoneInfoNotFoundError):
+        return None
+    up = now - started
+    if info.get("uptime_seconds"):
+        up = min(up, float(info["uptime_seconds"]))
+    return int(up) if up >= 0 else None
+
+
+def _jails(cfg, info):
+    """Every jail on the box, for the server to list as hosts of their own.
+
+    What CORE's API knows: whether each jail is up, its release, its address,
+    whether it starts at boot, and when it last started. What it does not:
+    CPU, memory or disk per jail -- pcpu and memoryuse in the same records are
+    rctl limits, "off" here, and used/available read "readonly". So these
+    entries carry no metrics, and a jail with its own collector supplies them.
+
+    Best-effort: a box with no jails, or with the jail plugin not activated,
+    answers with an error or an empty list, and either way reports no jails.
+    """
+    try:
+        rows = _request(cfg, "/jail") or []
+    except TrueNASError:
+        return []
+    now = time.time()
+    out = []
+    for j in rows:
+        if not isinstance(j, dict):
+            continue
+        # The jail's hostname is what a collector inside it reports itself as,
+        # so it is the name both sources agree on. iocage defaults it to the
+        # jail name, which stands in when it is unset.
+        name = str(j.get("host_hostname") or j.get("id") or "").split(".")[0]
+        if not name:
+            continue
+        up = j.get("state") == "up"
+        rel = j.get("release")
+        out.append({
+            "host": name,
+            "os": ("FreeBSD %s" % rel) if rel else None,
+            "virt": "jail",
+            "state": "running" if up else "stopped",
+            "boot": None if j.get("boot") is None else bool(j.get("boot")),
+            "address": _jail_address(j.get("ip4_addr")) if up else None,
+            "uptime_seconds": _jail_uptime(j.get("last_started"), info, now) if up else None,
+        })
+    return out
+
+
 # update.check_available contacts iXsystems' update server, so it is polled on
 # its own slow interval rather than at the metric rate. The last good answer is
 # kept across metric polls; when the call fails it is returned unchanged and
@@ -300,6 +391,7 @@ def collect(cfg):
         "uptime_seconds": int(info["uptime_seconds"]) if info.get("uptime_seconds") else None,
         "disks": _pools(cfg) + _boot_pool(cfg),
         "patches": _patches(cfg),
+        "jails": _jails(cfg, info),
     }
 
 

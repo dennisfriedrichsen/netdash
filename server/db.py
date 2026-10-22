@@ -261,6 +261,32 @@ CREATE TABLE IF NOT EXISTS eol_acks (
     eol_date  TEXT    NOT NULL,
     acked_at  INTEGER NOT NULL
 );
+
+-- Jails as their host reports them: which machine runs each one, and whether
+-- it is running. Written by the parent on every report -- a FreeBSD collector
+-- from jls, a TrueNAS box from its jail list -- and read by summarize(), which
+-- is what turns a stopped jail grey instead of red.
+--
+-- Its own table rather than columns on samples, because it outlives them in
+-- both directions. A jail with its own collector keeps pushing its own
+-- samples, and the parent's report must still say where it runs without
+-- writing a second, emptier sample beside them. And a jail that is stopped
+-- has no samples worth taking at all; what is known about it is this row.
+--
+-- state is "running", "stopped", or "absent": in the parent's previous report
+-- and not in this one. On a plain FreeBSD host jls only lists running jails,
+-- so a jail that stops simply vanishes from the report -- absent is how that
+-- reads as stopped rather than as a jail that went silent for no reason.
+-- seen_at is when the parent last said anything about it; a parent that goes
+-- quiet stops vouching for its jails, and they fall back to their own samples.
+CREATE TABLE IF NOT EXISTS guests (
+    host     TEXT    PRIMARY KEY,
+    parent   TEXT    NOT NULL,
+    state    TEXT    NOT NULL,
+    boot     INTEGER,
+    address  TEXT,
+    seen_at  INTEGER NOT NULL
+);
 """
 
 
@@ -971,10 +997,66 @@ def forget_host(conn, host):
                 "DELETE FROM %s WHERE sample_id IN "
                 "(SELECT id FROM samples WHERE host=?)" % t, (host,))
         for t in ("samples", "rollups", "disk_rollups", "patch_acks",
-                  "patch_pending", "eol_acks", "hosts"):
+                  "patch_pending", "eol_acks", "guests", "hosts"):
             conn.execute("DELETE FROM %s WHERE host=?" % t, (host,))
         conn.commit()
     return bool(known)
+
+
+def record_guests(conn, parent, entries, ts):
+    """Store what a parent just said about its jails.
+
+    entries: [{"host", "state", "boot", "address"}], already validated. Every
+    jail this parent reported before and did not mention now becomes "absent"
+    -- keeping its address and boot flag, which are still the last known ones.
+    A jail that moved to another parent is that parent's now; the old one's
+    silence about it is not news.
+    """
+    with _DB:
+        named = set()
+        for e in entries:
+            named.add(e["host"])
+            conn.execute(
+                """INSERT INTO guests (host, parent, state, boot, address, seen_at)
+                     VALUES (?,?,?,?,?,?)
+                   ON CONFLICT(host) DO UPDATE SET
+                     parent = excluded.parent, state = excluded.state,
+                     boot = excluded.boot,
+                     address = COALESCE(excluded.address, guests.address),
+                     seen_at = excluded.seen_at""",
+                (e["host"], parent, e["state"],
+                 None if e.get("boot") is None else int(bool(e["boot"])),
+                 e.get("address"), int(ts)),
+            )
+        for r in conn.execute("SELECT host FROM guests WHERE parent=?", (parent,)).fetchall():
+            if r["host"] not in named:
+                conn.execute("UPDATE guests SET state='absent', seen_at=? WHERE host=?",
+                             (int(ts), r["host"]))
+        conn.commit()
+
+
+def host_row(conn, host):
+    """The register entry for one host -- its last source and last_seen -- plus
+    the virt its newest sample reported, or None if the host is unknown."""
+    with _DB:
+        r = conn.execute(
+            """SELECT h.*, (SELECT virt FROM samples WHERE host = h.host
+                             ORDER BY ts DESC LIMIT 1) AS virt
+                 FROM hosts h WHERE h.host=?""", (host,)).fetchone()
+        return dict(r) if r else None
+
+
+def guest(conn, host):
+    """What a parent last said about this jail, or None if none ever has."""
+    with _DB:
+        r = conn.execute("SELECT * FROM guests WHERE host=?", (host,)).fetchone()
+        return dict(r) if r else None
+
+
+def guests(conn):
+    """{host: row} for every jail some parent has reported."""
+    with _DB:
+        return {r["host"]: dict(r) for r in conn.execute("SELECT * FROM guests")}
 
 
 def history(conn, host, since_seconds):

@@ -128,11 +128,12 @@ button.link:hover { color: var(--text-1); }
    something was down but not what. The name is the one thing a row cannot
    omit, so here it is content-sized and the reason takes what is left and
    ellipsizes there instead. */
-.crow.isdown { grid-template-columns: 9px 16px minmax(0, auto) minmax(0, 1fr); }
+.crow.isdown, .crow.isstop { grid-template-columns: 9px 16px minmax(0, auto) minmax(0, 1fr); }
 .crow .cdown {
   min-width: 0; color: var(--st-crit); font-weight: 600;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.crow .cdown.cstop { color: var(--muted); font-weight: 400; }
 /* A wash, not a fill: enough to find the row from across the room without
    fighting the text contrast. */
 .crow.isdown { background: color-mix(in srgb, var(--st-crit) 12%, transparent); }

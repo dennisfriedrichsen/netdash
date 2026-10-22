@@ -173,9 +173,11 @@ if command -v zfs >/dev/null 2>&1; then
 fi
 
 if [ "$OSNAME" = "FreeBSD" ]; then
-  OTHER=$(df -k -T -l 2>/dev/null | awk '
+  # In a jail, / is reported on its own below, whatever its filesystem.
+  OTHER=$(df -k -T -l 2>/dev/null | awk -v jailed="$JAILED" '
     NR>1 && $3+0 > 0 && $2 !~ /^(zfs|devfs|procfs|fdescfs|tmpfs|linprocfs|linsysfs|nullfs|cd9660|fusefs|nfs|nfs4|smbfs|cifs)$/ {
       mp=$7; for(i=8;i<=NF;i++) mp=mp" "$i
+      if (jailed == 1 && mp == "/") next
       gsub(/\\/,"\\\\",mp); gsub(/"/,"\\\"",mp)
       printf "%s{\"mount\":\"%s\",\"used_bytes\":%.0f,\"total_bytes\":%.0f}", (n++?",":""), mp, $4*1024, $3*1024
     }')
@@ -215,8 +217,10 @@ ARCH=$(uname -m)
 if [ "$JAILED" = 1 ]; then
   # boottime is the host's. A jail has no boot of its own, but its oldest
   # process started when the jail did, give or take a few seconds.
+  # A jail with nothing running in it but this script has no age to read --
+  # null, not the host's uptime, which is the one number known to be wrong.
   JUP=$(ps -ax -o etimes= 2>/dev/null | awk '$1+0 > m { m = $1+0 } END { if (m > 0) printf "%.0f", m }')
-  [ -n "$JUP" ] && UPTIME=$JUP
+  UPTIME=${JUP:-null}
   # uname -r is the host's kernel; the jail's own release is its userland,
   # which is what its packages and patches are built against.
   JREL=$(freebsd-version -u 2>/dev/null || true)
@@ -284,9 +288,109 @@ for f in $PATCH_FILES; do
   P=$(tr -d '\n' < "$f" 2>/dev/null || true)
   case "$P" in '{'*'}') PATCHES="$P"; break ;; esac
 done
+# Run inside a jail by its host (see "Jails, from the host" below), the host's
+# copy of the jail's patch check arrives here directly: it lives on the host,
+# never in the jail's filesystem where the jail could rewrite it.
+case "${NETDASH_PATCHES_JSON:-}" in
+  '{'*'}'|null) PATCHES="$NETDASH_PATCHES_JSON" ;;
+esac
 
-JSON=$(printf '{"host":"%s","os":"%s (%s)","cpu_pct":%s,"mem_used_bytes":%s,"mem_total_bytes":%s,"uptime_seconds":%d,"disks":[%s],"patches":%s,"virt":%s,"collector_version":"%s"}' \
-  "$HOST" "$OS" "$ARCH" "$CPU" "$MEM_USED" "$MEM_TOTAL" "$UPTIME" "$DISKS" "$PATCHES" "$VIRT" "$NETDASH_VERSION")
+# ---- Address, inside a jail ----
+# The jail's host reports where the jail can be probed, and with vnet -- every
+# iocage jail on a TrueNAS box -- jls on the host knows no address at all. From
+# inside, ifconfig lists only the jail's own interfaces.
+EXTRA=""
+if [ "$JAILED" = 1 ]; then
+  JADDR=$(ifconfig -a inet 2>/dev/null | awk '$1=="inet" && $2 !~ /^127\./ { print $2; exit }')
+  case "$JADDR" in
+    *[!0-9.]*|"") ;;
+    *) EXTRA=",\"address\":\"$JADDR\"" ;;
+  esac
+fi
+
+# ---- Jails, from the host ----
+# A host reports its own jails, so a jail needs nothing installed to be listed:
+# running ones from jls, stopped ones from jail.conf and iocage, which jls
+# cannot see. Each running jail is measured by running THIS script inside it
+# with jexec -- the same jail-mode readings an in-jail collector takes, from
+# the jail's own ps, df and freebsd-version. Jail-side binaries run as the
+# jail's root inside the jail, never as the host's: nothing from a jail's
+# filesystem is executed or trusted out here.
+#
+# The script travels as sh -c's argument, not on stdin, and stdin is
+# /dev/null: anything inside that reads a terminal -- pkg's bootstrapper asks
+# "fetch and install it now?" -- must read end-of-file, not the script.
+#
+# Names are kept to what the server accepts. A jail named outside that set is
+# skipped rather than escaped: it could not be looked up on the dashboard.
+jail_boot() { # name -> true|false|null, from rc.conf's jail_enable/jail_list
+  case "$(sysrc -n jail_enable 2>/dev/null || true)" in
+    [Yy][Ee][Ss]) ;;
+    "") echo null; return ;;
+    *) echo false; return ;;
+  esac
+  JL=$(sysrc -n jail_list 2>/dev/null || true)
+  if [ -z "$JL" ]; then echo true; return; fi
+  case " $JL " in *" $1 "*) echo true ;; *) echo false ;; esac
+}
+JAILS=""
+if [ "$OSNAME" = FreeBSD ] && [ "$JAILED" != 1 ] && [ "${NETDASH_JAILS:-yes}" != no ] \
+   && command -v jls >/dev/null 2>&1 && command -v jexec >/dev/null 2>&1; then
+  SELF=$(cat "$0" 2>/dev/null || true)
+  JSTATE=${NETDASH_JAIL_STATE:-/var/db/netdash-collector/jails}
+  JTMP=$(mktemp "${TMPDIR:-/tmp}/netdash-jails.XXXXXX")
+  RUNNING=" "
+  jls -h jid name host.hostname 2>/dev/null | sed 1d > "$JTMP" || true
+  while read -r JID JNAME JHOST; do
+    [ -n "$JID" ] || continue
+    case "$JNAME" in ""|*[!A-Za-z0-9_.-]*) continue ;; esac
+    # Its hostname, short, is what a collector inside it would call itself,
+    # and what TrueNAS lists it as -- so every source agrees on one name.
+    JSHORT=${JHOST%%.*}
+    case "$JSHORT" in ""|-|*[!A-Za-z0-9_.-]*) JSHORT=$JNAME ;; esac
+    RUNNING="$RUNNING$JNAME "
+    JP=null
+    if [ -r "$JSTATE/$JNAME.json" ]; then
+      P=$(tr -d '\n' < "$JSTATE/$JNAME.json" 2>/dev/null || true)
+      case "$P" in '{'*'}') JP=$P ;; esac
+    fi
+    E=""
+    [ -n "$SELF" ] && E=$(env -u ASSUME_ALWAYS_YES NETDASH_CONF=/dev/null NETDASH_JAILS=no \
+        NETDASH_HOSTNAME="$JSHORT" NETDASH_PATCHES_JSON="$JP" \
+        jexec "$JID" /bin/sh -c "$SELF" netdash-collector --print </dev/null 2>/dev/null || true)
+    # A jail with no /bin/sh, or one whose run failed, is still running: it is
+    # listed with no readings rather than left out.
+    case "$E" in
+      '{'*'}') ;;
+      *) E="{\"host\":\"$JSHORT\",\"virt\":\"jail\"}" ;;
+    esac
+    E="${E%\}},\"state\":\"running\",\"boot\":$(jail_boot "$JNAME")}"
+    JAILS="$JAILS${JAILS:+,}$E"
+  done < "$JTMP"
+  # Stopped: every jail a manager knows of that jls did not just list.
+  { for f in ${NETDASH_JAIL_CONF:-/etc/jail.conf /etc/jail.conf.d/*.conf}; do
+      [ -r "$f" ] && awk '/^[ \t]*[A-Za-z0-9_.-]+[ \t]*\{/ {
+        sub(/^[ \t]*/, ""); sub(/[ \t]*\{.*/, ""); print "conf", $0, "-" }' "$f"
+    done
+    if command -v iocage >/dev/null 2>&1; then
+      iocage list -h 2>/dev/null | awk -F '\t' '$3=="down" { print "iocage", $2, $4 }'
+    fi
+  } > "$JTMP" 2>/dev/null || true
+  while read -r JSRC JNAME JREL; do
+    case "$JNAME" in ""|*[!A-Za-z0-9_.-]*) continue ;; esac
+    case "$RUNNING" in *" $JNAME "*) continue ;; esac
+    RUNNING="$RUNNING$JNAME "
+    JOS=null
+    case "$JREL" in -|""|*[!A-Za-z0-9._-]*) ;; *) JOS="\"FreeBSD $JREL\"" ;; esac
+    if [ "$JSRC" = conf ]; then JB=$(jail_boot "$JNAME"); else JB=null; fi
+    JAILS="$JAILS${JAILS:+,}{\"host\":\"$JNAME\",\"os\":$JOS,\"virt\":\"jail\",\"state\":\"stopped\",\"boot\":$JB}"
+  done < "$JTMP"
+  rm -f "$JTMP"
+  EXTRA="$EXTRA,\"jails\":[$JAILS]"
+fi
+
+JSON=$(printf '{"host":"%s","os":"%s (%s)","cpu_pct":%s,"mem_used_bytes":%s,"mem_total_bytes":%s,"uptime_seconds":%s,"disks":[%s],"patches":%s,"virt":%s,"collector_version":"%s"%s}' \
+  "$HOST" "$OS" "$ARCH" "$CPU" "$MEM_USED" "$MEM_TOTAL" "$UPTIME" "$DISKS" "$PATCHES" "$VIRT" "$NETDASH_VERSION" "$EXTRA")
 
 if [ "$MODE" = "--print" ]; then printf '%s\n' "$JSON"; exit 0; fi
 

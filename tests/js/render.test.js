@@ -616,4 +616,15 @@ check('detail_links_a_jail_to_its_host', function () {
   }
 });
 
+check('stopped_jail_is_grey_and_named', function () {
+  var stopped = host(merge(JAIL, { host: 'jellyfin', status: 'stopped', source: 'guest',
+    cpu: { pct: null, status: 'unknown' }, mem: { pct: null, status: 'unknown' },
+    guest: { state: 'stopped', boot: false, address: null, seen_at: 1788436200, vouched: true } }));
+  overview([stopped, host({ host: 'b' })], '');
+  var t = textOf(ctx.root);
+  if (t.indexOf('Stopped · stopped on mercury') < 0) throw new Error('row read: ' + t);
+  if (t.indexOf('DOWN') >= 0) throw new Error('a stopped jail was counted down: ' + t);
+  if (ctx.st('stopped').css !== 'var(--st-none)') throw new Error('stopped is not grey');
+});
+
 console.log(JSON.stringify(out));

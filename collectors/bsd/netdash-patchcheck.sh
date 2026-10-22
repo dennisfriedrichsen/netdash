@@ -53,6 +53,45 @@ CHECKED=""
 
 run() { "$@" 2>/dev/null || true; }
 
+# ---- Jails, from the host ----
+# The collector lists this host's jails (see its "Jails, from the host"); this
+# is their patch status, checked the same way it would be from inside: THIS
+# script, run in each running jail with jexec, so the jail-aware base checks
+# apply and pkg reads the jail's own packages. Done first, so a host whose own
+# check bails out early -- no vulnerability database -- still checks its jails.
+#
+# Each result is kept on the host, under a directory only root writes, keyed by
+# jail name: never inside the jail's filesystem, where the jail's root could
+# plant a symlink for the host's root to write through. The collector hands it
+# back into the jail's report.
+#
+# As in the collector, the script is sh -c's argument and stdin is /dev/null,
+# so pkg's bootstrap prompt in a jail without pkg reads end-of-file and
+# declines; that jail's check then fails, and it reads unknown.
+if [ "$OSNAME" = FreeBSD ] && [ "$JAILED" != 1 ] && [ "${NETDASH_JAILS:-yes}" != no ] \
+   && [ "$MODE" != "--print" ] && command -v jls >/dev/null 2>&1; then
+  JSTATE=${NETDASH_JAIL_STATE:-/var/db/netdash-collector/jails}
+  SELF=$(cat "$0" 2>/dev/null || true)
+  if [ -n "$SELF" ] && mkdir -p "$JSTATE" 2>/dev/null; then
+    chmod 755 "$JSTATE" 2>/dev/null || true
+    jls -h jid name 2>/dev/null | sed 1d | while read -r JID JNAME; do
+      case "$JNAME" in ""|*[!A-Za-z0-9_.-]*) continue ;; esac
+      OUT=$(env -u ASSUME_ALWAYS_YES NETDASH_CONF=/dev/null NETDASH_JAILS=no \
+            NETDASH_PATCH_REFRESH="$REFRESH" \
+            jexec "$JID" /bin/sh -c "$SELF" netdash-patchcheck --print </dev/null 2>/dev/null || true)
+      case "$OUT" in
+        '{'*'}')
+          printf '%s\n' "$OUT" > "$JSTATE/$JNAME.json.tmp" &&
+            mv "$JSTATE/$JNAME.json.tmp" "$JSTATE/$JNAME.json" &&
+            chmod 644 "$JSTATE/$JNAME.json" ;;
+        # A failed check leaves the previous result to age into "unknown",
+        # exactly as the host's own check does.
+        *) echo "netdash-patchcheck: jail $JNAME: no result; keeping the previous one" >&2 ;;
+      esac
+    done
+  fi
+fi
+
 # BSD stat(1), not GNU: -f %m, not -c %Y.
 mtime() { [ -e "$1" ] && stat -f %m "$1" 2>/dev/null || true; }
 

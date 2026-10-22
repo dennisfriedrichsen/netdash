@@ -94,7 +94,7 @@ if want freebsd-jail; then
   echo "freebsd-jail (every kernel counter in a jail is the host's)"
   # zfs is on the PATH and cp_time, the page queues and boottime all answer --
   # as they do in a real jail, for the host. None of it may reach the output.
-  B=$(mkbin x uname sysctl df zfs hostname ps freebsd-version)
+  B=$(mkbin x uname sysctl df zfs hostname ps freebsd-version ifconfig)
   J=$(MOCK_JAILED=1 MOCK_NCPU=4 MOCK_PHYSMEM=68625498112 MOCK_PAGESIZE=4096 \
       MOCK_FREE=3000000 MOCK_INACT=1500000 MOCK_ARC=8000000000 \
       MOCK_BOOTTIME="{ sec = 1700000000, usec = 0 }" \
@@ -118,6 +118,43 @@ if want freebsd-jail; then
         "assert [x['mount'] for x in d['disks']][0]=='/' and not any(x['mount'] in ('zroot','ssdpool') for x in d['disks']), d['disks']" "$J"
   check "the root's size is used + available from df -k /" \
         "r=d['disks'][0]; assert (r['used_bytes'],r['total_bytes'])==(6166252*1024,(6166252+43795868)*1024), r" "$J"
+  rm -rf "$B"
+fi
+
+if want freebsd-jailhost; then
+  echo "freebsd-jailhost (a host lists its jails; nothing is installed in them)"
+  # Constructed: one jail running (jid 3), one only in jail.conf, plus a
+  # running jail whose name the dashboard could not route to. The jexec mock
+  # runs the same script "inside", where the sysctl mock reports jailed.
+  B=$(mkbin x uname sysctl df zfs hostname ps freebsd-version jls jexec ifconfig sysrc)
+  JC=$(mktemp)
+  printf 'exec.start = "/bin/sh /etc/rc";\ntransmission {\n  host.hostname = transmission;\n}\nbackup { path = /jails/backup; }\n' > "$JC"
+  J=$(MOCK_NCPU=4 MOCK_PHYSMEM=32090000000 MOCK_PAGESIZE=4096 MOCK_FREE=3000000 \
+      MOCK_INACT=1500000 MOCK_ARC=8000000000 MOCK_BOOTTIME="{ sec = 1787700000, usec = 0 }" \
+      MOCK_PS_CPU="20.0 20.0" MOCK_PS_RSS="1024 1024" MOCK_PS_ETIMES="3600 10" \
+      MOCK_USERLAND=15.1-RELEASE-p6 MOCK_INET=10.0.0.150 MOCK_JAIL_ENABLE=YES \
+      MOCK_JAIL_LIST="transmission" MOCK_JLS="3 transmission transmission.lan
+4 bad;name bad" \
+      NETDASH_JAIL_CONF="$JC" NETDASH_JAIL_STATE=/nonexistent \
+      NETDASH_MOCK_OS=FreeBSD NETDASH_MOCK_REL=15.1-RELEASE-p6 NETDASH_MOCK_DF=df-k-root \
+      run_collector "$B" bsd)
+  rm -f "$JC"
+  check "the host reports itself as before" \
+        "assert d['host']=='mockhost' and d['virt']!='jail' and len(d['disks'])==3, d" "$J"
+  check "a running jail is measured from inside it, under its short hostname" \
+        "j=[x for x in d['jails'] if x['host']=='transmission'][0]; assert (j['state'],j['virt'],j['cpu_pct'],j['uptime_seconds'])==('running','jail',10.0,3600), j" "$J"
+  check "with the jail's own release and root, and none of the host's pools" \
+        "j=[x for x in d['jails'] if x['host']=='transmission'][0]; assert j['os'].startswith('FreeBSD 15.1-RELEASE-p6') and j['disks'][0]['mount']=='/' and not any(m['mount'] in ('zroot','ssdpool') for m in j['disks']), j" "$J"
+  check "its address is read from inside, where vnet hides it from jls" \
+        "j=[x for x in d['jails'] if x['host']=='transmission'][0]; assert j['address']=='10.0.0.150', j" "$J"
+  check "and starts at boot because rc.conf's jail_list names it" \
+        "j=[x for x in d['jails'] if x['host']=='transmission'][0]; assert j['boot'] is True, j" "$J"
+  check "a jail.conf jail jls does not list is reported stopped, not set to boot" \
+        "assert [x for x in d['jails'] if x['host']=='backup']==[{'host':'backup','os':None,'virt':'jail','state':'stopped','boot':False}], d['jails']" "$J"
+  check "a running jail is not also listed stopped, and an unroutable name is skipped" \
+        "assert sorted(x['host'] for x in d['jails'])==['backup','transmission'], d['jails']" "$J"
+  check "a jail does not list jails of its own" \
+        "j=[x for x in d['jails'] if x['host']=='transmission'][0]; assert 'jails' not in j, j" "$J"
   rm -rf "$B"
 fi
 
@@ -1993,11 +2030,12 @@ css = open(f"{root}/server/static/style.css").read()
 
 # The down branch of compactRow returns early with its own set of children,
 # so the row no longer matches the seven-column template the other rows use.
-branch = re.search(r"if \(h\.status === 'down'\) \{(.*?)\n  \}", js, re.S).group(1)
+# A stopped jail shares the branch and the template, so the test covers both.
+branch = re.search(r"if \(h\.status === 'down'(?: \|\| h\.status === 'stopped')?\) \{(.*?)\n  \}", js, re.S).group(1)
 # Children on a normal row: dot, icon, name, then whatever the branch adds.
 kids = 3 + len(re.findall(r"a\.appendChild", branch))
 
-tracks = re.search(r"\.crow\.isdown \{[^}]*grid-template-columns:([^;]+);", css).group(1)
+tracks = re.search(r"\.crow\.isdown(?:, \.crow\.isstop)? \{[^}]*grid-template-columns:([^;]+);", css).group(1)
 # Split on top-level spaces, keeping minmax(...) intact.
 cols = re.findall(r"minmax\([^)]*\)|\S+", tracks.strip())
 
@@ -2302,6 +2340,8 @@ if want render; then
           "assert d['containers_tab_holds_only_containers'] is None, d['containers_tab_holds_only_containers']" "$J"
     check "a jail's detail page links to the host it runs on" \
           "assert d['detail_links_a_jail_to_its_host'] is None, d['detail_links_a_jail_to_its_host']" "$J"
+    check "a stopped jail reads Stopped, on its host, and is not counted down" \
+          "assert d['stopped_jail_is_grey_and_named'] is None, d['stopped_jail_is_grey_and_named']" "$J"
     # What the whole-state ack could not express: python312 acknowledged on its
     # own, and still acknowledged when the rest of the list has moved on.
     check "every pending package gets its own acknowledge link" \
@@ -2614,6 +2654,81 @@ PYEOF
         "assert d['cfgs']['truenas']==['a','c'], d['cfgs']" "$J"
   check "a list is refused where caches are shared, and a single block still works" \
         "assert d['cfgs']['hubitat']==['h1'] and d['cfgs']['unifi']==['g'], d['cfgs']" "$J"
+fi
+
+if want guests; then
+  echo "guests (jails as their host reports them)"
+  J=$(python3 "$ROOT/tests/guests.py" "$ROOT") || J=''
+  check "a TrueNAS jail is listed with its parent, its release and its address" \
+        "assert d['plex'][1:]==['mercury',True,'FreeBSD 13.1-RELEASE-p9'] and d['plex_addr']==['10.0.0.133','parent'], d" "$J"
+  check "running and answering, with no readings to judge, reads ok -- not n/a" \
+        "assert d['plex'][0]=='ok', d['plex']" "$J"
+  check "a stopped jail is stopped, never down" \
+        "assert d['jellyfin']==['stopped','stopped',None], d['jellyfin']" "$J"
+  check "two hosts' jails of one name: the first keeps it, the second is name.parent" \
+        "assert d['transmission']==['stopped','mercury'] and d['cerium_tx']==['ok','cerium',2.5], d" "$J"
+  check "and the qualified name sticks, even while the first holder is quiet" \
+        "assert d['tx_name_stable'] is True, d" "$J"
+  check "a jail with its own collector gets no second, emptier sample from its parent" \
+        "assert d['ffc_samples']==[['push',1]] and d['ffc']==['ok','freecore',0.1], d" "$J"
+  check "malformed entries and unroutable names are dropped, not stored" \
+        "assert d['junk']==[], d['junk']" "$J"
+  check "a stopped jail stays stopped when its parent goes quiet, rather than red" \
+        "assert d['unvouched']=='stopped', d['unvouched']" "$J"
+  check "a jail missing from its parent's latest list reads as stopped" \
+        "assert d['absent']==['stopped','absent'], d['absent']" "$J"
+  check "a running jail whose address stops answering is down, whatever its parent says" \
+        "assert d['probe_down']==['down','unreachable'], d['probe_down']" "$J"
+  check "while a stopped jail's failed probe changes nothing" \
+        "assert d['stopped_probe']=='stopped', d['stopped_probe']" "$J"
+  check "forgetting a jail removes its parent's record of it too" \
+        "assert d['forgot'] is None, d['forgot']" "$J"
+
+  # The TrueNAS side: iocage's own field formats, as mercury returns them.
+  J=$(python3 - "$ROOT" <<'PYEOF'
+import json, sys, os, time
+sys.path.insert(0, os.path.join(sys.argv[1], "server"))
+import truenas
+addr = truenas._jail_address
+info = {"timezone": "America/Chicago", "uptime_seconds": 8560028}
+now = time.time()
+started = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - 3600))
+ROWS = [
+    {"id": "plexserver", "host_hostname": "plexserver", "state": "up", "release": "13.1-RELEASE-p9",
+     "ip4_addr": "epair0b|10.0.0.133", "boot": 1, "last_started": "2026-07-15 09:02:00"},
+    {"id": "jellyfin", "host_hostname": "jellyfin", "state": "down", "release": "13.2-RELEASE-p12",
+     "ip4_addr": "DHCP (not running)", "boot": 0, "last_started": "2025-12-20 13:59:02"},
+    {"id": "noname", "host_hostname": "", "state": "up", "release": None, "ip4_addr": "none", "boot": 0},
+]
+def fake(cfg, path, method="GET", body=None, timeout=15, auth="bearer"):
+    if path == "/jail":
+        return ROWS
+    raise truenas.TrueNASError("404")
+truenas._request = fake
+js = truenas._jails({"host": "nas"}, info)
+os.environ["TZ"] = "America/Chicago"; time.tzset()
+up = truenas._jail_uptime(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - 3600)), info, now)
+print(json.dumps({
+  "addr": [addr("epair0b|10.0.0.133"), addr("vnet0|10.0.0.5/24,lo0|127.0.0.1"),
+           addr("lo0|127.0.0.1,em0|192.168.1.9/24"), addr("DHCP (not running)"), addr("none"), addr(None)],
+  "jails": js, "up": up,
+  "capped": truenas._jail_uptime("2025-01-01 00:00:00", info, now),
+  "nozone": truenas._jail_uptime("2026-07-15 09:02:00", {}, now),
+}))
+PYEOF
+) || J=''
+  check "iocage's address formats parse to the first real address, or none" \
+        "assert d['addr']==['10.0.0.133','10.0.0.5','192.168.1.9',None,None,None], d['addr']" "$J"
+  check "an up jail is running with its address, a down one stopped with none" \
+        "assert [[j['host'],j['state'],j['address'],j['boot'],j['os']] for j in d['jails'][:2]]==[['plexserver','running','10.0.0.133',True,'FreeBSD 13.1-RELEASE-p9'],['jellyfin','stopped',None,False,'FreeBSD 13.2-RELEASE-p12']], d['jails']" "$J"
+  check "no CPU or memory is claimed -- the API has none per jail" \
+        "assert all('cpu_pct' not in j and 'mem_used_bytes' not in j for j in d['jails']), d['jails']" "$J"
+  check "a jail with no hostname is listed under its iocage name" \
+        "assert d['jails'][2]['host']=='noname' and d['jails'][2]['address'] is None, d['jails'][2]" "$J"
+  check "last_started is read in the NAS's timezone" \
+        "assert abs(d['up']-3600) <= 2, d['up']" "$J"
+  check "but never older than the NAS's own boot, and unknown without a timezone" \
+        "assert d['capped']==8560028 and d['nozone'] is None, d" "$J"
 fi
 
 # ----------------------------------------------------------------- UniFi ----

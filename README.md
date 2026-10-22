@@ -554,18 +554,63 @@ pool's. In a jail the patch check fetches base updates for the jail's own
 release rather than the host kernel's, and never reports a reboot as required,
 since restarting a jail does not change its kernel.
 
-A jail cannot see its host's name, so name it in config:
+### Jails reported by their host
+
+A jail does not need a collector of its own: its host lists it.
+
+| host | how it finds its jails | what each jail gets |
+|---|---|---|
+| FreeBSD (the collector) | `jls` for running jails; `/etc/jail.conf`, `/etc/jail.conf.d/*.conf` and `iocage list` for stopped ones | everything in the table above — the host runs the same collector inside each running jail with `jexec` — plus patch status from the daily check, run the same way |
+| TrueNAS / FreeCORE (the poller) | the API's `/jail` list, running or not | state, release, address, start-at-boot, uptime from `last_started`. **No CPU, memory or disk**: the API has none per jail |
+
+Each jail is listed as a host of its own, on the **Containers** tab, with its
+parent known — no `parent` entry needed. Its address comes from the host (or,
+for a vnet jail, from `ifconfig` inside it), so reachability probing works with
+no config. Its release feeds the end-of-life check like any other host's.
+
+**Stopped jails are grey, "Stopped", never down.** A jail its host lists as
+stopped — or one its host listed before and no longer does, which is what
+stopping a jail looks like to `jls` — is a decision, not an outage. The card
+says whether it is set to start at boot. That last word stands while the host
+itself is quiet: a NAS outage does not turn its stopped jails red.
+
+A running jail is **probed every sweep**, because its samples arrive fresh
+whenever its host does, which proves nothing about the jail. Running and
+answering is OK even with no readings to judge (a TrueNAS jail); not answering
+is down, whatever the host says.
+
+**A jail with its own collector** (the one above) still pushes for itself, and
+those pushes win: the host's report adds only where it runs and whether it is
+up, never a second, emptier sample beside them. That is how a TrueNAS jail gets
+CPU and memory — install the collector inside it.
+
+**Names.** A jail is listed under its short hostname, which is also what a
+collector inside it calls itself and what TrueNAS lists it as. Jail names are
+unique per host, not per network, so the second host to report a name gets
+`name.parent` — mercury's `transmission` and cerium's `transmission.cerium` —
+and keeps it. Names outside `A-Z a-z 0-9 _ . -` are skipped.
+
+On the FreeBSD side nothing from a jail's filesystem runs as the host's root:
+`jexec` runs the host's copy of the script as the jail's root, inside the jail.
+The script travels as an argument, with stdin from `/dev/null`, so pkg's
+bootstrap prompt in a jail without pkg declines instead of eating the script.
+Each jail's patch result is kept on the host, in
+`/var/db/netdash-collector/jails/<name>.json`, never written into the jail.
+Set `NETDASH_JAILS=no` in `collector.conf` to stop a host reporting its jails.
+
+`parent` in the config still works, and wins — for a jail whose host reports
+nothing, such as one on a Linux box:
 
 ```json
 "hosts": { "plexserver": { "parent": "mercury" } }
 ```
 
-The detail page then links to the host (`jail on mercury`). The jail has its
-own address, so reachability probing works as it does for any other host.
+The detail page links to the host either way (`jail on mercury`).
 
-The collector needs cron or systemd running inside the guest. Jails started
-with `/etc/rc` and LXC system containers have that; single-process application
-containers (most docker images) do not, and are better seen through their host.
+The in-jail collector needs cron running inside the jail; jails started with
+`/etc/rc` have it. Linux containers are reported only from inside, by their own
+collector, which needs cron or systemd: LXC system containers have that, most
+docker images do not.
 
 ## Tabs
 

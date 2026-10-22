@@ -1,0 +1,7 @@
+#!/bin/sh
+# Mock jexec: run the command "inside" jail $1 by telling the other mocks they
+# are in a jail. Per-jail readings come from MOCK_JAIL_<jid>_* when set.
+jid=$1; shift
+MOCK_JAILED=1; export MOCK_JAILED
+eval "c=\${MOCK_JAIL_${jid}_CPU:-}"; [ -n "$c" ] && MOCK_PS_CPU=$c && export MOCK_PS_CPU
+exec "$@"

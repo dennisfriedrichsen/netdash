@@ -196,6 +196,103 @@ def reach_state(host):
         return dict(r) if r else None
 
 
+def guest_for(host):
+    """The parent's latest word on this jail, or None. Never raises: a CFG or
+    CONN built by hand for a test has no database behind it."""
+    if CONN is None:
+        return None
+    try:
+        return db.guest(CONN, host)
+    except Exception:
+        return None
+
+
+def guest_vouched(g, now):
+    """A parent's report counts only while the parent itself is reporting. One
+    that has gone quiet is no longer saying anything about its jails."""
+    return bool(g) and now - g["seen_at"] <= stale_after_for(g["parent"])
+
+
+# The states a parent may report a jail in. Anything else is read as running,
+# which is the claim with nothing to hide behind: a running jail still has to
+# answer for itself through its samples and its probe.
+GUEST_STATES = ("running", "stopped")
+GUEST_ONLY = ("jails", "state", "boot", "address")
+
+
+# Characters a host name keeps unescaped in a dashboard URL -- the routes match
+# the raw path, so anything encodeURIComponent would escape could never be
+# looked up again.
+_GUEST_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$")
+
+
+def _guest_name(name, parent, now):
+    """The name a jail is listed under: its own, unless that is taken.
+
+    Jail names are unique per host, not per network -- mercury and cerium each
+    have a "transmission". The first to claim a name keeps it; a second jail of
+    the same name on another host is listed as name.parent. Taken means either
+    another parent is still reporting a jail of that name, or the name belongs
+    to a host that is not a jail at all. A host of that name that IS a jail,
+    with no parent on record, is this jail's own collector, and the two are
+    the same machine.
+    """
+    # Once qualified, always: the name a jail was listed under is where its
+    # history is, and it must not move back the day the other one goes quiet.
+    q = db.guest(CONN, "%s.%s" % (name, parent))
+    if q and q["parent"] == parent:
+        return q["host"]
+    g = db.guest(CONN, name)
+    if g:
+        if g["parent"] == parent or not guest_vouched(g, now):
+            return name
+        return "%s.%s" % (name, parent)
+    h = db.host_row(CONN, name)
+    if h and h["source"] != "guest" and h.get("virt") != "jail":
+        return "%s.%s" % (name, parent)
+    return name
+
+
+def ingest_jails(payload, now=None):
+    """Store the jails a host or a TrueNAS box reported alongside itself.
+
+    Each becomes a host of its own, with a sample of its own, because that is
+    what it is on the network: an address, a release, packages, a reason to be
+    up or not. The exception is a jail running its own collector. Its pushes
+    are the richer report, so while they are fresh the parent's adds only the
+    guests row -- where it runs and whether it is up -- and no second sample to
+    interleave with them.
+    """
+    entries = payload.get("jails")
+    if not isinstance(entries, list) or CONN is None:
+        return
+    parent = payload["host"]
+    now = now or time.time()
+    ts = int(payload.get("ts") or now)
+    keep = []
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        name = e.get("host")
+        if not isinstance(name, str) or not _GUEST_NAME.match(name) or name == parent:
+            continue
+        name = _guest_name(name, parent, now)
+        addr = e.get("address")
+        keep.append({"host": name,
+                     "state": e.get("state") if e.get("state") in GUEST_STATES else "running",
+                     "boot": e.get("boot"),
+                     "address": addr if isinstance(addr, str) and addr else None})
+        h = db.host_row(CONN, name)
+        if h and h["source"] == "push" and now - h["last_seen"] <= stale_after_for(name):
+            continue
+        sample = {k: v for k, v in e.items() if k not in GUEST_ONLY}
+        sample["host"] = name
+        sample["ts"] = ts
+        sample["virt"] = sample.get("virt") or "jail"
+        db.insert_sample(CONN, sample, source="guest")
+    db.record_guests(CONN, parent, keep, ts)
+
+
 def address_for(host, sample):
     """Where to probe, and how we decided -- ("10.0.0.4", "config").
 
@@ -212,6 +309,11 @@ def address_for(host, sample):
     ov = host_cfg(host).get("address")
     if ov:
         return ov, "config"
+    # A jail's host knows its address from the jail's own configuration, which
+    # beats a DNS lookup that may not have caught up with a DHCP lease.
+    g = guest_for(host)
+    if g and g.get("address"):
+        return g["address"], "parent"
     if reach.resolve(host):
         return host, "name"
     peer = sample.get("peer_addr")
@@ -595,6 +697,28 @@ def summarize(sample, now=None):
         elif (not r or r["state"] != "up") and down_after and age > down_after:
             down_reason = "absent"
 
+    # A jail its parent reports as stopped is not an outage, it is a decision
+    # -- mercury keeps three jails stopped on purpose. Grey, not red, and never
+    # down, whatever the probe or the clock says. Unless the jail is pushing
+    # samples of its own right now, which beats anything said about it.
+    #
+    # The parent's last word stands even after the parent goes quiet. Nothing
+    # starts a stopped jail on a host that is down, and the alternative is a
+    # NAS outage adding one red row per jail it was deliberately not running.
+    g = guest_for(host)
+    vouched = guest_vouched(g, now)
+    own_push = sample.get("source") == "push" and not stale
+    stopped = bool(g and g["state"] in ("stopped", "absent") and not own_push)
+    if stopped:
+        down_reason = None
+    # A running jail reported by its parent arrives fresh every poll, so
+    # freshness proves only that the parent is up. Its own address is the jail's
+    # proof of life, and a jail that stops answering it is down while its parent
+    # keeps saying "running".
+    elif (expect_up and sample.get("source") == "guest" and vouched
+          and r and r["state"] == "down"):
+        down_reason = "unreachable"
+
     virt_override = host_cfg(sample["host"]).get("virt")
     virt = virt_override if virt_override else sample.get("virt")
     virt_source = ("config" if virt_override
@@ -603,9 +727,17 @@ def summarize(sample, now=None):
     # live and self-clearing; pending patches sit amber for a week and train you
     # to ignore amber. It gets its own badge, and "needs attention" in the header
     # stays a statement about CPU, memory and disk.
-    overall = ("down" if down_reason else "stale" if stale else max(
+    overall = ("stopped" if stopped else "down" if down_reason
+               else "stale" if stale else max(
         (cpu_status, mem_status, disk_status), key=lambda s: _RANK[s]
     ))
+    # A jail listed over the TrueNAS API has no readings to judge -- the API
+    # gives none per jail -- so the rollup above can only say unknown. Its host
+    # saying "running" and its own address answering is the whole of what can
+    # be known about it, and it is a positive answer.
+    if (overall == "unknown" and sample.get("source") == "guest" and vouched
+            and g["state"] == "running" and r and r["state"] == "up"):
+        overall = "ok"
 
     return {
         "host": sample["host"],
@@ -665,7 +797,15 @@ def summarize(sample, now=None):
         # The machine a jail or container runs on, from config only: a jail
         # cannot see its host's name, and guessing it from an address would be
         # wrong the first time two hosts share a subnet.
-        "parent": host_cfg(sample["host"]).get("parent"),
+        "parent": host_cfg(sample["host"]).get("parent") or (g["parent"] if g else None),
+        # What the parent says about this jail: running, stopped, or absent
+        # from its latest report; whether it starts at boot. Null for anything
+        # no parent has reported. `vouched` false means the parent has itself
+        # gone quiet, so its word is old.
+        "guest": ({"state": g["state"], "boot": (None if g["boot"] is None
+                                                 else bool(g["boot"])),
+                   "address": g["address"], "seen_at": g["seen_at"],
+                   "vouched": vouched} if g else None),
         "status": overall,
     }
 
@@ -757,6 +897,12 @@ class Handler(BaseHTTPRequestHandler):
             db.insert_sample(CONN, payload, peer=self.client_address[0])
         except Exception as e:
             return self._fail(500, "ingest %s" % payload["host"], e)
+        # After the parent's own sample, and never at its expense: a malformed
+        # jail list is logged and dropped, the host's reading is already stored.
+        try:
+            ingest_jails(payload)
+        except Exception as e:
+            sys.stderr.write("ingest %s: jails dropped: %s\n" % (payload["host"], e))
         return self._json(200, {"ok": True, "host": payload["host"]})
 
     def _forget(self, host):
@@ -1082,6 +1228,17 @@ def reach_prober():
                 # that question rather than the end of it.
                 if sample.get("source") == "truenas":
                     continue
+                # A stopped jail is not expected to answer, and a probe that
+                # says so would only be noise in the event log.
+                g = guest_for(host)
+                if (g and g["state"] in ("stopped", "absent")
+                        and sample.get("source") != "push"):
+                    continue
+                # A jail its parent reports is always probed: its samples are
+                # fresh because the parent is, which says nothing about the jail.
+                if sample.get("source") == "guest":
+                    targets.append((host, sample))
+                    continue
                 if now - sample["ts"] < max(15, stale_after_for(host) / 2):
                     with REACH_LOCK:
                         REACH[host] = {"state": "up", "probe": reach.UP, "failures": 0,
@@ -1258,6 +1415,7 @@ def appliance_poller(name, module, cfg):
             payload = module.collect(cfg)
             if payload:
                 db.insert_sample(CONN, payload, source=name)
+                ingest_jails(payload)
             last = None
         except Exception as e:
             msg = str(e)[:200]
