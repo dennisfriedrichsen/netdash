@@ -42,6 +42,9 @@ REFRESH="${NETDASH_PATCH_REFRESH:-yes}"
 
 OSNAME=$(uname -s)
 NOW=$(date +%s)
+# Inside a FreeBSD jail the running kernel is the host's: uname -r names the
+# host's release, not the jail's. See the collector's note on jails.
+JAILED=$(sysctl -n security.jail.jailed 2>/dev/null || true)
 SEC=null
 OTH=null
 SRC=unknown
@@ -140,7 +143,16 @@ FreeBSD)
       # What `freebsd-update cron` does, minus its random 1-3600s sleep, which
       # exists to spread a fleet across the hour and is wrong for a job that is
       # already on its own timer.
-      run freebsd-update --not-running-from-cron fetch >/dev/null
+      #
+      # In a jail, freebsd-update would take the release from uname -r -- the
+      # host's kernel -- and fetch patches for a base the jail is not running.
+      # --currently-running names the jail's own userland instead.
+      if [ "$JAILED" = 1 ]; then
+        run freebsd-update --not-running-from-cron \
+          --currently-running "$(freebsd-version -u)" fetch >/dev/null
+      else
+        run freebsd-update --not-running-from-cron fetch >/dev/null
+      fi
     fi
     # Set as soon as the branch is entered, not only when something turns up
     # pending -- a clean `updatesready` (exit 2, nothing staged) is base
@@ -286,8 +298,12 @@ fi
 # which is the whole point on a pkgbase host, where the kernel arrives as an
 # ordinary package upgrade with nothing to announce it.
 # OpenBSD and NetBSD have no equivalent, so they stay null.
+#
+# A jail has no kernel of its own to reboot onto: any kernel under its /boot is
+# never run, and restarting the jail changes nothing, so it stays null rather
+# than raising a flag that no action inside the jail could clear.
 REBOOT=null
-if [ "$OSNAME" = FreeBSD ] && command -v freebsd-version >/dev/null 2>&1; then
+if [ "$OSNAME" = FreeBSD ] && [ "$JAILED" != 1 ] && command -v freebsd-version >/dev/null 2>&1; then
   KINST=$(freebsd-version -k 2>/dev/null || true)
   KRUN=$(uname -r)
   if [ -n "$KINST" ]; then

@@ -23,8 +23,96 @@ NETDASH_URL="${NETDASH_URL:-}"
 NETDASH_TOKEN="${NETDASH_TOKEN:-}"
 HOST="${NETDASH_HOSTNAME:-$(hostname -s 2>/dev/null || uname -n | cut -d. -f1)}"
 
+# ---- Virtualisation ----
+# systemd-detect-virt is the canonical answer where it exists: it prints "none"
+# and exits 1 on bare metal, so the exit status is not the signal -- the word is.
+# Absent (Alpine, which has no systemd), the CPUID hypervisor flag says whether
+# this is a guest at all, and DMI says whose. A host that can answer neither
+# reports null rather than guessing at "none": claiming bare metal is a claim.
+#
+# Containers come first, as they do in systemd-detect-virt: a container inside a
+# VM is still a container, and its kernel is the VM's. Without systemd, podman
+# and docker each leave a marker file, and LXC and systemd-nspawn put
+# container=<name> in pid 1's environment. A container that shows none of these
+# falls through to the hypervisor checks and reads as its host -- the reason a
+# per-host "virt" override exists.
+VIRT=null
+detect_virt() {
+  if command -v systemd-detect-virt >/dev/null 2>&1; then
+    systemd-detect-virt 2>/dev/null || true
+    return
+  fi
+  if [ -e /run/.containerenv ]; then echo podman; return; fi
+  if [ -e /.dockerenv ]; then echo docker; return; fi
+  C=$(tr '\000' '\n' < /proc/1/environ 2>/dev/null | sed -n 's/^container=//p' | head -1)
+  if [ -n "$C" ]; then echo "$C"; return; fi
+  if ! grep -qm1 '^flags.*[[:space:]]hypervisor\([[:space:]]\|$\)' /proc/cpuinfo 2>/dev/null; then
+    # No hypervisor bit. Only call it bare metal if DMI is actually readable;
+    # an unreadable DMI on an unknown platform is not evidence of anything.
+    [ -r /sys/class/dmi/id/sys_vendor ] && echo none
+    return
+  fi
+  V=$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null || true)
+  P=$(cat /sys/class/dmi/id/product_name 2>/dev/null || true)
+  case "$V $P" in
+    *BHYVE*|*bhyve*)              echo bhyve ;;
+    *QEMU*|*qemu*)                echo kvm ;;
+    *VMware*|*vmware*)            echo vmware ;;
+    *innotek*|*VirtualBox*)       echo oracle ;;
+    *Microsoft*|*Hyper-V*)        echo microsoft ;;
+    *Xen*|*xen*)                  echo xen ;;
+    *"Amazon EC2"*)               echo amazon ;;
+    *Parallels*)                  echo parallels ;;
+    *)                            echo vm ;;   # a guest, vendor unrecognised
+  esac
+}
+V=$(detect_virt)
+[ -n "$V" ] && VIRT="\"$V\""
+
+# Container names as systemd-detect-virt prints them; the server keeps the same
+# list. Anything else -- "none", a hypervisor, unknown -- is not a container.
+case "$V" in
+  lxc|lxc-libvirt|systemd-nspawn|docker|podman|rkt|openvz|wsl|proot|pouch|container-other) CTR=1 ;;
+  *) CTR=0 ;;
+esac
+
+# ---- Container cgroup ----
+# A container shares its host's kernel, so /proc/stat, /proc/meminfo and
+# /proc/uptime describe the HOST -- unless lxcfs is mounted over them, which
+# LXC usually does and docker never does. The container's own cgroup is the one
+# reading that is right either way: cgroup v2 at /sys/fs/cgroup, v1 split into
+# per-controller directories. Neither readable leaves the /proc figures, which
+# are the host's -- the best left to report, not a correct one.
+CG=""
+if [ "$CTR" = 1 ]; then
+  if [ -r /sys/fs/cgroup/cpu.stat ] && [ -r /sys/fs/cgroup/memory.current ]; then CG=v2
+  elif [ -r /sys/fs/cgroup/cpuacct/cpuacct.usage ] && [ -r /sys/fs/cgroup/memory/memory.usage_in_bytes ]; then CG=v1
+  fi
+fi
+
 # ---- CPU: two samples of /proc/stat, one second apart ----
 read_cpu() { awk '/^cpu /{idle=$5+$6; total=0; for(i=2;i<=NF;i++) total+=$i; print total, idle; exit}' /proc/stat; }
+if [ -n "$CG" ]; then
+  # CPU time the cgroup used, in microseconds, against wall time from
+  # /proc/uptime (host or lxcfs, both advance in real seconds), divided by the
+  # CPUs it may use: its cpu.max quota when it has one, else the cores visible
+  # to it -- nproc honours a cpuset. One busy core of four is 25%, as on a host.
+  cg_usage() {
+    if [ "$CG" = v2 ]; then awk '$1=="usage_usec"{print $2; exit}' /sys/fs/cgroup/cpu.stat
+    else awk '{printf "%.0f", $1/1000}' /sys/fs/cgroup/cpuacct/cpuacct.usage; fi
+  }
+  U1=$(cg_usage); W1=$(cut -d' ' -f1 /proc/uptime)
+  sleep 1
+  U2=$(cg_usage); W2=$(cut -d' ' -f1 /proc/uptime)
+  NCPU=$(nproc 2>/dev/null || grep -c '^processor' /proc/cpuinfo || true)
+  QUOTA=$(cat /sys/fs/cgroup/cpu.max 2>/dev/null || true)
+  CPU=$(awk -v u1="$U1" -v u2="$U2" -v w1="$W1" -v w2="$W2" -v n="${NCPU:-0}" -v q="$QUOTA" 'BEGIN{
+    split(q, Q, " "); if (Q[1] ~ /^[0-9]+$/ && Q[2]+0 > 0 && Q[1]/Q[2] < n) n = Q[1]/Q[2]
+    dw=(w2-w1)*1e6
+    if (u1=="" || u2=="" || dw<=0 || n<=0) { print "null"; exit }
+    p=100*(u2-u1)/dw/n; if(p<0)p=0; if(p>100)p=100; printf "%.1f", p
+  }')
+else
 set -- $(read_cpu); T1=$1; I1=$2
 sleep 1
 set -- $(read_cpu); T2=$1; I2=$2
@@ -32,6 +120,7 @@ CPU=$(awk -v t1="$T1" -v i1="$I1" -v t2="$T2" -v i2="$I2" 'BEGIN{
   dt=t2-t1; di=i2-i1;
   if (dt<=0) { print "null" } else { p=100*(dt-di)/dt; if(p<0)p=0; if(p>100)p=100; printf "%.1f", p }
 }')
+fi
 
 # ---- Memory: used = MemTotal - MemAvailable (excludes reclaimable cache) ----
 eval "$(awk '
@@ -41,6 +130,24 @@ eval "$(awk '
   # machine with more than 2 GiB reported mem_total_bytes as -2147483648.
   END { printf "MEM_TOTAL=%.0f\nMEM_USED=%.0f\n", t*1024, (t-a)*1024 }
 ' /proc/meminfo)"
+if [ -n "$CG" ]; then
+  # The cgroup's charge less its inactive file cache -- the same "not
+  # reclaimable" meaning as MemAvailable above. The total is the cgroup's limit
+  # when it has one below the machine's RAM, else that RAM: an unlimited
+  # container can use all of it.
+  if [ "$CG" = v2 ]; then
+    CUR=$(cat /sys/fs/cgroup/memory.current); LIM=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || true)
+    INF=$(awk '$1=="inactive_file"{print $2; exit}' /sys/fs/cgroup/memory.stat 2>/dev/null || true)
+  else
+    CUR=$(cat /sys/fs/cgroup/memory/memory.usage_in_bytes)
+    LIM=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null || true)
+    INF=$(awk '$1=="total_inactive_file"{print $2; exit}' /sys/fs/cgroup/memory/memory.stat 2>/dev/null || true)
+  fi
+  eval "$(awk -v c="$CUR" -v l="$LIM" -v i="${INF:-0}" -v t="$MEM_TOTAL" 'BEGIN{
+    if (l ~ /^[0-9]+$/ && l+0 > 0 && l+0 < t+0) t = l
+    u = c - i; if (u < 0) u = 0
+    printf "MEM_TOTAL=%.0f\nMEM_USED=%.0f\n", t, u }')"
+fi
 
 # ---- Disk ----
 # Built on /proc/mounts rather than df's flags: BusyBox df (Alpine) rejects both
@@ -56,9 +163,13 @@ eval "$(awk '
 # disk's fullness.
 #
 # Network filesystems are skipped: that storage belongs to the host serving it.
+#
+# Except a container's root: docker and podman build it from overlay, which is
+# otherwise skipped as a layer of something else. There it is the container's
+# own disk, and its df figures are those of the host filesystem under it.
 DISKS=$( { cat /proc/self/mounts 2>/dev/null || cat /proc/mounts 2>/dev/null
            printf '@@DF@@\n'
-           df -P -k 2>/dev/null; } | awk '
+           df -P -k 2>/dev/null; } | awk -v ctr="$CTR" '
   function unesc(s) {
     gsub(/\\040/," ",s); gsub(/\\011/,"\t",s); gsub(/\\134/,"\\",s); return s
   }
@@ -67,6 +178,7 @@ DISKS=$( { cat /proc/self/mounts 2>/dev/null || cat /proc/mounts 2>/dev/null
   # --- /proc/mounts: device, mountpoint, fstype ---
   !indf {
     fs=$3
+    if (ctr && fs == "overlay" && $2 == "/") { fstype["/"]=fs; dev["/"]=unesc($1); next }
     if (fs ~ /^(proc|sysfs|devtmpfs|tmpfs|devpts|cgroup|cgroup2|pstore|bpf|securityfs|debugfs|tracefs|configfs|fusectl|mqueue|hugetlbfs|autofs|binfmt_misc|squashfs|overlay|ramfs|efivarfs|rpc_pipefs|nsfs|selinuxfs|iso9660|udf|fuse\.gvfsd-fuse|fuse\.portal|fuse\.snapfuse)$/) next
     if (fs ~ /^(nfs|nfs3|nfs4|cifs|smb3|smbfs|ceph|glusterfs|afs|9p|davfs|fuse\.sshfs|fuse\.rclone|fuse\.s3fs)$/) next
     mp=unesc($2)
@@ -103,6 +215,16 @@ DISKS=$( { cat /proc/self/mounts 2>/dev/null || cat /proc/mounts 2>/dev/null
   }')
 
 UPTIME=$(awk '{printf "%.0f", $1}' /proc/uptime)
+# In a container that is the host's uptime unless lxcfs serves /proc/uptime.
+# Without lxcfs, the container's age is the host's uptime less the moment its
+# pid 1 started, which /proc/1/stat gives in clock ticks since host boot -- the
+# 20th field after the parenthesised command name, which may itself hold spaces.
+if [ "$CTR" = 1 ] && ! awk '$2=="/proc/uptime"{f=1} END{exit !f}' /proc/mounts 2>/dev/null; then
+  HZ=$(getconf CLK_TCK 2>/dev/null || echo 100)
+  CUP=$(sed 's/.*) //' /proc/1/stat 2>/dev/null | awk -v up="$UPTIME" -v hz="$HZ" '
+    $20+0 > 0 && hz+0 > 0 { a = up - $20/hz; if (a >= 0) printf "%.0f", a }')
+  [ -n "$CUP" ] && UPTIME=$CUP
+fi
 OS=$( . /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-${NAME:-Linux}}" )
 ARCH=$(uname -m)
 
@@ -117,41 +239,6 @@ for f in /proc/device-tree/model /sys/firmware/devicetree/base/model; do
   fi
 done
 [ -n "$MODEL" ] && OS="$OS - $MODEL"
-
-# ---- Virtualisation ----
-# systemd-detect-virt is the canonical answer where it exists: it prints "none"
-# and exits 1 on bare metal, so the exit status is not the signal -- the word is.
-# Absent (Alpine, which has no systemd), the CPUID hypervisor flag says whether
-# this is a guest at all, and DMI says whose. A host that can answer neither
-# reports null rather than guessing at "none": claiming bare metal is a claim.
-VIRT=null
-detect_virt() {
-  if command -v systemd-detect-virt >/dev/null 2>&1; then
-    systemd-detect-virt 2>/dev/null || true
-    return
-  fi
-  if ! grep -qm1 '^flags.*[[:space:]]hypervisor\([[:space:]]\|$\)' /proc/cpuinfo 2>/dev/null; then
-    # No hypervisor bit. Only call it bare metal if DMI is actually readable;
-    # an unreadable DMI on an unknown platform is not evidence of anything.
-    [ -r /sys/class/dmi/id/sys_vendor ] && echo none
-    return
-  fi
-  V=$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null || true)
-  P=$(cat /sys/class/dmi/id/product_name 2>/dev/null || true)
-  case "$V $P" in
-    *BHYVE*|*bhyve*)              echo bhyve ;;
-    *QEMU*|*qemu*)                echo kvm ;;
-    *VMware*|*vmware*)            echo vmware ;;
-    *innotek*|*VirtualBox*)       echo oracle ;;
-    *Microsoft*|*Hyper-V*)        echo microsoft ;;
-    *Xen*|*xen*)                  echo xen ;;
-    *"Amazon EC2"*)               echo amazon ;;
-    *Parallels*)                  echo parallels ;;
-    *)                            echo vm ;;   # a guest, vendor unrecognised
-  esac
-}
-V=$(detect_virt)
-[ -n "$V" ] && VIRT="\"$V\""
 
 # ---- Patch status ----
 # Read back from whatever netdash-patchcheck last wrote on its own daily

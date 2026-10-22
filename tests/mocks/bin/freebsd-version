@@ -1,0 +1,7 @@
+#!/bin/sh
+# Mock freebsd-version. -u is the userland release, which in a jail differs
+# from the host kernel that uname -r reports.
+case "$1" in
+  -u) [ -n "$MOCK_USERLAND" ] && { echo "$MOCK_USERLAND"; exit 0; }; exit 1 ;;
+  *)  echo "${NETDASH_MOCK_REL:-0.0}" ;;
+esac

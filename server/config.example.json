@@ -74,6 +74,9 @@
     },
     "hassium.example": {
       "address": "10.0.0.42"
+    },
+    "jail.example": {
+      "parent": "truenas.example"
     }
   }
 }

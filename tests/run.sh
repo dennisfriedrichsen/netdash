@@ -90,6 +90,37 @@ if want freebsd-nozfs; then
   rm -rf "$B"
 fi
 
+if want freebsd-jail; then
+  echo "freebsd-jail (every kernel counter in a jail is the host's)"
+  # zfs is on the PATH and cp_time, the page queues and boottime all answer --
+  # as they do in a real jail, for the host. None of it may reach the output.
+  B=$(mkbin x uname sysctl df zfs hostname ps freebsd-version)
+  J=$(MOCK_JAILED=1 MOCK_NCPU=4 MOCK_PHYSMEM=68625498112 MOCK_PAGESIZE=4096 \
+      MOCK_FREE=3000000 MOCK_INACT=1500000 MOCK_ARC=8000000000 \
+      MOCK_BOOTTIME="{ sec = 1700000000, usec = 0 }" \
+      MOCK_PS_CPU="50.0 30.0 20.0 0.0" MOCK_PS_RSS="1048576 524288 2048 1024" \
+      MOCK_PS_ETIMES="86400 86390 12 0" MOCK_USERLAND=13.2-RELEASE-p11 \
+      NETDASH_MOCK_OS=FreeBSD NETDASH_MOCK_REL=13.1-RELEASE-p9 NETDASH_MOCK_DF=df-k-root \
+      run_collector "$B" bsd)
+  check "a jail reports itself as one, not as its bare-metal host" \
+        "assert d['virt']=='jail', d['virt']" "$J"
+  check "CPU is the jail's processes over the host's cores (100/4 = 25%)" \
+        "assert d['cpu_pct']==25.0, d['cpu_pct']" "$J"
+  check "memory used is the jail's resident set, not the host's page queues" \
+        "assert d['mem_used_bytes']==(1048576+524288+2048+1024)*1024, d['mem_used_bytes']" "$J"
+  check "against the host's RAM, which is all a jail without rctl can use" \
+        "assert d['mem_total_bytes']==68625498112, d['mem_total_bytes']" "$J"
+  check "uptime is the oldest process's age, not the host's boot" \
+        "assert d['uptime_seconds']==86400, d['uptime_seconds']" "$J"
+  check "the OS is the jail's userland, not the host's kernel" \
+        "assert d['os'].startswith('FreeBSD 13.2-RELEASE-p11'), d['os']" "$J"
+  check "disk is the jail's root, and the host's pools are not claimed" \
+        "assert [x['mount'] for x in d['disks']][0]=='/' and not any(x['mount'] in ('zroot','ssdpool') for x in d['disks']), d['disks']" "$J"
+  check "the root's size is used + available from df -k /" \
+        "r=d['disks'][0]; assert (r['used_bytes'],r['total_bytes'])==(6166252*1024,(6166252+43795868)*1024), r" "$J"
+  rm -rf "$B"
+fi
+
 # ---------------------------------------------------------------- OpenBSD ----
 if want openbsd; then
   echo "openbsd (6-field comma cp_time, vmstat -s memory, bare-epoch boottime)"
@@ -176,7 +207,7 @@ if want linux-disks; then
 import re,subprocess,sys,json
 root,awkname=sys.argv[1],sys.argv[2]
 src=open(f"{root}/collectors/linux/netdash-collector.sh").read()
-prog=re.search(r"df -P -k 2>/dev/null; \} \| awk '(.*?)'\)", src, re.S).group(1)
+prog=re.search(r"df -P -k 2>/dev/null; \} \| awk (?:-v \S+ )?'(.*?)'\)", src, re.S).group(1)
 stream=open(f"{root}/tests/fixtures/linux/proc-mounts-opensuse.txt").read()+"@@DF@@\n"+ \
        open(f"{root}/tests/fixtures/linux/df-P-k-opensuse.txt").read()
 cmd=["busybox","awk",prog] if awkname=="busybox-awk" else ["awk",prog]
@@ -191,6 +222,34 @@ PY
     check "[$AWK] NFS mount excluded" \
           "assert not any('media' in x['mount'] for x in d['disks'])" "$J"
   done
+fi
+
+if want linux-container; then
+  echo "linux-container (an overlay root is the container's own disk)"
+  # Constructed, not captured: the docker layout, where / is overlay and the
+  # only other mounts are pseudo-filesystems. Run with and without ctr set, so
+  # the same mount table proves both halves.
+  J=$(python3 - "$ROOT" <<'PY'
+import re,subprocess,sys,json
+src=open(f"{sys.argv[1]}/collectors/linux/netdash-collector.sh").read()
+prog=re.search(r"df -P -k 2>/dev/null; \} \| awk (?:-v \S+ )?'(.*?)'\)", src, re.S).group(1)
+stream=("overlay / overlay rw,relatime,lowerdir=/var/lib/docker/overlay2/l/A 0 0\n"
+        "proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n"
+        "tmpfs /dev tmpfs rw,nosuid,size=65536k,mode=755 0 0\n"
+        "@@DF@@\n"
+        "Filesystem 1024-blocks Used Available Capacity Mounted on\n"
+        "overlay 102400000 40960000 61440000 40% /\n"
+        "tmpfs 65536 0 65536 0% /dev\n")
+def run(ctr):
+    out=subprocess.run(["awk","-v",f"ctr={ctr}",prog],input=stream,capture_output=True,text=True)
+    return json.loads("["+out.stdout+"]")
+print(json.dumps({"ctr":run(1),"host":run(0)}))
+PY
+) || J=''
+  check "a container's overlay root is reported as /" \
+        "assert [(x['mount'],x['used_bytes']) for x in d['ctr']]==[('/',40960000*1024)], d['ctr']" "$J"
+  check "while an overlay on a host is still skipped as a layer" \
+        "assert d['host']==[], d['host']" "$J"
 fi
 
 if want linux-bigmem; then
@@ -1034,6 +1093,8 @@ def _with(cfgvirt, reported):
 def ov(c, r):  return _with(c, r)["virt"]
 def ovs(c, r): return _with(c, r)["virt_source"]
 def ovm(c, r): return _with(c, r)["is_vm"]
+def kind(v):
+    r=_with(None, v); return [r["is_vm"], r["is_container"]]
 
 def s(virt):
     app.CFG["hosts"]={}
@@ -1065,6 +1126,15 @@ print(json.dumps({
   "cfg_beats":  ov("none", "kvm"), "cfg_beats_src": ovs("none", "kvm"),
   # With no override the host's own answer stands, and is labelled as its own.
   "host_wins":  ov(None, "bhyve"), "host_src": ovs(None, "bhyve"),
+  # Jails and containers share a host's kernel: neither bare metal nor a VM.
+  "k_jail": kind("jail"), "k_lxc": kind("lxc"), "k_docker": kind("docker"),
+  "k_none": kind("none"), "k_bhyve": kind("bhyve"), "k_unknown": kind(None),
+  # Config can say so for a container that cannot -- and name its host.
+  "cfg_jail": _with("jail", "none")["is_container"],
+  "parent": (app.CFG.update({"hosts": {"h": {"parent": "mercury"}}}),
+             app.summarize({"host":"h","ts":now,"os":"x","uptime_seconds":1,
+                            "disks":[],"virt":"jail"}, now)["parent"])[1],
+  "no_parent": _with(None, "jail")["parent"],
 }))
 PY
 ) || J=''
@@ -1087,6 +1157,16 @@ PY
         "assert (d['cfg_beats'],d['cfg_beats_src'])==('none','config'), d" "$J"
   check "without an override the host's own answer stands" \
         "assert (d['host_wins'],d['host_src'])==('bhyve','host'), d" "$J"
+  # [is_vm, is_container]. A container filed as a VM would sit on the VMs tab,
+  # and is_vm false alone would put it on Bare metal -- both wrong.
+  check "a jail or container is neither bare metal nor a VM" \
+        "assert d['k_jail']==d['k_lxc']==d['k_docker']==[False,True], d" "$J"
+  check "while bare metal and VMs are not containers, and unknown stays unknown" \
+        "assert (d['k_none'],d['k_bhyve'],d['k_unknown'])==([False,False],[True,False],[None,None]), d" "$J"
+  check "a config virt of jail makes it one" \
+        "assert d['cfg_jail'] is True, d" "$J"
+  check "the parent host comes from config, and is null without it" \
+        "assert (d['parent'],d['no_parent'])==('mercury',None), d" "$J"
 fi
 
 if want schedule; then
@@ -2218,6 +2298,10 @@ if want render; then
     # Both ack rows on one page is what tripped the shadowing.
     check "and with a patch ack and an eol ack on the same page" \
           "assert d['detail_both_ack_rows'] is None, d['detail_both_ack_rows']" "$J"
+    check "the Containers tab holds jails and containers, and Bare metal does not" \
+          "assert d['containers_tab_holds_only_containers'] is None, d['containers_tab_holds_only_containers']" "$J"
+    check "a jail's detail page links to the host it runs on" \
+          "assert d['detail_links_a_jail_to_its_host'] is None, d['detail_links_a_jail_to_its_host']" "$J"
     # What the whole-state ack could not express: python312 acknowledged on its
     # own, and still acknowledged when the rest of the list has moved on.
     check "every pending package gets its own acknowledge link" \

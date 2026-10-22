@@ -32,6 +32,14 @@ NETDASH_URL="${NETDASH_URL:-}"
 NETDASH_TOKEN="${NETDASH_TOKEN:-}"
 HOST="${NETDASH_HOSTNAME:-$(hostname -s 2>/dev/null || hostname)}"
 
+# ---- Jail ----
+# A FreeBSD jail runs on its host's kernel, so every kernel counter read below
+# -- cp_time, physmem, the page queues, boottime, vm_guest -- describes the
+# HOST. Reported as-is, a jail on a TrueNAS box shows that box's CPU, memory
+# and uptime under the jail's name. security.jail.jailed is 1 only inside one;
+# the other BSDs have no such sysctl and read as not jailed.
+JAILED=$(sysctl -n security.jail.jailed 2>/dev/null || true)
+
 # ---- CPU: two samples of kern.cp_time ----
 # Three different renderings of the same counters:
 #   FreeBSD  1000 50 500 20 8430                     (5, space-separated)
@@ -43,6 +51,17 @@ HOST="${NETDASH_HOSTNAME:-$(hostname -s 2>/dev/null || hostname)}"
 # quietly depending on idle staying the last field.
 # Idle is last on all three, so sum every field and take the last as idle.
 cp_time() { sysctl -n kern.cp_time 2>/dev/null | tr -cd '0-9 ,\n' | tr ',' ' '; }
+if [ "$JAILED" = 1 ]; then
+  # Inside a jail ps sees only the jail's own processes, so their summed %cpu
+  # is the jail's share. ps counts one fully busy core as 100, so divide by the
+  # core count to land on the same 0-100 scale as cp_time. %cpu is ps's
+  # decaying average rather than a one-second delta: it lags a spike by a few
+  # seconds, which is the price of not needing racct on the host.
+  NCPU=$(sysctl -n hw.ncpu 2>/dev/null || true)
+  CPU=$(ps -ax -o %cpu= 2>/dev/null | awk -v n="${NCPU:-0}" '
+    { s += $1 } END { if (n+0 <= 0) { print "null"; exit }
+                      p=s/n; if(p>100)p=100; printf "%.1f", p }')
+else
 S1=$(cp_time); sleep 1; S2=$(cp_time)
 CPU=$(awk -v a="$S1" -v b="$S2" 'BEGIN{
   na=split(a,A," "); nb=split(b,B," ")
@@ -53,6 +72,7 @@ CPU=$(awk -v a="$S1" -v b="$S2" 'BEGIN{
   p=100*(dt-di)/dt; if(p<0)p=0; if(p>100)p=100
   printf "%.1f", p
 }')
+fi
 
 # ---- Memory ----
 # Reported as "not reclaimable": free, inactive and laundry pages are available
@@ -72,6 +92,14 @@ sysctl_n() { sysctl -n "$1" 2>/dev/null || true; }
 case "$OSNAME" in
 FreeBSD)
   MEM_TOTAL=$(sysctl_n hw.physmem)
+  if [ "$JAILED" = 1 ]; then
+    # The page queues are the host's. The jail's footprint is its processes'
+    # resident memory, against the host's RAM -- a jail has no memory size of
+    # its own unless rctl caps it. Shared libraries are counted once per
+    # process that maps them, so this reads a little high, never low.
+    MEM_USED=$(ps -ax -o rss= 2>/dev/null | awk '{ s += $1 } END { printf "%.0f", s*1024 }')
+    [ -n "$MEM_TOTAL" ] || MEM_TOTAL=null
+  else
   PS=$(sysctl_n vm.stats.vm.v_page_size)
   FREE=$(sysctl_n vm.stats.vm.v_free_count)
   INACT=$(sysctl_n vm.stats.vm.v_inactive_count)
@@ -82,6 +110,7 @@ FreeBSD)
       u = t - (f+i+l)*ps - a; if (u<0) u=0; printf "%.0f", u }')
   else
     MEM_TOTAL="${MEM_TOTAL:-null}"
+  fi
   fi
   ;;
 OpenBSD|NetBSD)
@@ -159,6 +188,18 @@ else
     }')
 fi
 
+# A jail's root is usually a ZFS dataset, which the filter above drops in favour
+# of whole pools -- and a jail cannot see the pools. Its root is the one disk
+# that is its own, so it is reported directly. Datasets share their pool's free
+# space, so this is the host pool's fullness as seen from the jail. nullfs
+# mounts stay excluded: they are the host's storage lent in, not the jail's.
+if [ "$JAILED" = 1 ]; then
+  ZPOOLS=""
+  JROOT=$(df -k / 2>/dev/null | awk '
+    NR==2 && $2+0 > 0 { printf "{\"mount\":\"/\",\"used_bytes\":%.0f,\"total_bytes\":%.0f}", $3*1024, ($3+$4)*1024 }')
+  if [ -n "$JROOT" ] && [ -n "$OTHER" ]; then OTHER="$JROOT,$OTHER"
+  else OTHER="$JROOT$OTHER"; fi
+fi
 if [ -n "$ZPOOLS" ] && [ -n "$OTHER" ]; then DISKS="$ZPOOLS,$OTHER"
 else DISKS="$ZPOOLS$OTHER"; fi
 
@@ -171,6 +212,16 @@ BOOT=$(printf '%s' "$RAWBOOT" | sed -n 's/^{ *sec *= *\([0-9][0-9]*\).*/\1/p')
 if [ -n "$BOOT" ]; then UPTIME=$(( $(date +%s) - BOOT )); else UPTIME=0; fi
 OS="$(uname -sr)"
 ARCH=$(uname -m)
+if [ "$JAILED" = 1 ]; then
+  # boottime is the host's. A jail has no boot of its own, but its oldest
+  # process started when the jail did, give or take a few seconds.
+  JUP=$(ps -ax -o etimes= 2>/dev/null | awk '$1+0 > m { m = $1+0 } END { if (m > 0) printf "%.0f", m }')
+  [ -n "$JUP" ] && UPTIME=$JUP
+  # uname -r is the host's kernel; the jail's own release is its userland,
+  # which is what its packages and patches are built against.
+  JREL=$(freebsd-version -u 2>/dev/null || true)
+  [ -n "$JREL" ] && OS="FreeBSD $JREL"
+fi
 
 # ---- Virtualisation ----
 # FreeBSD answers directly. OpenBSD and NetBSD have no equivalent sysctl, so
@@ -193,7 +244,9 @@ virt_name() {
 }
 case "$OSNAME" in
 FreeBSD)
-  V=$(sysctl_n kern.vm_guest)
+  # kern.vm_guest inside a jail answers for the host, so a jail on a physical
+  # box would read as bare metal.
+  if [ "$JAILED" = 1 ]; then V=jail; else V=$(sysctl_n kern.vm_guest); fi
   [ -n "$V" ] && VIRT="\"$V\""
   ;;
 OpenBSD|NetBSD)

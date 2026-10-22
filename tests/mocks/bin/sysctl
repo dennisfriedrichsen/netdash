@@ -19,6 +19,8 @@ case "$key" in
   vm.stats.vm.v_inactive_count)  [ -n "$MOCK_INACT" ]    && { echo "$MOCK_INACT"; exit 0; };    exit 1 ;;
   vm.stats.vm.v_laundry_count)   [ -n "$MOCK_LAUNDRY" ]  && { echo "$MOCK_LAUNDRY"; exit 0; };  exit 1 ;;
   kstat.zfs.misc.arcstats.size)  [ -n "$MOCK_ARC" ]      && { echo "$MOCK_ARC"; exit 0; };      exit 1 ;;
+  security.jail.jailed) [ -n "$MOCK_JAILED" ] && { echo "$MOCK_JAILED"; exit 0; }; exit 1 ;;
+  hw.ncpu)      [ -n "$MOCK_NCPU" ] && { echo "$MOCK_NCPU"; exit 0; }; exit 1 ;;
   hw.memsize)   [ -n "$MOCK_MEMSIZE" ] && { echo "$MOCK_MEMSIZE"; exit 0; }; exit 1 ;;
   *) exit 1 ;;
 esac

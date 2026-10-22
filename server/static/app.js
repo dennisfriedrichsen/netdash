@@ -498,7 +498,9 @@ function eolBadge(e) {
    made about itself, and the difference should be visible rather than buried. */
 function virtLabel(h) {
   if (!h.virt) return 'virtualisation not reported';
-  var base = h.virt === 'none' ? 'bare metal' : 'guest on ' + h.virt;
+  var base = h.virt === 'none' ? 'bare metal'
+           : h.is_container ? h.virt + (h.parent ? ' on ' + h.parent : '')
+           : 'guest on ' + h.virt;
   return base + (h.virt_source === 'config' ? ' (set in server.json)' : '');
 }
 
@@ -985,6 +987,14 @@ function renderDetail(host, data, range) {
   var g = el('span', 'glyph', s.glyph); g.style.color = s.css; chip.appendChild(g);
   chip.appendChild(el('span', null, s.label));
   back.appendChild(chip);
+  /* A jail or container lives and dies with the machine under it, so that
+     machine is one click away. Only when config names it: nothing inside a
+     jail can see its host's name. */
+  if (c.parent) {
+    var pa = el('a', 'parent', (c.is_container ? c.virt : 'runs') + ' on ' + c.parent);
+    pa.href = '#/host/' + encodeURIComponent(c.parent);
+    back.appendChild(pa);
+  }
   back.appendChild(rangePicker(host, range));
   frag.appendChild(back);
 
@@ -1286,7 +1296,9 @@ function renderDetail(host, data, range) {
 var TABS = [
   { id: '',      label: 'All',        title: 'Every host, one line each' },
   { id: 'bare',  label: 'Bare metal', title: 'Hosts reporting no hypervisor' },
-  { id: 'vms',   label: 'VMs',        title: 'Hosts reporting a hypervisor' }
+  { id: 'vms',   label: 'VMs',        title: 'Hosts reporting a hypervisor' },
+  { id: 'containers', label: 'Containers',
+    title: 'FreeBSD jails and Linux containers, sharing a host\'s kernel' }
 ];
 
 /* How far back the detail page is looking. Kept in the hash rather than in a
@@ -1325,17 +1337,20 @@ function currentRoute() {
   if (m) return { view: 'host', host: decodeURIComponent(m[1]), range: rangeById(m[2]).id };
   m = h.match(/^#\/host\/(.+)$/);
   if (m) return { view: 'host', host: decodeURIComponent(m[1]), range: '24h' };
-  m = h.match(/^#\/(bare|vms)$/);
+  m = h.match(/^#\/(bare|vms|containers)$/);
   return { view: 'overview', tab: m ? m[1] : '' };
 }
 
-/* Hosts that cannot tell whether they are virtualised appear in neither
-   filtered tab. Guessing would put them in the wrong one, and a host missing
+/* Hosts that cannot tell whether they are virtualised appear in no filtered
+   tab. Guessing would put them in the wrong one, and a host missing
    from a list is easier to notice than one silently misfiled -- the All tab
    shows everything and says "?" for them. */
 function tabHosts(hosts, tab) {
-  if (tab === 'bare') return hosts.filter(function (h) { return h.is_vm === false; });
+  if (tab === 'bare')
+    return hosts.filter(function (h) { return h.is_vm === false && !h.is_container; });
   if (tab === 'vms')  return hosts.filter(function (h) { return h.is_vm === true; });
+  if (tab === 'containers')
+    return hosts.filter(function (h) { return h.is_container === true; });
   return hosts;
 }
 

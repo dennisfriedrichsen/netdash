@@ -597,4 +597,23 @@ check('a_reporting_host_is_not_offered_forgetting', function () {
   }
 });
 
+// -- containers: a third kind, on a tab of their own --
+var JAIL = { virt: 'jail', is_vm: false, is_container: true, parent: 'mercury' };
+check('containers_tab_holds_only_containers', function () {
+  var hs = [host({ host: 'plexserver', virt: 'jail', is_vm: false, is_container: true }),
+            host({ host: 'metal', virt: 'none', is_vm: false, is_container: false }),
+            host({ host: 'guest' })];
+  var got = ctx.tabHosts(hs, 'containers').map(function (h) { return h.host; }).join();
+  if (got !== 'plexserver') throw new Error('containers tab held ' + got);
+  got = ctx.tabHosts(hs, 'bare').map(function (h) { return h.host; }).join();
+  if (got !== 'metal') throw new Error('bare metal tab held ' + got);
+  overview(hs, 'containers');
+});
+check('detail_links_a_jail_to_its_host', function () {
+  ctx.renderDetail('plexserver', detail(host(merge(JAIL, { host: 'plexserver' }))));
+  if (textOf(ctx.root).indexOf('jail on mercury') < 0) {
+    throw new Error('the detail page did not name the jail\'s host');
+  }
+});
+
 console.log(JSON.stringify(out));

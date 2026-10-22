@@ -54,7 +54,7 @@ an LLM agent instead of doing it by hand.
 | `reachability` | probing that turns silence into **DOWN** (see below) |
 | `eol` | end-of-life lookups via endoflife.date (see below) |
 | `thresholds` | warn/crit percentages per metric |
-| `hosts` | per-host thresholds, staleness, address and `virt` overrides (see below) |
+| `hosts` | per-host thresholds, staleness, address, `virt` overrides and a container's `parent` (see below) |
 | `truenas` | API polling for the NAS (see below) |
 | `hubitat` | polling for a Hubitat Elevation hub (see below) |
 | `unifi` | polling for a UniFi OS console and the devices it has adopted (see below) |
@@ -96,7 +96,8 @@ per-host settings, keyed by the name the collector reports:
   "netbsd11dot0": { "thresholds": { "mem": { "warn": 92 } } },
   "argon":        { "stale_after_seconds": 900, "expect_up": false },
   "hassium":      { "address": "10.0.0.42" },
-  "truenas-core": { "virt": "none" }
+  "truenas-core": { "virt": "none" },
+  "plexserver":   { "parent": "mercury" }
 }
 ```
 
@@ -493,7 +494,7 @@ install gets none of it — trusting it there would read an unpatched-since-2025
 box as supported until 2030. Absent a product-specific reason to trust it, an
 `eolFrom` release reads EOL.
 
-## Bare metal or VM
+## Bare metal, VM or container
 
 Each collector reports whether it is virtualised, and the dashboard splits the
 fleet on it.
@@ -502,12 +503,16 @@ fleet on it.
 |---|---|
 | Linux (systemd) | `systemd-detect-virt` — prints `none` and exits **1** on bare metal, so the word is the signal, not the status |
 | Linux (no systemd) | the CPUID hypervisor flag, then DMI `sys_vendor`/`product_name` for the name |
-| FreeBSD / TrueNAS | `sysctl -n kern.vm_guest` |
+| FreeBSD / TrueNAS | `sysctl -n kern.vm_guest`; inside a jail, `security.jail.jailed` answers `jail` first |
+| Linux containers, no systemd | `/run/.containerenv` (podman), `/.dockerenv` (docker), `container=` in pid 1's environment (LXC, nspawn) |
 | OpenBSD / NetBSD | DMI strings via sysctl, matched against known hypervisor vendors |
 | macOS | `sysctl -n kern.hv_vmm_present` |
 
-`virt` is `"none"`, a hypervisor name (`bhyve`, `kvm`, `vmware`, …), or **null**
-when the host cannot tell. `is_vm` is tri-state for the same reason everything
+`virt` is `"none"`, a hypervisor name (`bhyve`, `kvm`, `vmware`, …), a container
+type (`jail`, `lxc`, `docker`, `podman`, …), or **null** when the host cannot
+tell. `is_container` is true for the container types, and `is_vm` is false for
+them — a container shares its host's kernel, so it is neither a VM nor bare
+metal. `is_vm` is tri-state for the same reason everything
 else here is: a host that cannot answer is not a bare-metal host, and collapsing
 null to false would file every pre-0.4.0 collector under "bare metal" — the one
 answer nobody checked.
@@ -527,13 +532,49 @@ Config wins over the collector, and `virt_source` in the API reports which
 answered — `"config"` or `"host"` — so a value someone typed is never
 indistinguishable from one a machine measured. The card's hover says so too.
 
+### Jails and containers
+
+A FreeBSD jail or Linux container runs on its host's kernel, so most of what a
+collector normally reads — CPU counters, memory page queues, boot time —
+describes the **host**. Inside one, the collectors measure the guest instead:
+
+| reading | FreeBSD jail | Linux container |
+|---|---|---|
+| CPU | summed `%cpu` of the jail's processes over the host's cores | the cgroup's CPU time over its quota, or its visible cores |
+| memory | summed resident memory of the jail's processes, against the host's RAM | the cgroup's charge less inactive file cache, against its limit, or the host's RAM |
+| uptime | age of the jail's oldest process | `/proc/uptime` when lxcfs serves it, else time since pid 1 started |
+| disk | the jail's `/` | the root filesystem, including docker's overlay |
+| OS | `freebsd-version -u`, the jail's userland | `/etc/os-release`, as usual |
+
+`ps` only lists the jail's own processes, which is what makes the FreeBSD
+figures possible without enabling racct on the host. Summed resident memory
+counts a shared library once per process that maps it, so it reads a little
+high. A jail's `/` is a dataset in the host's pool, so its fullness is that
+pool's. In a jail the patch check fetches base updates for the jail's own
+release rather than the host kernel's, and never reports a reboot as required,
+since restarting a jail does not change its kernel.
+
+A jail cannot see its host's name, so name it in config:
+
+```json
+"hosts": { "plexserver": { "parent": "mercury" } }
+```
+
+The detail page then links to the host (`jail on mercury`). The jail has its
+own address, so reachability probing works as it does for any other host.
+
+The collector needs cron or systemd running inside the guest. Jails started
+with `/etc/rc` and LXC system containers have that; single-process application
+containers (most docker images) do not, and are better seen through their host.
+
 ## Tabs
 
 - **All** — one line per host, sized so roughly forty fit on a screen without
   scrolling. Colour carries urgency, the number carries the value, and hovering
   carries everything else. No meters: a bar needs vertical space to read, and at
   this density the number *is* the signal.
-- **Bare metal** / **VMs** — the full cards, filtered. These lists are short
+- **Bare metal** / **VMs** / **Containers** — the full cards, filtered.
+  Containers holds FreeBSD jails and Linux containers alike. These lists are short
   enough to afford the detail, and they are where you go to look at a machine
   rather than scan for the one that is wrong.
 

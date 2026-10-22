@@ -27,6 +27,7 @@ numbers are untouched.
 | `freebsd/df-k-T-l.txt` | FreeBSD 15.1 | `-T` is accepted here and nowhere else |
 | `freebsd/zfs-list.txt`, `netbsd/zfs-list.txt` | — | `zfs list -Hp -d 0` pool roots |
 | `freebsd/cp_time.txt` | FreeBSD 15.1 | five fields, space-separated |
+| `freebsd/df-k-root.txt` | FreeBSD 15.1 | `df -k /`, which is all a jail reports of disk; captured on a host, since a jail's columns are the same |
 | `linux/apt-dist-upgrade.txt` | Debian 13 | the security origin sits *inside* the parentheses |
 | `linux/zypper-list-updates-tumbleweed.txt` | openSUSE Tumbleweed | 23 real pending updates; header and `---+---` separator must not count |
 | `linux/zypper-patch-check-tumbleweed.txt` | openSUSE Tumbleweed | the same host answering *"0 patches needed"* |

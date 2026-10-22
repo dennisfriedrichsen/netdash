@@ -102,6 +102,17 @@ def host_cfg(host):
     return (CFG.get("hosts") or {}).get(host) or {}
 
 
+# Virtualisation answers that mean "shares the host's kernel" rather than "runs
+# a kernel of its own": systemd-detect-virt's container names, plus "jail",
+# which the FreeBSD collector reports from security.jail.jailed. A container is
+# neither bare metal nor a VM, and filing it under either would be a guess the
+# tabs exist to avoid.
+CONTAINER_VIRTS = frozenset({
+    "jail", "lxc", "lxc-libvirt", "systemd-nspawn", "docker", "podman", "rkt",
+    "openvz", "wsl", "proot", "pouch", "container-other",
+})
+
+
 def thresholds_for(host):
     """Global thresholds with any per-host override merged over the top.
 
@@ -648,7 +659,13 @@ def summarize(sample, now=None):
         # reading; is_vm stays tri-state either way.
         "virt": virt,
         "virt_source": virt_source,
-        "is_vm": (None if not virt else virt != "none"),
+        "is_vm": (None if not virt
+                  else virt != "none" and virt not in CONTAINER_VIRTS),
+        "is_container": (None if not virt else virt in CONTAINER_VIRTS),
+        # The machine a jail or container runs on, from config only: a jail
+        # cannot see its host's name, and guessing it from an address would be
+        # wrong the first time two hosts share a subnet.
+        "parent": host_cfg(sample["host"]).get("parent"),
         "status": overall,
     }
 

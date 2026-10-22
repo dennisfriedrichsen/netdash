@@ -314,6 +314,7 @@ button.link:hover { color: var(--text-1); }
 
 /* ---------- range picker, projections, event log ---------- */
 .ranges { display: flex; gap: 2px; margin-left: auto; }
+.banner .parent { margin-left: 14px; color: var(--text-2); }
 .range {
   padding: 3px 9px; border-radius: 3px; font-size: 12px; font-weight: 600;
   color: var(--muted); text-decoration: none; line-height: 1.6;
