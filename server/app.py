@@ -1619,7 +1619,10 @@ def main():
         threading.Thread(target=event_watcher, daemon=True).start()
         sys.stderr.write("history: rollups + event log enabled\n")
 
-    start_service_checks()
+    # Off the main thread: it reads the database, and the roller started just
+    # above holds the database lock through its first pass. Called inline,
+    # that kept the dashboard off the network for over a minute per restart.
+    threading.Thread(target=start_service_checks, daemon=True).start()
 
     for name, module in sorted(APPLIANCES.items()):
         for cfg in appliance_configs(name):

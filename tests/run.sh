@@ -2833,6 +2833,22 @@ if want services; then
         "assert list(d['events_seed'].values())==['ok'], d['events_seed']" "$J"
   check "a hung check holds up neither the API nor any other check" \
         "assert d['api_while_hung_s'] < 0.5 and d['api_while_hung']==['pending'] and d['other_check_done']==['ok'], d" "$J"
+  # The bug the first deploy had: called inline, start_service_checks waited
+  # on the database lock behind the roller's first pass, and the server did
+  # not listen for 67 seconds after a restart.
+  J=$(python3 - "$ROOT" <<'PYEOF'
+import ast, json, sys
+tree = ast.parse(open(sys.argv[1] + "/server/app.py").read())
+main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+inline = [n for n in ast.walk(main) if isinstance(n, ast.Call)
+          and getattr(n.func, "id", None) == "start_service_checks"]
+threaded = [n for n in ast.walk(main) if isinstance(n, ast.Call)
+            and any(getattr(k.value, "id", None) == "start_service_checks" for k in n.keywords)]
+print(json.dumps({"inline": len(inline), "threaded": len(threaded)}))
+PYEOF
+) || J=''
+  check "starting the checks never delays the server listening" \
+        "assert d=={'inline':0,'threaded':1}, d" "$J"
 fi
 
 if want ipmi; then
