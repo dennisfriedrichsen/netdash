@@ -623,6 +623,13 @@ docker images do not.
   Containers holds FreeBSD jails and Linux containers alike. These lists are short
   enough to afford the detail, and they are where you go to look at a machine
   rather than scan for the one that is wrong.
+- **Services** — one line per service check rather than per host: service,
+  host (with the host's own status as a small dot beside it), address, port,
+  probe, status, detail, how long it has been in that state, when it was last
+  checked and how long the check took. Worst first, disabled checks last and
+  dimmed. The tab's count is checks, not hosts. On narrower screens the probe,
+  checked and latency columns go first, then address, port, detail and since;
+  hovering a row always gives the full story, and clicking it opens the host.
 
 Hosts that cannot report virtualisation appear under **All** only, with the
 count called out beside the tabs. Guessing would file them under the wrong tab;
@@ -1042,7 +1049,12 @@ Only failing is red, for the reason reach.py gives: a dashboard that paints a
 service red because of its own broken plumbing teaches you to stop believing
 red. Failures are counted in the header ("1 service failing"), flagged on the
 host's compact row, and every settled change lands in the host's event log
-(`service:<id>`). A held single failure is not logged.
+(`service:<id>`). A held single failure is not logged. The **Services** tab lists every check
+on one screen -- see Tabs.
+
+The API carries, per check, `address`, `ports` (e.g. `["623/udp", "443/tcp"]`)
+and `probe` (the request in a few words), derived from the same config the
+check runs from.
 
 ### Polling
 

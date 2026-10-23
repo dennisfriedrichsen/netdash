@@ -280,6 +280,21 @@ out["cfg_none"] = [services.parse_config(None), services.parse_config({}),
                    services.parse_config({"checks": []})]
 out["cfg_error_run"] = run(cfgs[2])
 
+# Where each check goes, as the Services table shows it -- from the same
+# config the check runs from.
+eps = services.parse_config({"checks": [
+    {"kind": "plex", "host": "p", "url": "http://10.0.0.133:32400", "enabled": True},
+    {"kind": "home_assistant", "host": "h", "url": "https://ha.example", "enabled": True},
+    {"kind": "transmission", "host": "t", "url": "http://10.0.0.152:9091", "enabled": True},
+    {"kind": "ipmi", "host": "m", "address": "10.0.0.219", "enabled": True},
+    {"kind": "ipmi", "host": "n", "address": "10.0.0.220", "https": False, "enabled": True,
+     "username": "u", "password_file": "/x"},
+    {"kind": "home_assistant", "host": "h2", "url": "http://10.0.0.113:8123",
+     "token_file": "/x", "enabled": True},
+]})
+out["endpoints"] = [[v["address"], v["ports"], v["probe"]]
+                    for v in (services.public(c) for c in eps)]
+
 # ---------- TLS: pinned, CA'd, or refused -- never unverified ----------
 
 tls = {"skipped": None}

@@ -774,6 +774,12 @@ function renderOverview(data, tab) {
 
   frag.appendChild(renderTabs(data, tab));
 
+  if (tab === 'services') {
+    frag.appendChild(renderServices(data));
+    root.replaceChildren(frag);
+    return;
+  }
+
   var hosts = tabHosts(data.hosts, tab);
   if (!hosts.length) {
     frag.appendChild(el('div', 'empty',
@@ -1552,7 +1558,11 @@ var TABS = [
   { id: 'bare',  label: 'Bare metal', title: 'Hosts reporting no hypervisor' },
   { id: 'vms',   label: 'VMs',        title: 'Hosts reporting a hypervisor' },
   { id: 'containers', label: 'Containers',
-    title: 'FreeBSD jails and Linux containers, sharing a host\'s kernel' }
+    title: 'FreeBSD jails and Linux containers, sharing a host\'s kernel' },
+  /* Not a filter over hosts like the others: one row per service check,
+     whichever host it is attached to. Its count is checks, not hosts. */
+  { id: 'services', label: 'Services',
+    title: 'Every service check, one line each, worst first' }
 ];
 
 /* How far back the detail page is looking. Kept in the hash rather than in a
@@ -1591,7 +1601,7 @@ function currentRoute() {
   if (m) return { view: 'host', host: decodeURIComponent(m[1]), range: rangeById(m[2]).id };
   m = h.match(/^#\/host\/(.+)$/);
   if (m) return { view: 'host', host: decodeURIComponent(m[1]), range: '24h' };
-  m = h.match(/^#\/(bare|vms|containers)$/);
+  m = h.match(/^#\/(bare|vms|containers|services)$/);
   return { view: 'overview', tab: m ? m[1] : '' };
 }
 
@@ -1599,6 +1609,120 @@ function currentRoute() {
    tab. Guessing would put them in the wrong one, and a host missing
    from a list is easier to notice than one silently misfiled -- the All tab
    shows everything and says "?" for them. */
+/* ---------- services table ----------
+
+   Every check on one screen, read across: which service, on which host, at
+   what address and port, asked how, and with what answer since when. Worst
+   first, because the job of this view is finding the one that is wrong;
+   within a severity, by name, so the list holds still between refreshes.
+
+   The host's own status rides along as a small dot beside its name, and is
+   never merged into the service's: "Plex failing on a host that is DOWN" and
+   "Plex failing on a host that is fine" send you to different places. */
+var SVC_ORDER = { critical: 0, warning: 1, unknown: 2, ok: 3 };
+
+function allServices(hosts) {
+  var out = [];
+  hosts.forEach(function (h) {
+    (h.services || []).forEach(function (s) { out.push({ svc: s, host: h }); });
+  });
+  return out;
+}
+
+function svcRank(s) {
+  return s.state === 'disabled' ? 9 : (SVC_ORDER[s.severity] !== undefined ? SVC_ORDER[s.severity] : 2);
+}
+
+/* The one line that says why a service reads the way it does. When it is
+   answering, that is what it answered with; otherwise the failure itself. */
+function svcSummary(s) {
+  if (s.state === 'disabled') return 'disabled in server.json';
+  if (s.state === 'ok' && s.role === 'bmc') {
+    var hw = s.hardware || {};
+    return hwText(hw) + (hw.reason && !hw.error ? ' — ' + hw.reason : '');
+  }
+  if (s.state === 'ok') {
+    return (s.detail || 'answering') + (s.facts && s.facts.version ? ' · ' + s.facts.version : '');
+  }
+  return s.detail || svcStyle(s).word;
+}
+
+/* The status cell's word. A reachable BMC whose sensors are bad is the one
+   place the word and the colour come from different fields, so say both. */
+function svcStatusWord(s) {
+  if (s.state === 'ok' && s.role === 'bmc') {
+    return s.severity === 'ok' ? 'reachable' : 'reachable, ' + hwText(s.hardware);
+  }
+  return svcStyle(s).word;
+}
+
+var SVC_COLS = [
+  ['', 'scdot'], ['Service', 'scname'], ['Host', 'schost'], ['Address', 'scaddr'],
+  ['Port', 'scports'], ['Probe', 'scprobe'], ['Status', 'scstate'],
+  ['Detail', 'scdetail'], ['Since', 'scsince'], ['Checked', 'scchecked'],
+  ['Latency', 'sclat']
+];
+
+function serviceTableRow(s, h, now) {
+  var st2 = svcStyle(s);
+  var a = el('a', 'srow' + (s.state === 'disabled' ? ' isoff' : ''));
+  a.href = '#/host/' + encodeURIComponent(h.host);
+  a.style.setProperty('--st', st2.css);
+  a.title = svcTitle(s);
+
+  a.appendChild(el('span', 'scdot'));
+  a.appendChild(el('span', 'scname', s.name));
+
+  var hc = el('span', 'schost');
+  var hs = hostStyle(h);
+  var hd = el('span', 'shdot');
+  hd.style.background = hs.css;
+  hc.appendChild(hd);
+  hc.appendChild(document.createTextNode(h.host));
+  hc.title = h.host + ': ' + hs.label + (s.role === 'bmc'
+    ? ' — this is the host\'s own status; the BMC is checked separately' : '');
+  a.appendChild(hc);
+
+  a.appendChild(el('span', 'scaddr', s.address || '–'));
+  a.appendChild(el('span', 'scports', (s.ports || []).join(', ') || '–'));
+  a.appendChild(el('span', 'scprobe', s.probe || s.kind));
+
+  var sc = el('span', 'scstate', st2.glyph + ' ' + svcStatusWord(s));
+  sc.style.color = st2.css;
+  a.appendChild(sc);
+
+  a.appendChild(el('span', 'scdetail', svcSummary(s)));
+  a.appendChild(el('span', 'scsince',
+    s.since && s.state !== 'disabled' ? fmtDur(Math.max(0, now - s.since)) : '–'));
+  a.appendChild(el('span', 'scchecked',
+    s.checked_at ? fmtAge(s.age_seconds) : '–'));
+  a.appendChild(el('span', 'sclat',
+    s.latency_ms !== null && s.latency_ms !== undefined && s.checked_at ? s.latency_ms + ' ms' : '–'));
+  return a;
+}
+
+function renderServices(data) {
+  var rows = allServices(data.hosts);
+  if (!rows.length) {
+    return el('div', 'empty', 'No service checks configured — add a services ' +
+      'block to server.json (see "Service checks" in the README).');
+  }
+  rows.sort(function (x, y) {
+    return svcRank(x.svc) - svcRank(y.svc) ||
+           String(x.svc.name).localeCompare(String(y.svc.name)) ||
+           String(x.host.host).localeCompare(String(y.host.host));
+  });
+  var table = el('div', 'stable');
+  var head = el('div', 'srow shead');
+  SVC_COLS.forEach(function (c) { head.appendChild(el('span', c[1], c[0])); });
+  table.appendChild(head);
+  rows.forEach(function (r) { table.appendChild(serviceTableRow(r.svc, r.host, data.now)); });
+  table.appendChild(el('div', 'sub snote',
+    'Each row says what was asked, not that the service is doing its job — ' +
+    'hover a row for exactly what its check proves. Click for the host.'));
+  return table;
+}
+
 function tabHosts(hosts, tab) {
   if (tab === 'bare')
     return hosts.filter(function (h) { return h.is_vm === false && !h.is_container; });
@@ -1615,7 +1739,8 @@ function renderTabs(data, active) {
     a.href = '#/' + t.id;
     a.title = t.title;
     a.appendChild(el('span', null, t.label));
-    var n = tabHosts(data.hosts, t.id).length;
+    var n = t.id === 'services' ? allServices(data.hosts).length
+                                : tabHosts(data.hosts, t.id).length;
     a.appendChild(el('span', 'tabn', String(n)));
     nav.appendChild(a);
   });

@@ -739,4 +739,69 @@ check('a_service_event_renders_in_the_log', function () {
   if (t.indexOf('ok → fail') < 0 || t.indexOf('Plex: connection refused') < 0) throw new Error(t);
 });
 
+// -- the Services tab: every check, one row each --
+function SV(o) { return SVCV(merge({ address: '10.0.0.133', ports: ['32400/tcp'],
+                                     probe: 'GET /identity' }, o || {})); }
+var SVC_HOSTS = [
+  host({ host: 'plexserver', services: [SV({})], services_severity: 'ok' }),
+  host(merge(DOWN, { host: 'mercury', services: [merge(BMC, { address: '10.0.0.219',
+    ports: ['623/udp', '443/tcp'], probe: 'IPMI ping + HTTPS' })] })),
+  host({ host: 'transmission', services: [SV({ name: 'Transmission', id: 'tx',
+    address: '10.0.0.152', ports: ['9091/tcp'], probe: 'RPC session-stats',
+    state: 'fail', severity: 'critical', detail: 'connection refused by 10.0.0.152:9091',
+    since: 1788436000 })] }),
+  host({ host: 'hassium', services: [SV({ name: 'Home Assistant', id: 'ha',
+    state: 'disabled', severity: 'unknown', checked_at: null, since: null })] }),
+  host({ host: 'cerium' })
+];
+/* renderOverview hands root one fragment; the stub DOM keeps it as a node. */
+function top() {
+  var k = ctx.root.children;
+  return k.length === 1 && k[0].tagName === '#fragment' ? k[0].children : k;
+}
+function svcRows() {
+  overview(SVC_HOSTS, 'services');
+  var table = top()[1];
+  return table.children.filter(function (r) {
+    return String(r.className).indexOf('srow') === 0 && String(r.className).indexOf('shead') < 0;
+  });
+}
+check('the_services_tab_lists_every_check_worst_first', function () {
+  var rows = svcRows();
+  var names = rows.map(function (r) { return r.children[1].textContent; });
+  if (names.join(',') !== 'Transmission,BMC,Plex,Home Assistant') throw new Error(names.join(','));
+  if (String(rows[3].className).indexOf('isoff') < 0) throw new Error('disabled row not dimmed');
+});
+check('a_service_row_says_where_how_and_what', function () {
+  var t = textOf(svcRows()[0]);
+  ['Transmission', 'transmission', '10.0.0.152', '9091/tcp', 'RPC session-stats',
+   'failing', 'connection refused by 10.0.0.152:9091', '4m']
+    .forEach(function (w) { if (t.indexOf(w) < 0) throw new Error('missing ' + w + ': ' + t); });
+  if (svcRows()[0].href !== '#/host/transmission') throw new Error('row links to ' + svcRows()[0].href);
+});
+check('the_bmc_row_keeps_its_host_status_apart', function () {
+  var r = svcRows()[1], t = textOf(r);
+  if (t.indexOf('623/udp, 443/tcp') < 0 || t.indexOf('reachable') < 0) throw new Error(t);
+  if (t.indexOf('sensors unknown') < 0) throw new Error('sensor state missing: ' + t);
+  if (t.indexOf('mercury: DOWN') < 0) throw new Error('host status not beside the host: ' + t);
+  if (r.style['--st'] !== 'var(--st-ok)') throw new Error('a down host painted its BMC row ' + r.style['--st']);
+});
+check('the_services_tab_counts_checks_not_hosts', function () {
+  overview(SVC_HOSTS, 'services');
+  var tabs = top()[0].children.filter(function (c) { return c.tagName === 'a'; });
+  var svc = tabs.filter(function (c) { return textOf(c).indexOf('Services') >= 0; })[0];
+  if (!svc || textOf(svc).indexOf('4') < 0) throw new Error(svc ? textOf(svc) : 'no Services tab');
+  if (svc.className.indexOf(' on') < 0) throw new Error('Services tab not marked active');
+});
+check('no_checks_configured_says_how_to_add_one', function () {
+  overview([host({ host: 'a' })], 'services');
+  if (textOf(ctx.root).indexOf('add a services block') < 0) throw new Error(textOf(ctx.root));
+});
+check('the_services_route_is_recognised', function () {
+  ctx.location.hash = '#/services';
+  var r = ctx.currentRoute();
+  ctx.location.hash = '#/';
+  if (r.view !== 'overview' || r.tab !== 'services') throw new Error(JSON.stringify(r));
+});
+
 console.log(JSON.stringify(out));

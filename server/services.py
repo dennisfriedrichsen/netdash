@@ -181,6 +181,37 @@ def _norm_pin(pin):
     return h if re.fullmatch(r"[0-9a-f]{64}", h) else None
 
 
+def endpoint(c):
+    """(address, ["32400/tcp", ...]): where the check actually goes, port and
+    transport included. Derived from the same config the check runs from, so
+    the Services table can never show a port the check does not use."""
+    if c["kind"] == "ipmi":
+        ports = ["%d/udp" % IPMI_PORT]
+        if c.get("https", True):
+            ports.append("443/tcp")
+        return c.get("address"), ports
+    try:
+        p = urlsplit(str(c.get("url") or ""))
+        port = p.port or (443 if p.scheme == "https" else 80)
+        return p.hostname, ["%d/tcp" % port] if p.hostname else []
+    except ValueError:
+        return None, []
+
+
+def probe(c):
+    """The request a check makes, in a few words -- the short form of what()."""
+    k = c["kind"]
+    if k == "home_assistant":
+        return "GET /api/config" if c.get("token_file") else "GET /manifest.json"
+    if k == "plex":
+        return "GET /identity"
+    if k == "transmission":
+        return "RPC session-stats"
+    if k == "ipmi":
+        return "IPMI ping + HTTPS" + (" + sensors" if c.get("username") else "")
+    return k
+
+
 def public(c):
     """What the API may say about a check's configuration. No secrets, and no
     secret file paths either: knowing where the token lives is half of
@@ -190,10 +221,14 @@ def public(c):
         auth = "token"
     elif c.get("username"):
         auth = "password"
+    address, ports = endpoint(c)
     return {
         "id": c["id"], "kind": c["kind"], "name": c["name"], "host": c["host"],
         "role": "bmc" if c["kind"] == "ipmi" else "app",
         "target": c.get("url") or c.get("address"),
+        "address": address,
+        "ports": ports,
+        "probe": probe(c),
         "auth": auth,
         "enabled": c["enabled"],
         "interval_seconds": c["interval_seconds"],

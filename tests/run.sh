@@ -2454,6 +2454,18 @@ if want render; then
           "assert d['every_service_state_has_its_own_word'] is None, d['every_service_state_has_its_own_word']" "$J"
     check "a service transition renders in the event log" \
           "assert d['a_service_event_renders_in_the_log'] is None, d['a_service_event_renders_in_the_log']" "$J"
+    check "the Services tab lists every check, worst first, disabled last" \
+          "assert d['the_services_tab_lists_every_check_worst_first'] is None, d['the_services_tab_lists_every_check_worst_first']" "$J"
+    check "a service row says where, how, what and since when, and links to its host" \
+          "assert d['a_service_row_says_where_how_and_what'] is None, d['a_service_row_says_where_how_and_what']" "$J"
+    check "a BMC row shows its host's status beside it, never instead of its own" \
+          "assert d['the_bmc_row_keeps_its_host_status_apart'] is None, d['the_bmc_row_keeps_its_host_status_apart']" "$J"
+    check "the Services tab counts checks, not hosts" \
+          "assert d['the_services_tab_counts_checks_not_hosts'] is None, d['the_services_tab_counts_checks_not_hosts']" "$J"
+    check "with no checks configured, it says how to add one" \
+          "assert d['no_checks_configured_says_how_to_add_one'] is None, d['no_checks_configured_says_how_to_add_one']" "$J"
+    check "#/services is a route" \
+          "assert d['the_services_route_is_recognised'] is None, d['the_services_route_is_recognised']" "$J"
   fi
 fi
 
@@ -2803,6 +2815,8 @@ if want services; then
         "assert d['cfg'][0]==[False,None], d['cfg']" "$J"
   check "each malformed entry says what is wrong with it" \
         "e=[x[1] for x in d['cfg']]; assert e[2]=='plex needs a url' and 'credentials' in e[3] and 'unknown kind' in e[4] and 'duplicate' in e[6] and 'address' in e[7] and 'password_file' in e[8] and '64 hex' in e[9], e" "$J"
+  check "each check states its address, ports and probe, defaults included" \
+        "assert d['endpoints']==[['10.0.0.133',['32400/tcp'],'GET /identity'],['ha.example',['443/tcp'],'GET /manifest.json'],['10.0.0.152',['9091/tcp'],'RPC session-stats'],['10.0.0.219',['623/udp','443/tcp'],'IPMI ping + HTTPS'],['10.0.0.220',['623/udp'],'IPMI ping + HTTPS + sensors'],['10.0.0.113',['8123/tcp'],'GET /api/config']], d['endpoints']" "$J"
   check "intervals and timeouts are clamped, and no block means no checks" \
         "assert d['cfg_clamped']==[15,30] and d['cfg_none']==[[],[],[]], d" "$J"
   check "a self-signed certificate is refused unless pinned or CA'd" \
