@@ -45,11 +45,16 @@ $expr
   fi
 }
 
-run_collector() { # collector, bindir  -> prints JSON
+# The mock settings are arguments, not `VAR=x run_collector` prefixes. POSIX
+# leaves it unspecified whether a prefix assignment on a function call reaches
+# the commands the function runs: bash exports them, FreeBSD's sh does not, and
+# there every collector case ran with no mocks set and failed.
+run_collector() { # bindir, collector, [VAR=value ...]  -> prints JSON
+  bin=$1; col=$2; shift 2
   NETDASH_MOCK_TMP=$(mktemp -d)
   export NETDASH_MOCK_TMP NETDASH_FIXTURES="$FIX"
-  env "PATH=$1:/usr/bin:/bin" NETDASH_CONF=/dev/null \
-      sh "$ROOT/collectors/$2/netdash-collector.sh" --print 2>/dev/null
+  env "PATH=$bin:/usr/bin:/bin" NETDASH_CONF=/dev/null "$@" \
+      sh "$ROOT/collectors/$col/netdash-collector.sh" --print 2>/dev/null
   rm -rf "$NETDASH_MOCK_TMP"
 }
 
@@ -59,11 +64,11 @@ want() { case "$1" in *"$FILTER"*) return 0 ;; esac; [ -z "$FILTER" ]; }
 if want freebsd-zfs; then
   echo "freebsd-zfs (ZFS pools plus an EFI partition)"
   B=$(mkbin x uname sysctl df zfs hostname)
-  J=$(MOCK_PHYSMEM=32090000000 MOCK_PAGESIZE=4096 MOCK_FREE=3000000 \
+  J=$(run_collector "$B" bsd \
+      MOCK_PHYSMEM=32090000000 MOCK_PAGESIZE=4096 MOCK_FREE=3000000 \
       MOCK_INACT=1500000 MOCK_LAUNDRY=50000 MOCK_ARC=8000000000 \
       MOCK_BOOTTIME="{ sec = 1787700000, usec = 123456 } Tue Aug 25 12:00:00 2026" \
-      NETDASH_MOCK_OS=FreeBSD NETDASH_MOCK_REL=15.1-RELEASE-p3 \
-      run_collector "$B" bsd)
+      NETDASH_MOCK_OS=FreeBSD NETDASH_MOCK_REL=15.1-RELEASE-p3)
   check "pools reported one per pool, not per dataset" \
         "assert [x['mount'] for x in d['disks']]==['zroot','ssdpool','/boot/efi'], d['disks']" "$J"
   check "devfs and the nfs mount excluded" \
@@ -78,11 +83,11 @@ fi
 if want freebsd-nozfs; then
   echo "freebsd-nozfs (absent sysctl must not abort the script under set -e)"
   B=$(mkbin x uname sysctl df hostname)      # no zfs shim at all
-  J=$(MOCK_PHYSMEM=32090000000 MOCK_PAGESIZE=4096 MOCK_FREE=3000000 \
+  J=$(run_collector "$B" bsd \
+      MOCK_PHYSMEM=32090000000 MOCK_PAGESIZE=4096 MOCK_FREE=3000000 \
       MOCK_INACT=1500000 MOCK_LAUNDRY=50000 \
       MOCK_BOOTTIME="{ sec = 1787700000, usec = 0 }" \
-      NETDASH_MOCK_OS=FreeBSD NETDASH_MOCK_REL=15.1-RELEASE-p3 \
-      run_collector "$B" bsd)
+      NETDASH_MOCK_OS=FreeBSD NETDASH_MOCK_REL=15.1-RELEASE-p3)
   check "collector still produces output with no zfs(8)" \
         "assert d['disks']==[{'mount':'/boot/efi','used_bytes':1331200,'total_bytes':268435456}], d['disks']" "$J"
   check "memory still reported (no ARC sysctl to read)" \
@@ -95,13 +100,13 @@ if want freebsd-jail; then
   # zfs is on the PATH and cp_time, the page queues and boottime all answer --
   # as they do in a real jail, for the host. None of it may reach the output.
   B=$(mkbin x uname sysctl df zfs hostname ps freebsd-version ifconfig)
-  J=$(MOCK_JAILED=1 MOCK_NCPU=4 MOCK_PHYSMEM=68625498112 MOCK_PAGESIZE=4096 \
+  J=$(run_collector "$B" bsd \
+      MOCK_JAILED=1 MOCK_NCPU=4 MOCK_PHYSMEM=68625498112 MOCK_PAGESIZE=4096 \
       MOCK_FREE=3000000 MOCK_INACT=1500000 MOCK_ARC=8000000000 \
       MOCK_BOOTTIME="{ sec = 1700000000, usec = 0 }" \
       MOCK_PS_CPU="50.0 30.0 20.0 0.0" MOCK_PS_RSS="1048576 524288 2048 1024" \
       MOCK_PS_ETIMES="86400 86390 12 0" MOCK_USERLAND=13.2-RELEASE-p11 \
-      NETDASH_MOCK_OS=FreeBSD NETDASH_MOCK_REL=13.1-RELEASE-p9 NETDASH_MOCK_DF=df-k-root \
-      run_collector "$B" bsd)
+      NETDASH_MOCK_OS=FreeBSD NETDASH_MOCK_REL=13.1-RELEASE-p9 NETDASH_MOCK_DF=df-k-root)
   check "a jail reports itself as one, not as its bare-metal host" \
         "assert d['virt']=='jail', d['virt']" "$J"
   check "CPU is the jail's processes over the host's cores (100/4 = 25%)" \
@@ -129,15 +134,15 @@ if want freebsd-jailhost; then
   B=$(mkbin x uname sysctl df zfs hostname ps freebsd-version jls jexec ifconfig sysrc)
   JC=$(mktemp)
   printf 'exec.start = "/bin/sh /etc/rc";\ntransmission {\n  host.hostname = transmission;\n}\nbackup { path = /jails/backup; }\n' > "$JC"
-  J=$(MOCK_NCPU=4 MOCK_PHYSMEM=32090000000 MOCK_PAGESIZE=4096 MOCK_FREE=3000000 \
+  J=$(run_collector "$B" bsd \
+      MOCK_NCPU=4 MOCK_PHYSMEM=32090000000 MOCK_PAGESIZE=4096 MOCK_FREE=3000000 \
       MOCK_INACT=1500000 MOCK_ARC=8000000000 MOCK_BOOTTIME="{ sec = 1787700000, usec = 0 }" \
       MOCK_PS_CPU="20.0 20.0" MOCK_PS_RSS="1024 1024" MOCK_PS_ETIMES="3600 10" \
       MOCK_USERLAND=15.1-RELEASE-p6 MOCK_INET=10.0.0.150 MOCK_JAIL_ENABLE=YES \
       MOCK_JAIL_LIST="transmission" MOCK_JLS="3 transmission transmission.lan
 4 bad;name bad" \
       NETDASH_JAIL_CONF="$JC" NETDASH_JAIL_STATE=/nonexistent \
-      NETDASH_MOCK_OS=FreeBSD NETDASH_MOCK_REL=15.1-RELEASE-p6 NETDASH_MOCK_DF=df-k-root \
-      run_collector "$B" bsd)
+      NETDASH_MOCK_OS=FreeBSD NETDASH_MOCK_REL=15.1-RELEASE-p6 NETDASH_MOCK_DF=df-k-root)
   rm -f "$JC"
   check "the host reports itself as before" \
         "assert d['host']=='mockhost' and d['virt']!='jail' and len(d['disks'])==3, d" "$J"
@@ -162,9 +167,9 @@ fi
 if want openbsd; then
   echo "openbsd (6-field comma cp_time, vmstat -s memory, bare-epoch boottime)"
   B=$(mkbin x uname sysctl df vmstat hostname)
-  J=$(MOCK_PHYSMEM=497573888 MOCK_BOOTTIME=1787412753 \
-      NETDASH_MOCK_OS=OpenBSD NETDASH_MOCK_REL=7.9 \
-      run_collector "$B" bsd)
+  J=$(run_collector "$B" bsd \
+      MOCK_PHYSMEM=497573888 MOCK_BOOTTIME=1787412753 \
+      NETDASH_MOCK_OS=OpenBSD NETDASH_MOCK_REL=7.9)
   check "cp_time parsed despite 6 comma-separated fields" \
         "assert d['cpu_pct'] is not None and 0 <= d['cpu_pct'] <= 100, d['cpu_pct']" "$J"
   check "memory from vmstat -s (sysctl vm.uvmexp is refused)" \
@@ -180,9 +185,9 @@ fi
 if want netbsd; then
   echo "netbsd (key=value cp_time, ZFS pools, df -l does NOT drop pseudo-fs)"
   B=$(mkbin x uname sysctl df vmstat zfs hostname)
-  J=$(MOCK_PHYSMEM64=534945792 MOCK_PHYSMEM=534945792 MOCK_BOOTTIME=1787497937 \
-      NETDASH_MOCK_OS=NetBSD NETDASH_MOCK_REL=11.0 \
-      run_collector "$B" bsd)
+  J=$(run_collector "$B" bsd \
+      MOCK_PHYSMEM64=534945792 MOCK_PHYSMEM=534945792 MOCK_BOOTTIME=1787497937 \
+      NETDASH_MOCK_OS=NetBSD NETDASH_MOCK_REL=11.0)
   check "cp_time parsed from 'user = N, nice = N, ...' pairs" \
         "assert d['cpu_pct'] is not None and 0 <= d['cpu_pct'] <= 100, d['cpu_pct']" "$J"
   check "tmpfs/kernfs/ptyfs/procfs dropped (df -l does not exclude them here)" \
@@ -202,10 +207,10 @@ fi
 if want macos-intel; then
   echo "macos-intel (APFS volumes share one container)"
   B=$(mkbin x uname sysctl df mount hostname sw_vers top vm_stat)
-  J=$(MOCK_MEMSIZE=17179869184 MOCK_BOOTTIME="{ sec = 1788000000, usec = 654321 }" \
+  J=$(run_collector "$B" macos \
+      MOCK_MEMSIZE=17179869184 MOCK_BOOTTIME="{ sec = 1788000000, usec = 654321 }" \
       NETDASH_MOCK_OS=Darwin NETDASH_MOCK_REL=15.7.9 NETDASH_MOCK_ARCH=x86_64 \
-      NETDASH_MOCK_FIXDIR=macos NETDASH_MOCK_DF=df-k-l-intel NETDASH_MOCK_MOUNT=mount-intel \
-      run_collector "$B" macos)
+      NETDASH_MOCK_FIXDIR=macos NETDASH_MOCK_DF=df-k-l-intel NETDASH_MOCK_MOUNT=mount-intel)
   check "one entry per container, not per volume" \
         "assert sorted(x['mount'] for x in d['disks'])==['/','/Volumes/photos_library'], d['disks']" "$J"
   check "boot container reports total-available (89.8%), not Data's 83.2%" \
@@ -218,10 +223,10 @@ fi
 if want macos-applesilicon; then
   echo "macos-applesilicon (Xcode simulator runtimes and Apple system volumes)"
   B=$(mkbin x uname sysctl df mount hostname sw_vers top vm_stat)
-  J=$(MOCK_MEMSIZE=17179869184 MOCK_BOOTTIME="{ sec = 1788000000, usec = 654321 }" \
+  J=$(run_collector "$B" macos \
+      MOCK_MEMSIZE=17179869184 MOCK_BOOTTIME="{ sec = 1788000000, usec = 654321 }" \
       NETDASH_MOCK_OS=Darwin NETDASH_MOCK_REL=26.6.2 NETDASH_MOCK_ARCH=arm64 \
-      NETDASH_MOCK_FIXDIR=macos NETDASH_MOCK_DF=df-k-l-applesilicon NETDASH_MOCK_MOUNT=mount-applesilicon \
-      run_collector "$B" macos)
+      NETDASH_MOCK_FIXDIR=macos NETDASH_MOCK_DF=df-k-l-applesilicon NETDASH_MOCK_MOUNT=mount-applesilicon)
   check "read-only CoreSimulator runtimes dropped (they pin 97% forever)" \
         "assert not any('CoreSimulator' in x['mount'] for x in d['disks']), d['disks']" "$J"
   check "read-write but all-nobrowse container dropped (xarts/iSCPreboot/Hardware)" \
