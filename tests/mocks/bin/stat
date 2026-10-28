@@ -1,0 +1,8 @@
+#!/bin/sh
+# Mock stat: BSD `stat -f %m` (mtime) and `-f %Su` (owner) from the environment,
+# so the macOS check runs on GNU systems.
+case "$1 $2" in
+  "-f %m")  echo "${NETDASH_MOCK_MTIME:?}" ;;
+  "-f %Su") echo "${NETDASH_MOCK_OWNER:-mockuser}" ;;
+  *) exec /usr/bin/stat "$@" ;;
+esac

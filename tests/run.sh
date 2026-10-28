@@ -603,6 +603,45 @@ PY
         "assert d['captures_stderr'], d" "$J"
 fi
 
+if want patches-macos-brew; then
+  echo "patches-macos-brew (Homebrew counts as other updates, never as security)"
+  B=$(mkbin x defaults softwareupdate brew date stat)
+  T=$(mktemp -d); mkdir -p "$T/brewcache/api"; : > "$T/brewcache/api/formula.jws.json"
+  NOW=$(date +%s)
+  # NETDASH_MOCK_EPOCH is the last softwareupdate scan, an hour ago.
+  mac_pc() {
+    env "PATH=$B:/usr/bin:/bin" NETDASH_CONF=/dev/null NETDASH_MOCK_TMP="$T" \
+        NETDASH_MOCK_EPOCH=$((NOW - 3600)) "$@" \
+        sh "$ROOT/collectors/macos/netdash-patchcheck.sh" --print 2>/dev/null
+  }
+  J=$(mac_pc NETDASH_MOCK_BREW_OUTDATED="$(printf 'openssl@3\nfirefox')") || J=''
+  check "outdated formulae and casks are counted into other" \
+        "assert (d['security'],d['other'],d['source'])==(0,2,'softwareupdate+brew'), d" "$J"
+  check "and are not named, since nothing classified them" \
+        "assert d['packages']=='' and 'Homebrew: 2' in d['detail'], d" "$J"
+  J=$(mac_pc) || J=''
+  check "nothing outdated is a real zero" \
+        "assert (d['other'],d['source'],d['detail'])==(0,'softwareupdate+brew',''), d" "$J"
+  # brew outdated exits 0 whether or not anything is outdated, so a failure is
+  # an error -- and a zero from it would be one nobody established.
+  J=$(mac_pc NETDASH_MOCK_BREW_OUTDATED_FAIL=1) || J=''
+  check "a failed brew outdated is reported, not counted as zero" \
+        "assert d['source']=='softwareupdate' and 'not counted' in d['detail'], d" "$J"
+  J=$(mac_pc NETDASH_MOCK_BREW_UPDATE_FAIL=1 NETDASH_MOCK_BREW_OUTDATED=curl \
+             NETDASH_MOCK_MTIME=$((NOW - 5*86400))) || J=''
+  check "a failed brew update dates the answer by Homebrew's metadata" \
+        "assert d['checked_at']==$((NOW - 5*86400)) and 'brew update failed' in d['detail'], d" "$J"
+  # The script appends /opt/homebrew/bin and /usr/local/bin to PATH itself, so
+  # on a Mac with Homebrew this case finds the real brew and can fail there.
+  B2=$(mkbin x defaults softwareupdate date stat)
+  J=$(env "PATH=$B2:/usr/bin:/bin" NETDASH_CONF=/dev/null NETDASH_MOCK_TMP="$T" \
+          NETDASH_MOCK_EPOCH=$((NOW - 3600)) \
+          sh "$ROOT/collectors/macos/netdash-patchcheck.sh" --print 2>/dev/null) || J=''
+  check "a Mac without Homebrew reports softwareupdate alone" \
+        "assert (d['other'],d['source'])==(0,'softwareupdate'), d" "$J"
+  rm -rf "$T" "$B" "$B2"
+fi
+
 if want patches-openbsd; then
   echo "patches-openbsd (empty output is only an all-clear when syspatch exited 0)"
   J=$(python3 - "$ROOT" <<'PY'

@@ -675,7 +675,7 @@ which commands are wrong in ways that fail silently — is in
 | FreeBSD | `pkg audit`; `freebsd-update updatesready` unless pkgbase | yes, and base separately |
 | OpenBSD | `syspatch -c` (base) + `pkg_add -u -n` (packages) | yes, for base |
 | NetBSD | `pkg_admin audit` | yes for packages; **base has no patch mechanism** |
-| macOS | `softwareupdate --list --no-scan` | `Recommended: YES` |
+| macOS | `softwareupdate --list --no-scan`, plus `brew outdated` where Homebrew is installed | `Recommended: YES`; Homebrew is unclassified |
 | TrueNAS CORE | `update.check_available` | no, OS image only |
 
 Two rules hold everywhere:

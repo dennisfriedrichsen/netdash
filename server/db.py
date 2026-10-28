@@ -650,7 +650,7 @@ def insert_sample(conn, payload, source="push", peer=None):
 # would come back already silenced. The BSDs name the installed version too,
 # and could join this list if their audits turn out to flicker the same way.
 ACK_GRACE = 3 * 86400
-GRACE_SOURCES = ("softwareupdate",)
+GRACE_SOURCES = ("softwareupdate", "softwareupdate+brew")
 
 
 def prune(conn, retention_hours, rollup_days=None, event_days=None):

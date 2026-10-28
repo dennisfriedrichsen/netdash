@@ -1,0 +1,7 @@
+#!/bin/sh
+# Mock defaults(1) for com.apple.SoftwareUpdate. Only LastSuccessfulDate is
+# present, which is the normal state of a fully patched macOS 26 host.
+case "$3" in
+  LastSuccessfulDate) echo "${NETDASH_MOCK_SU_DATE:-2026-09-02 17:04:55 +0000}" ;;
+  *) exit 1 ;;
+esac
