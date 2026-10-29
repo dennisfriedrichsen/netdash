@@ -55,6 +55,12 @@ run_collector() { # collector, bindir  -> prints JSON
 
 want() { case "$1" in *"$FILTER"*) return 0 ;; esac; [ -z "$FILTER" ]; }
 
+# Each Python generator below is wrapped as `snippet() { python3 - "$@" <<'PY'`
+# and run as J=$(snippet ...) rather than written as J=$(python3 - <<'PY' ...).
+# macOS /bin/sh is bash 3.2, which scans a heredoc inside $(...) for quotes, so
+# a body holding \' or a lone " ends the parse with "unexpected EOF" and every
+# case from there on silently never runs. A function body has no such trouble.
+
 # ---------------------------------------------------------------- FreeBSD ----
 if want freebsd-zfs; then
   echo "freebsd-zfs (ZFS pools plus an EFI partition)"
@@ -168,7 +174,7 @@ if want linux-disks; then
     if [ "$AWK" = busybox-awk ] && ! command -v busybox >/dev/null 2>&1; then
       echo "  skip busybox awk (not installed)"; continue
     fi
-    J=$(python3 - "$ROOT" "$AWK" <<'PY'
+    snippet() { python3 - "$@" <<'PY'
 import re,subprocess,sys,json
 root,awkname=sys.argv[1],sys.argv[2]
 src=open(f"{root}/collectors/linux/netdash-collector.sh").read()
@@ -179,7 +185,8 @@ cmd=["busybox","awk",prog] if awkname=="busybox-awk" else ["awk",prog]
 out=subprocess.run(cmd,input=stream,capture_output=True,text=True)
 print(json.dumps({"disks":json.loads("["+out.stdout+"]")}))
 PY
-) || J=''
+    }
+    J=$(snippet "$ROOT" "$AWK") || J=''
     check "[$AWK] 8 btrfs subvolumes collapse to one filesystem" \
           "assert sorted(x['mount'] for x in d['disks'])==['/','/boot/efi','/zfsroot'], d['disks']" "$J"
     check "[$AWK] ZFS datasets grouped into one pool" \
@@ -192,7 +199,7 @@ fi
 if want linux-bigmem; then
   echo "linux-bigmem (BusyBox awk uses 32-bit ints for %d)"
   if command -v busybox >/dev/null 2>&1; then
-    J=$(python3 - "$ROOT" <<'PY'
+    snippet() { python3 - "$@" <<'PY'
 import re,subprocess,sys,json
 root=sys.argv[1]
 src=open(f"{root}/collectors/linux/netdash-collector.sh").read()
@@ -202,7 +209,8 @@ out=subprocess.run(["busybox","awk",prog],input=meminfo,capture_output=True,text
 vals=dict(l.split("=",1) for l in out.stdout.strip().split("\n"))
 print(json.dumps({"mem_total_bytes":int(float(vals["MEM_TOTAL"]))}))
 PY
-) || J=''
+    }
+    J=$(snippet "$ROOT") || J=''
     check "4 GiB host does not report -2147483648" \
           "assert d['mem_total_bytes']==4110864384, d['mem_total_bytes']" "$J"
   else
@@ -217,7 +225,7 @@ fi
 
 if want patches-apt; then
   echo "patches-apt (security origin lives inside the parentheses, not in the name)"
-  J=$(python3 - "$ROOT" <<'PY'
+  snippet() { python3 - "$@" <<'PY'
 import re,subprocess,sys,json
 root=sys.argv[1]
 src=open(f"{root}/collectors/linux/netdash-patchcheck.sh").read()
@@ -241,7 +249,8 @@ print(json.dumps({"security":int(sec),"other":int(oth),"naive":naive,
   "portepoch": join("gimp-2.10.38,2\nopenssl\n"),
 }))
 PY
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   check "3 security updates found among 36 pending" \
         "assert d['security']==3, d" "$J"
   check "the other 33 counted as non-security" \
@@ -275,7 +284,7 @@ if want patches-zypper; then
   # As with linux-disks, these drive the shipped parsers rather than the whole
   # script: the branch is chosen by reading /etc/os-release, which PATH cannot
   # intercept.
-  J=$(python3 - "$ROOT" <<'PY'
+  snippet() { python3 - "$@" <<'PY'
 import re,subprocess,sys,json
 root=sys.argv[1]
 src=open(f"{root}/collectors/linux/netdash-patchcheck.sh").read()
@@ -294,7 +303,8 @@ print(json.dumps({
   "patch_sec":   run(["sed","-n",secp],check),
 }))
 PY
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   check "the rolling branch counts 23 pending updates" \
         "assert d['rolling']==23, d" "$J"
   check "the header row and the ---+--- separator are not counted" \
@@ -310,7 +320,7 @@ fi
 
 if want patches-netbsd; then
   echo "patches-netbsd (a missing vulnerability database must not read as clean)"
-  J=$(python3 - "$ROOT" <<'PY'
+  snippet() { python3 - "$@" <<'PY'
 import re,subprocess,sys,json
 root=sys.argv[1]
 src=open(f"{root}/collectors/bsd/netdash-patchcheck.sh").read()
@@ -346,7 +356,8 @@ print(json.dumps({
  "pkgin_junk": pkgin("some wording this version does not use\n"),
 }))
 PY
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   check "one vulnerable package is counted once" \
         "assert d['found']==1, d" "$J"
   # Deduplicated by package name so this means what FreeBSD's "N package(s)
@@ -370,7 +381,7 @@ fi
 
 if want patches-freebsd; then
   echo "patches-freebsd (count packages to upgrade, not advisories against them)"
-  J=$(python3 - "$ROOT" <<'PY'
+  snippet() { python3 - "$@" <<'PY'
 import os,re,shlex,shutil,subprocess,sys,tempfile,json
 root=sys.argv[1]
 src=open(f"{root}/collectors/bsd/netdash-patchcheck.sh").read()
@@ -425,7 +436,8 @@ print(json.dumps({
     src.index('SRC="pkg-audit+freebsd-update"') < src.index("if freebsd-update updatesready"),
 }))
 PY
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   # The captured host: 14 problems across 9 packages. One chromium carried 300+
   # CVEs on its own, so counting advisories would let a single package swamp the
   # badge. Nine is the number of upgrades to perform.
@@ -459,7 +471,7 @@ fi
 
 if want patches-macos; then
   echo "patches-macos (nothing pending must be told apart from nothing parsed)"
-  J=$(python3 - "$ROOT" <<'PY'
+  snippet() { python3 - "$@" <<'PY'
 import re,subprocess,sys,json
 root=sys.argv[1]
 src=open(f"{root}/collectors/macos/netdash-patchcheck.sh").read()
@@ -482,7 +494,8 @@ print(json.dumps({"none": probe(none), "empty": probe(""), "banner": probe(banne
                   "counters_referenced": bool(re.search(r"^\s*(REC|ALL)=\$\(sud ", src, re.M)),
                   "captures_stderr": "softwareupdate --list --no-scan 2>&1" in src}))
 PY
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   check "a Mac with nothing pending reports the all-clear string" \
         "assert d['none']['allclear'] and d['none']['entries']==0, d" "$J"
   # Both cases count zero entries, so the entry count alone cannot tell them
@@ -505,7 +518,7 @@ fi
 
 if want patches-openbsd; then
   echo "patches-openbsd (empty output is only an all-clear when syspatch exited 0)"
-  J=$(python3 - "$ROOT" <<'PY'
+  snippet() { python3 - "$@" <<'PY'
 import re,subprocess,sys,json
 root=sys.argv[1]
 src=open(f"{root}/collectors/bsd/netdash-patchcheck.sh").read()
@@ -537,7 +550,8 @@ print(json.dumps({
   "quirks_filtered": bool(re.search(r"grep -v '\^quirks", ob)),
 }))
 PY
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   check "no patches pending counts zero" \
         "assert d['empty_counts_zero']==0 and d['two_counts_two']==2, d" "$J"
   # syspatch -c fetches the index from the mirror on every run and prints
@@ -558,7 +572,7 @@ fi
 
 if want patches-fedora; then
   echo "patches-fedora (dnf5 three-column rows; a fresh refresh dates to now)"
-  J=$(python3 - "$ROOT" <<'PY'
+  snippet() { python3 - "$@" <<'PY'
 import re,subprocess,sys,json
 root=sys.argv[1]
 src=open(f"{root}/collectors/linux/netdash-patchcheck.sh").read()
@@ -577,7 +591,8 @@ print(json.dumps({"all": allc, "security": secc, "other": allc-secc,
                   "cache_order": order,
                   "refreshed_wins": bool(refreshed_first)}))
 PY
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   check "11 pending rows, 6 of them security, 5 other" \
         "assert (d['all'],d['security'],d['other'])==(11,6,5), d" "$J"
   # The kernel rows appear in check-update but not in --security on that host,
@@ -597,7 +612,7 @@ fi
 
 if want patches-stale; then
   echo "patches-stale (an old or missing check must read unknown, never ok)"
-  J=$(python3 - "$ROOT" <<'PY'
+  snippet() { python3 - "$@" <<'PY'
 import sys,json,time
 root=sys.argv[1]; sys.path.insert(0,f"{root}/server")
 import app
@@ -626,7 +641,8 @@ print(json.dumps({
   "reboot_null":  s(patch_security=0,patch_other=0,patch_reboot=None,patch_checked_at=now-2*H),
 }))
 PY
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   check "a host that has never been checked is unknown, not ok" \
         "assert d['never']=='unknown', d" "$J"
   # The whole point of the design: 0 pending from a check three days old is
@@ -671,7 +687,7 @@ if want patches-statefile; then
   # it keeps this honest on any OS: the suite must not need a Linux /proc, a
   # FreeBSD sysctl or a Mac to check shared logic.
   for FAM in linux bsd macos; do
-    J=$(python3 - "$ROOT" "$FAM" "$TMPD" <<'PY'
+    snippet() { python3 - "$@" <<'PY'
 import re,subprocess,sys,json
 root,fam,tmpd=sys.argv[1],sys.argv[2],sys.argv[3]
 src=open(f"{root}/collectors/{fam}/netdash-collector.sh").read()
@@ -684,7 +700,8 @@ for name in ("good","truncated","garbage","empty","/nonexistent/nope"):
     out[name.strip("/").split("/")[-1] if name.startswith("/") else name]=r.stdout
 print(json.dumps(out))
 PY
-) || J=''
+    }
+    J=$(snippet "$ROOT" "$FAM" "$TMPD") || J=''
     check "[$FAM] a well-formed state file is passed through" \
           "assert d['good'].startswith('{') and 'apt' in d['good'], d" "$J"
     check "[$FAM] truncated, garbage, empty and absent all report null" \
@@ -695,7 +712,7 @@ fi
 
 if want version; then
   echo "version (six hardcoded copies must not drift, and 0.3.10 > 0.3.9)"
-  J=$(python3 - "$ROOT" <<'PY'
+  snippet() { python3 - "$@" <<'PY'
 import re,sys,json,glob
 root=sys.argv[1]; sys.path.insert(0,f"{root}/server")
 import app
@@ -713,7 +730,8 @@ print(json.dumps({
   "ignores_unversioned": ".".join(str(x) for x in newest([None,"0.3.1",None])),
 }))
 PY
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   check "every collector and patch check matches the VERSION file" \
         "assert not d['mismatched'], d['mismatched']" "$J"
   check "all six scripts carry a version at all" \
@@ -731,7 +749,7 @@ fi
 
 if want eol; then
   echo "eol (real fleet OS strings map to real release cycles)"
-  J=$(python3 - "$ROOT" <<'PY'
+  snippet() { python3 - "$@" <<'PY'
 import sys,json; sys.path.insert(0,f"{sys.argv[1]}/server")
 import eol
 from datetime import date
@@ -793,7 +811,8 @@ print(json.dumps({
  "uncached_prod": q("openSUSE Leap 15.6 (x86_64)")["product"],
 }))
 PY
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   # Every platform spells its version differently from its release cycle.
   check "versions are trimmed to the cycle the platform actually uses" \
         "assert (d['ubuntu_trims'],d['netbsd_trims'],d['macos_trims'])==('24.04','11','26'), d" "$J"
@@ -845,7 +864,7 @@ fi
 
 if want reboot-kernel; then
   echo "reboot-kernel (Debian 13 has no flag mechanism; compare kernels instead)"
-  J=$(python3 - "$ROOT" <<'PY'
+  snippet() { python3 - "$@" <<'PY'
 import re,sys,json,subprocess
 root=sys.argv[1]
 src=open(f"{root}/collectors/linux/netdash-patchcheck.sh").read()
@@ -869,7 +888,8 @@ print(json.dumps({
       r'\[ "\$KNEW" != "\$KRUN" \]; then\n\s*REBOOT=true', src)),
 }))
 PY
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   # 6.12.94 sorts after 6.12.107 as text, so a plain sort calls a freshly booted
   # Debian host stale on every point release.
   check "kernels compare by version, not as strings" \
@@ -886,7 +906,7 @@ fi
 
 if want host-thresholds; then
   echo "host-thresholds (per-host overrides merge, they do not replace)"
-  J=$(python3 - "$ROOT" <<'PY'
+  snippet() { python3 - "$@" <<'PY'
 import sys,json,time; sys.path.insert(0,f"{sys.argv[1]}/server")
 import app
 app.CFG={"thresholds":{"cpu":{"warn":80,"crit":95},
@@ -927,7 +947,8 @@ print(json.dumps({
   "reported":       s("netbsd11dot0", **mem)["thresholds"]["mem"],
 }))
 PY
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   # An override naming only warn must inherit crit, not blank it: restating
   # numbers you did not mean to change is how a fleet's thresholds drift.
   check "an override merges per level, inheriting what it does not name" \
@@ -952,7 +973,7 @@ fi
 
 if want cpu-sustain; then
   echo "cpu-sustain (a spike is normal operation; only held load changes colour)"
-  J=$(python3 - "$ROOT" <<'PY'
+  snippet() { python3 - "$@" <<'PY'
 import sys,json,time; sys.path.insert(0,f"{sys.argv[1]}/server")
 import app, db
 app.CFG={"thresholds":{"cpu":{"warn":80,"crit":95},
@@ -983,7 +1004,8 @@ print(json.dumps({
   "legacy":       host("legacy",  [5,5,5,5,5,5,99]),
 }))
 PY
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   # The complaint this exists for: one sample over crit turned a card red.
   check "a single reading over crit leaves the host ok" \
         "assert d['spike_crit']==['ok',True,'ok'], d" "$J"
@@ -1008,7 +1030,7 @@ fi
 
 if want virt; then
   echo "virt (unknown must not read as bare metal)"
-  J=$(python3 - "$ROOT" <<'PY'
+  snippet() { python3 - "$@" <<'PY'
 import re,sys,json,subprocess,time; sys.path.insert(0,f"{sys.argv[1]}/server")
 root=sys.argv[1]
 import app
@@ -1063,7 +1085,8 @@ print(json.dumps({
   "host_wins":  ov(None, "bhyve"), "host_src": ovs(None, "bhyve"),
 }))
 PY
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   # Tri-state on purpose: a host that cannot answer is not a bare-metal host.
   # Collapsing null to false would file every pre-0.4.0 collector under "bare
   # metal", which is the one answer nobody checked.
@@ -1092,7 +1115,7 @@ if want schedule; then
   # as it was before it went down. reboot_required is the loudest case: it is
   # read from /var/run/reboot-required, which a reboot clears, so a patched and
   # rebooted host kept asking to be rebooted for up to a day.
-  J=$(python3 - "$ROOT" <<'PY'
+  snippet() { python3 - "$@" <<'PY'
 import re,sys,json
 root=sys.argv[1]
 src=open(f"{root}/collectors/install.sh").read()
@@ -1127,7 +1150,8 @@ print(json.dumps({
   "cron_filters_old": cron.count("grep -v 'netdash-patchcheck'") == 1,
 }))
 PY
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   check "the patch check timer fires at boot" \
         "assert d['patch_boot'] is True, d['patch_timer']" "$J"
   check "and still on its daily schedule" \
@@ -1212,7 +1236,7 @@ if want concurrency; then
   # reads raised "bad parameter or other API misuse" out of the prober -- which
   # caught it, skipped the probing, and left the hosts that had stopped
   # reporting sitting at "unknown". Exactly the ones it exists to judge.
-  J=$(python3 - "$ROOT" <<'PY'
+  snippet() { python3 - "$@" <<'PY'
 import sys,json,os,time,threading,tempfile; sys.path.insert(0,f"{sys.argv[1]}/server")
 import db
 
@@ -1265,7 +1289,8 @@ for t in threads: t.join(10)
 rows = conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
 print(json.dumps({"errors": errors[:5], "error_count": len(errors), "rows": rows}))
 PY
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   check "hammering one connection from eight threads raises nothing" \
         "assert d['error_count']==0, d['errors']" "$J"
   check "and the writes actually landed rather than merely not crashing" \
@@ -1274,7 +1299,7 @@ fi
 
 if want patches-preboot; then
   echo "patches-preboot (a check older than the boot describes a machine that is gone)"
-  J=$(python3 - "$ROOT" <<'PY'
+  snippet() { python3 - "$@" <<'PY'
 import sys,json,time; sys.path.insert(0,f"{sys.argv[1]}/server")
 import app, db
 app.CONN = None
@@ -1320,7 +1345,8 @@ print(json.dumps({
   "rebooted_entries": rebooted["entries"],
 }))
 PY
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   # The live symptom: up two hours, still asking to be rebooted on the strength
   # of a check that ran ten hours before it went down.
   check "a check from before the last boot reads unknown, not its old verdict" \
@@ -1351,7 +1377,7 @@ fi
 
 if want patch-pending; then
   echo "patch-pending (the package list lives at the rate it changes)"
-  J=$(python3 - "$ROOT" <<'PY'
+  snippet() { python3 - "$@" <<'PY'
 import sys,json,os,time,sqlite3,tempfile; sys.path.insert(0,f"{sys.argv[1]}/server")
 import app, db
 
@@ -1417,7 +1443,8 @@ print(json.dumps({
   "migrated": migrated,
 }))
 PY
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   check "the names a check reported are stored once, in report order" \
         "assert d['stored']==['a','b','c','d','e','f'], d" "$J"
   check "and no longer ride along on every sample row" \
@@ -1440,7 +1467,7 @@ fi
 
 if want patch-ack; then
   echo "patch-ack (acknowledging silences one package, not the whole list)"
-  J=$(python3 - "$ROOT" <<'PY'
+  snippet() { python3 - "$@" <<'PY'
 import sys,json,os,time,sqlite3,tempfile; sys.path.insert(0,f"{sys.argv[1]}/server")
 import app, db
 
@@ -1591,7 +1618,8 @@ print(json.dumps({
   "migrated":           migrated,
 }))
 PY
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   check "an unacknowledged security state reads security, not acknowledged" \
         "assert d['before_status']=='security' and d['before_acked'] is False, d" "$J"
   check "acknowledging one package silences that package and nothing else" \
@@ -1655,7 +1683,7 @@ fi
 
 if want reachability; then
   echo "reachability (a locked host must read down, not stale)"
-  J=$(python3 - "$ROOT" <<'PYEOF'
+  snippet() { python3 - "$@" <<'PYEOF'
 import sys,json,time; sys.path.insert(0,f"{sys.argv[1]}/server")
 import app
 app.CFG={"thresholds":{"cpu":{"warn":80,"crit":95},"mem":{"warn":85,"crit":95},
@@ -1697,7 +1725,8 @@ print(json.dumps({
   "detail_exposed":s("hassium", 600, DOWN)["reachability"]["detail"],
 }))
 PYEOF
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   # The bug this exists for: a VM whose CPUs stopped scheduling. Push-only
   # monitoring sees the same silence as a broken cron entry and paints both a
   # muted grey, which is the colour you scan past on a wall panel.
@@ -1731,7 +1760,7 @@ fi
 
 if want lost-host; then
   echo "lost-host (a host that goes down must not go missing)"
-  J=$(python3 - "$ROOT" <<'PYEOF'
+  snippet() { python3 - "$@" <<'PYEOF'
 import json, os, sys, tempfile, time
 root = sys.argv[1]
 sys.path.insert(0, os.path.join(root, "server"))
@@ -1813,7 +1842,8 @@ print(json.dumps({
       "SELECT COUNT(*) FROM events WHERE host='ubuntu22dot04server'").fetchone()[0],
 }))
 PYEOF
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   # The bug itself. A dashboard that drops a host once it has been down for a
   # day is worse than one that never watched it: it shows a complete fleet,
   # all green, with a machine quietly missing from it.
@@ -1853,7 +1883,7 @@ fi
 
 if want reach-probe; then
   echo "reach-probe (a probe that cannot run is never evidence of down)"
-  J=$(python3 - "$ROOT" <<'PYEOF'
+  snippet() { python3 - "$@" <<'PYEOF'
 import sys,json; sys.path.insert(0,f"{sys.argv[1]}/server")
 import reach
 # A closed port answers with a RST, and generating that RST is work the host's
@@ -1876,7 +1906,8 @@ print(json.dumps({
   "parse_icmp":    list(reach.parse_check("icmp")),
 }))
 PYEOF
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   check "a refused connection counts as up -- the host's kernel answered" \
         "assert d['refused']=='up', d" "$J"
   check "loopback answers icmp" \
@@ -1902,7 +1933,7 @@ fi
 
 if want compact-down; then
   echo "compact-down (a red row must still say which host it is)"
-  J=$(python3 - "$ROOT" <<'PYEOF'
+  snippet() { python3 - "$@" <<'PYEOF'
 import re,sys,json; root=sys.argv[1]
 js  = open(f"{root}/server/static/app.js").read()
 css = open(f"{root}/server/static/style.css").read()
@@ -1928,7 +1959,8 @@ print(json.dumps({
   "keeps_title": "w.title" in branch,
 }))
 PYEOF
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   # The bug: .cdown spanned to the default template's trailing `auto` track,
   # which sizes to its content's full untruncated width. A long reason grew it
   # until the minmax(0, 1fr) name column was squeezed to zero and the row went
@@ -1949,7 +1981,7 @@ fi
 
 if want duration-wording; then
   echo "duration-wording (a length of time is not a moment in the past)"
-  J=$(python3 - "$ROOT" <<'PYEOF'
+  snippet() { python3 - "$@" <<'PYEOF'
 import re,sys,json; root=sys.argv[1]
 js = open(f"{root}/server/static/app.js").read()
 def body(name):
@@ -1965,7 +1997,8 @@ print(json.dumps({
   "short_for_dur":"fmtDur" in short and "fmtAge" not in short,
 }))
 PYEOF
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   check "fmtAge still says 'ago' -- it names a moment" \
         "assert d['age_has_ago'] is True, d" "$J"
   check "fmtDur does not, because it names a length" \
@@ -1978,7 +2011,7 @@ fi
 
 if want wedged; then
   echo "wedged (a kernel that answers is not a machine that works)"
-  J=$(python3 - "$ROOT" <<'PYEOF'
+  snippet() { python3 - "$@" <<'PYEOF'
 import sys,json,socket,threading; sys.path.insert(0,f"{sys.argv[1]}/server")
 import reach
 
@@ -2021,7 +2054,8 @@ print(json.dumps({
   "levels":        [reach.LEVEL["icmp"], reach.LEVEL["tcp"], reach.LEVEL["banner"]],
 }))
 PYEOF
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   # The outage that prompted all of this: a VM whose kernel still answers ICMP
   # and still completes handshakes onto sshd's backlog, while sshd itself is
   # never scheduled to accept them. Every kernel-level check calls it up.
@@ -2050,7 +2084,7 @@ fi
 
 if want host-checks; then
   echo "host-checks (the right probe is a property of the machine)"
-  J=$(python3 - "$ROOT" <<'PYEOF'
+  snippet() { python3 - "$@" <<'PYEOF'
 import sys,json; sys.path.insert(0,f"{sys.argv[1]}/server")
 import app
 app.CFG={"reachability":{"checks":["icmp","tcp:22"]},
@@ -2061,7 +2095,8 @@ print(json.dumps({
   "unlisted": app.checks_for("nobody"),
 }))
 PYEOF
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   check "a host can name its own checks" \
         "assert d['override']==['icmp','banner:22'], d" "$J"
   check "hosts without an override inherit the global list" \
@@ -2070,7 +2105,7 @@ fi
 
 if want eol-ack; then
   echo "eol-ack (acknowledging a warning is not consent to be silent later)"
-  J=$(python3 - "$ROOT" <<'PYEOF'
+  snippet() { python3 - "$@" <<'PYEOF'
 import sys,json,time,tempfile,os; sys.path.insert(0,f"{sys.argv[1]}/server")
 import app, db, eol
 tmp = os.path.join(tempfile.mkdtemp(), "t.db")
@@ -2133,7 +2168,8 @@ print(json.dumps({
   "acked_at_set": past_acked["acked_at"] is not None,
 }))
 PYEOF
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   check "an unacknowledged eol_soon reads as a live warning" \
         "assert d['before']==['eol_soon',False,True], d" "$J"
   check "acknowledging eol_soon silences it" \
@@ -2159,7 +2195,7 @@ fi
 
 if want eol-ack-ui; then
   echo "eol-ack-ui (an acknowledged warning leaves the All view alone)"
-  J=$(python3 - "$ROOT" <<'PYEOF'
+  snippet() { python3 - "$@" <<'PYEOF'
 import re,sys,json; root=sys.argv[1]
 js  = open(f"{root}/server/static/app.js").read()
 py  = open(f"{root}/server/app.py").read()
@@ -2178,7 +2214,8 @@ print(json.dumps({
   "kind_routed":  "m.group(2) or \"patches\"" in py,
 }))
 PYEOF
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   check "the compact row drops the triangle when acknowledged" \
         "assert d['row_hides'] is True, d" "$J"
   # A muted triangle in a forty-row scan list is the worst of both: it still
@@ -2309,7 +2346,7 @@ fi
 
 if want ingest-race; then
   echo "ingest-race (two collectors posting at once must not swap disk rows)"
-  J=$(python3 - "$ROOT" <<'PYEOF'
+  snippet() { python3 - "$@" <<'PYEOF'
 import sys,json,threading,tempfile,os; sys.path.insert(0,f"{sys.argv[1]}/server")
 import db
 tmp = os.path.join(tempfile.mkdtemp(), "t.db")
@@ -2352,7 +2389,8 @@ total = conn.execute("SELECT COUNT(*) FROM disks").fetchone()[0]
 print(json.dumps({"errs": errs, "inserted": len(got), "wrong": wrong,
                   "orphans": orphans, "total": total}))
 PYEOF
-)
+  }
+  J=$(snippet "$ROOT")
   check "every post is stored" \
         "assert not d['errs'] and d['inserted']==24, d" "$J"
   check "no sample gets another host's mounts, or loses its own" \
@@ -2364,7 +2402,7 @@ fi
 # --------------------------------------------------------------- Hubitat ----
 if want hubitat; then
   echo "hubitat (a load average is not a percentage)"
-  J=$(python3 - "$ROOT" "$FIX" <<'PYEOF'
+  snippet() { python3 - "$@" <<'PYEOF'
 import json, sys, os
 root, fix = sys.argv[1], sys.argv[2]
 sys.path.insert(0, os.path.join(root, "server"))
@@ -2424,7 +2462,8 @@ current = hubitat.collect(cfg)
 print(json.dumps({"ok": ok, "notot": notot, "secured": secured,
                   "partial": partial, "current": current}))
 PYEOF
-)
+  }
+  J=$(snippet "$ROOT" "$FIX")
   check "cpu is the load average over the core count, not the raw column" \
         "assert d['ok']['cpu_pct']==9.2, d['ok']['cpu_pct']" "$J"
   check "and is emphatically not the 0.37 the hub printed" \
@@ -2451,7 +2490,7 @@ fi
 # ----------------------------------------------------------------- UniFi ----
 if want unifi; then
   echo "unifi (a fleet is not five more hosts)"
-  J=$(python3 - "$ROOT" "$FIX" <<'PYEOF'
+  snippet() { python3 - "$@" <<'PYEOF'
 import json, sys, os
 root, fix = sys.argv[1], sys.argv[2]
 sys.path.insert(0, os.path.join(root, "server"))
@@ -2507,7 +2546,8 @@ summ = app.summarize(row)
 print(json.dumps({"p": p, "nosys": nosys, "summ": summ,
                   "row_mem_pct": row["mem_pct"]}))
 PYEOF
-)
+  }
+  J=$(snippet "$ROOT" "$FIX")
   check "the console is found by the mac /api/system reports" \
         "assert d['p']['host']=='lanthanum' and d['p']['os']=='UniFi OS 5.1.31', d['p']" "$J"
   check "and by model prefix when /api/system will not answer" \
@@ -2536,7 +2576,7 @@ fi
 # --------------------------------------------------------------- history ----
 if want history; then
   echo "history (a dashboard that forgets cannot answer when it started)"
-  J=$(python3 - "$ROOT" <<'PYEOF'
+  snippet() { python3 - "$@" <<'PYEOF'
 import json, os, sys, tempfile, time
 root = sys.argv[1]
 sys.path.insert(0, os.path.join(root, "server"))
@@ -2599,7 +2639,8 @@ print(json.dumps({"proj": proj, "flat": flat, "before": before, "after": after,
                   "raw_age_h": (now - oldest_raw) / 3600.0,
                   "roll_age_d": (now - oldest_roll) / 86400.0}))
 PYEOF
-)
+  }
+  J=$(snippet "$ROOT")
   check "a filling mount projects a date, from a slope not a snapshot" \
         "assert d['proj']['days_to_full']==21 and abs(d['proj']['slope_per_day']-1.0)<0.02, d['proj']" "$J"
   check "and a flat mount refuses to forecast at all" \
