@@ -99,11 +99,37 @@ DISKS=$( { mount 2>/dev/null; printf '@@DF@@\n'; df -k -l 2>/dev/null; } | awk '
       # If mount(8) gave us nothing, report everything rather than nothing --
       # filtering on absent data would silently drop every disk.
       if (seenmount && (!(d in rw) || !(d in br))) continue
-      u = tot[d] - av[d]; if (u < 0) u = 0
-      mp = lbl[d]
-      gsub(/\\/,"\\\\",mp); gsub(/"/,"\\\"",mp)
-      printf "%s{\"mount\":\"%s\",\"used_bytes\":%.0f,\"total_bytes\":%.0f}", (n++?",":""), mp, u*1024, tot[d]*1024
+      printf "%s\t%.0f\t%.0f\n", lbl[d], tot[d]*1024, av[d]*1024
     }
+  }')
+
+# df's Available leaves out purgeable space: local Time Machine snapshots,
+# iCloud files already uploaded, caches macOS will evict the moment something
+# needs the room. On one Mac df said 22 GB free (96% full) while Finder said
+# 45 GB, and 45 GB is what you can actually still write. Foundation's
+# "available for important usage" is that figure -- the one Finder shows -- so
+# ask for it per container and keep df's number only if the query fails.
+# osascript's JavaScript bridge is on every Mac; no Xcode or Swift needed.
+JXA='ObjC.import("Foundation");
+function run(argv) {
+  var v = $.NSURL.fileURLWithPath(argv[0]).resourceValuesForKeysError(
+    ["NSURLVolumeAvailableCapacityForImportantUsageKey"], null);
+  var n = v.isNil() ? null : ObjC.unwrap(v.objectForKey("NSURLVolumeAvailableCapacityForImportantUsageKey"));
+  return n > 0 ? String(n) : "";
+}'
+DISKS=$(printf '%s\n' "$DISKS" | while IFS="$(printf '\t')" read -r mp tot av; do
+  [ -n "$mp" ] || continue
+  imp=$(osascript -l JavaScript -e "$JXA" "$mp" 2>/dev/null || true)
+  printf '%s\t%s\t%s\t%s\n' "$mp" "$tot" "$av" "$imp"
+done | awk -F '\t' '
+  {
+    mp=$1; tot=$2+0; av=$3+0; imp=$4
+    # Purgeable space only ever adds to what df counts as free, so a smaller
+    # answer is a broken query rather than a fuller disk.
+    if (imp ~ /^[0-9]+$/ && imp+0 > av) av = imp+0
+    if (av > tot) av = tot
+    gsub(/\\/,"\\\\",mp); gsub(/"/,"\\\"",mp)
+    printf "%s{\"mount\":\"%s\",\"used_bytes\":%.0f,\"total_bytes\":%.0f}", (n++?",":""), mp, tot-av, tot
   }')
 
 # kern.boottime reads '{ sec = N, usec = M } ...'. Anchor on the leading brace:

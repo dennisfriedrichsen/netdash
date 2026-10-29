@@ -1,0 +1,6 @@
+#!/bin/sh
+# Stands in for the Foundation free-space query. MOCK_IMPORTANT_AVAIL is the
+# purgeable-inclusive figure in bytes; unset, the query fails the way it would
+# on a Mac whose scripting bridge is broken, and the collector must fall back.
+[ -n "${MOCK_IMPORTANT_AVAIL:-}" ] || exit 1
+printf '%s\n' "$MOCK_IMPORTANT_AVAIL"

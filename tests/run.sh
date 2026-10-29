@@ -212,7 +212,7 @@ fi
 # ------------------------------------------------------------------ macOS ----
 if want macos-intel; then
   echo "macos-intel (APFS volumes share one container)"
-  B=$(mkbin x uname sysctl df mount hostname sw_vers top vm_stat)
+  B=$(mkbin x uname sysctl df mount hostname sw_vers top vm_stat osascript)
   J=$(run_collector "$B" macos \
       MOCK_MEMSIZE=17179869184 MOCK_BOOTTIME="{ sec = 1788000000, usec = 654321 }" \
       NETDASH_MOCK_OS=Darwin NETDASH_MOCK_REL=15.7.9 NETDASH_MOCK_ARCH=x86_64 \
@@ -228,7 +228,7 @@ fi
 
 if want macos-applesilicon; then
   echo "macos-applesilicon (Xcode simulator runtimes and Apple system volumes)"
-  B=$(mkbin x uname sysctl df mount hostname sw_vers top vm_stat)
+  B=$(mkbin x uname sysctl df mount hostname sw_vers top vm_stat osascript)
   J=$(run_collector "$B" macos \
       MOCK_MEMSIZE=17179869184 MOCK_BOOTTIME="{ sec = 1788000000, usec = 654321 }" \
       NETDASH_MOCK_OS=Darwin NETDASH_MOCK_REL=26.6.2 NETDASH_MOCK_ARCH=arm64 \
@@ -239,6 +239,30 @@ if want macos-applesilicon; then
         "assert not any('Hardware' in x['mount'] for x in d['disks']), d['disks']" "$J"
   check "boot container survives and reads 91.4%" \
         "assert [x['mount'] for x in d['disks']]==['/'], d['disks']; p=100*d['disks'][0]['used_bytes']/d['disks'][0]['total_bytes']; assert abs(p-91.4)<0.2, p" "$J"
+  rm -rf "$B"
+fi
+
+if want macos-purgeable; then
+  echo "macos-purgeable (free space counts what macOS will purge on demand)"
+  B=$(mkbin x uname sysctl df mount hostname sw_vers top vm_stat osascript)
+  run_mac() { # MOCK_IMPORTANT_AVAIL
+    run_collector "$B" macos \
+      MOCK_MEMSIZE=17179869184 MOCK_BOOTTIME="{ sec = 1788000000, usec = 654321 }" \
+      NETDASH_MOCK_OS=Darwin NETDASH_MOCK_REL=26.6.2 NETDASH_MOCK_ARCH=arm64 \
+      NETDASH_MOCK_FIXDIR=macos NETDASH_MOCK_DF=df-k-l-applesilicon NETDASH_MOCK_MOUNT=mount-applesilicon \
+      MOCK_IMPORTANT_AVAIL="$1"
+  }
+  # df alone says 42.5 GB free; snapshots and caches make it 60 GB usable.
+  J=$(run_mac 60000000000)
+  check "free is the purgeable-inclusive figure, not df's Available" \
+        "r=d['disks'][0]; assert r['total_bytes']-r['used_bytes']==60000000000, r" "$J"
+  # A figure below df's means the query broke, not that the disk filled.
+  J=$(run_mac 1000)
+  check "a figure below df's Available is ignored" \
+        "r=d['disks'][0]; p=100*r['used_bytes']/r['total_bytes']; assert abs(p-91.4)<0.2, p" "$J"
+  J=$(run_mac 999999999999999)
+  check "a figure above the disk size is capped at empty" \
+        "r=d['disks'][0]; assert r['used_bytes']==0, r" "$J"
   rm -rf "$B"
 fi
 
