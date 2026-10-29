@@ -25,6 +25,10 @@ var STATUS = {
      expect_up:false -- a laptop that is closed for the night. Keeps the grey
      that 'stale' just gave up. */
   away:     { css: 'var(--st-none)', glyph: '⋯', label: 'Away' },
+  /* A jail its host reports as stopped. Grey for the same reason as 'away':
+     it is a decision, not a fault -- mercury keeps three jails stopped on
+     purpose, and three red rows would teach you to ignore red. */
+  stopped:  { css: 'var(--st-none)', glyph: '■', label: 'Stopped' },
   unknown:  { css: 'var(--st-none)', glyph: '–', label: 'n/a' }
 };
 function st(k) { return STATUS[k] || STATUS.unknown; }
@@ -34,6 +38,7 @@ function st(k) { return STATUS[k] || STATUS.unknown; }
    explanation is one hover or one click away on the card. */
 function reachShort(h) {
   var r = h.reachability || {};
+  if (h.status === 'stopped') return stoppedText(h, true);
   if (h.down_reason === 'unreachable') {
     /* A failed service check is a different diagnosis from silence, and a
        far more actionable one: the machine is there, its kernel is answering,
@@ -61,8 +66,21 @@ function hostStyle(h) {
 
 /* Why this host reads the way it does, in one line -- the sentence you want
    under a red card at 03:00 rather than a colour you have to interpret. */
+/* Whose word it is, and how it knows. "absent" is a jail its host listed
+   before and has stopped listing: on a plain FreeBSD host jls shows running
+   jails only, so that is what stopping one looks like from outside. */
+function stoppedText(h, brief) {
+  var g = h.guest || {}, on = h.parent ? ' on ' + h.parent : '';
+  if (brief) return 'stopped' + on;
+  return (g.state === 'absent'
+    ? 'not running' + on + ' — no longer in its jail list'
+    : 'stopped' + on) +
+    (g.boot === true ? ', though set to start at boot' : '');
+}
+
 function reachText(h) {
   var r = h.reachability || {};
+  if (h.status === 'stopped') return stoppedText(h, false);
   if (h.down_reason === 'unreachable') {
     return 'unreachable — ' + (r.detail || 'no answer') +
            (r.address ? ' (' + r.address + ')' : '');
@@ -109,6 +127,11 @@ function patchStyle(p) {
   var s = PATCH[(p && p.status) || 'unknown'] || PATCH.unknown;
   if (p && p.acknowledged) return { css: 'var(--st-none)', glyph: s.glyph };
   return s;
+}
+
+/* Package names in reading order: case-insensitive, for Array.sort. */
+function byName(a, b) {
+  return String(a).localeCompare(String(b), undefined, { sensitivity: 'base' });
 }
 
 function patchText(p) {
@@ -215,6 +238,114 @@ function fleetRow(f) {
     (f.updatable ? ' · ' + f.updatable + ' with firmware updates' : '') +
     '. State is the controller’s, not a netdash probe.';
   return row;
+}
+
+/* ---------- service checks ----------
+
+   What runs on a host, checked by the server: an application answering, a
+   management controller reachable. Another badge beside Patches and Fleet,
+   never the host's own dot -- see services.py for why -- so a green host with
+   a red Plex says exactly that.
+
+   Every state has its own word, because they send you to different places:
+   failing is the service, auth and misconfigured are server.json or a
+   credential file, cannot check is this server's network, stale is the
+   checker itself. Only failing is red. */
+var SVC = {
+  ok:       { css: 'var(--st-ok)',   glyph: '✓', word: 'answering' },
+  fail:     { css: 'var(--st-crit)', glyph: '✕', word: 'failing' },
+  auth:     { css: 'var(--st-warn)', glyph: '▲', word: 'auth refused' },
+  config:   { css: 'var(--st-warn)', glyph: '▲', word: 'misconfigured' },
+  error:    { css: 'var(--st-warn)', glyph: '▲', word: 'cannot check' },
+  stale:    { css: 'var(--st-warn)', glyph: '⋯', word: 'stale' },
+  /* One failure, held until it repeats -- a dropped packet is not an outage. */
+  unknown:  { css: 'var(--st-none)', glyph: '–', word: 'rechecking' },
+  pending:  { css: 'var(--st-none)', glyph: '–', word: 'not checked yet' },
+  disabled: { css: 'var(--st-none)', glyph: '–', word: 'disabled' }
+};
+
+var SVC_RANK = { unknown: 0, ok: 1, warning: 2, critical: 3 };
+
+function svcStyle(s) {
+  var b = SVC[s && s.state] || SVC.unknown;
+  /* A reachable BMC reporting a failed fan is not a healthy machine: the
+     server raises severity for that, and the colour follows it. */
+  if (s && s.state === 'ok' && s.severity === 'critical') return { css: 'var(--st-crit)', glyph: '✕', word: b.word };
+  if (s && s.state === 'ok' && s.severity === 'warning') return { css: 'var(--st-warn)', glyph: '▲', word: b.word };
+  return b;
+}
+
+/* Sensors, in a phrase. Unknown says unknown -- a BMC with no credentials has
+   told us nothing about its fans, and "sensors ok" would be a lie. */
+var HW_ERROR = { auth: 'login refused', config: 'misconfigured',
+                 error: 'cannot read', fail: 'not answering' };
+
+function hwText(hw) {
+  if (hw && hw.status === 'unknown' && hw.error) {
+    return 'sensors ' + (HW_ERROR[hw.error] || 'unreadable');
+  }
+  if (!hw || hw.status === 'unknown') return 'sensors unknown';
+  if (hw.status === 'ok') {
+    return 'sensors ok' + (hw.max_temp_c !== null && hw.max_temp_c !== undefined
+      ? ', max ' + Math.round(hw.max_temp_c) + '°C' : '');
+  }
+  var p = hw.problems || [];
+  return p.length <= 2 ? p.map(function (x) { return x.name; }).join(', ') + ' ' +
+                         (hw.status === 'critical' ? 'critical' : 'warning')
+                       : p.length + ' sensors out of range';
+}
+
+function svcText(s) {
+  if (s.state === 'stale') return 'stale ' + fmtDur(s.age_seconds);
+  if (s.role === 'bmc' && s.state === 'ok') return 'reachable · ' + hwText(s.hardware);
+  if (s.state === 'ok' && s.facts && s.facts.version) return 'answering · ' + s.facts.version;
+  return svcStyle(s).word;
+}
+
+function svcTitle(s) {
+  var bits = [s.name + (s.role === 'bmc' ? ' (management controller)' : '') +
+              ' — ' + svcText(s)];
+  bits.push('Checks: ' + s.checks + '.');
+  if (s.detail) bits.push(s.detail);
+  if (s.target) bits.push('at ' + s.target);
+  if (s.checked_at) {
+    bits.push('checked ' + fmtAge(s.age_seconds) +
+              (s.latency_ms !== null && s.latency_ms !== undefined ? ' in ' + s.latency_ms + ' ms' : ''));
+  }
+  if (s.hardware && s.hardware.reason) bits.push('sensors: ' + s.hardware.reason);
+  return bits.join('\n');
+}
+
+function serviceRow(s) {
+  var st2 = svcStyle(s);
+  var row = el('div', 'patch svc');
+  row.style.setProperty('--st', st2.css);
+  row.appendChild(el('span', 'pdot'));
+  row.appendChild(el('span', null, s.name));
+  row.appendChild(el('span', 'pglyph', st2.glyph));
+  row.appendChild(el('span', 'pval', svcText(s)));
+  row.title = svcTitle(s);
+  return row;
+}
+
+/* The checks that are switched on. A disabled one is listed on the detail
+   page, where its absence would be confusing, and nowhere else. */
+function liveServices(h) {
+  return (h.services || []).filter(function (s) { return s.state !== 'disabled'; });
+}
+
+/* What a host's management controller says while the host itself is down --
+   the whole reason to watch it separately. "Power on" under a host that does
+   not answer is a hung OS; "power off" is a different trip to the rack. */
+function bmcNote(h) {
+  var b = liveServices(h).filter(function (s) { return s.role === 'bmc'; })[0];
+  if (!b) return null;
+  if (b.state === 'ok') {
+    var pw = b.hardware && b.hardware.power;
+    return 'BMC answers' + (pw ? ', power ' + pw : '');
+  }
+  if (b.state === 'fail') return 'BMC not answering either';
+  return 'BMC ' + svcStyle(b).word;
 }
 
 /* POSTs to /api/host/<name>/ack or /unack, then re-fetches so the button's
@@ -410,8 +541,10 @@ var OS_ICONS = {
 
 function osFamily(os) {
   var s = String(os || '').toLowerCase();
-  /* TrueNAS is FreeBSD underneath, so it has to be tested before bsd. */
-  if (s.indexOf('truenas') > -1) return 'nas';
+  /* TrueNAS is FreeBSD underneath, so it has to be tested before bsd. FreeCORE
+     is CORE carried on under another name, and the 'free' in it would
+     otherwise be one careless test away from FreeBSD. */
+  if (s.indexOf('truenas') > -1 || s.indexOf('freecore') > -1) return 'nas';
   /* The polled appliances. Neither string carries a kernel name, so without
      these they fall all the way through to the question mark -- which is the
      right answer for a host that could not say what it runs, and the wrong one
@@ -491,7 +624,9 @@ function eolBadge(e) {
    made about itself, and the difference should be visible rather than buried. */
 function virtLabel(h) {
   if (!h.virt) return 'virtualisation not reported';
-  var base = h.virt === 'none' ? 'bare metal' : 'guest on ' + h.virt;
+  var base = h.virt === 'none' ? 'bare metal'
+           : h.is_container ? h.virt + (h.parent ? ' on ' + h.parent : '')
+           : 'guest on ' + h.virt;
   return base + (h.virt_source === 'config' ? ' (set in server.json)' : '');
 }
 
@@ -503,7 +638,8 @@ function virtLabel(h) {
    attribute carries the detail you would otherwise scroll for. */
 function compactRow(h) {
   var s = hostStyle(h);
-  var a = el('a', 'crow' + (h.status === 'down' ? ' isdown' : ''));
+  var a = el('a', 'crow' + (h.status === 'down' ? ' isdown'
+                            : h.status === 'stopped' ? ' isstop' : ''));
   a.href = '#/host/' + encodeURIComponent(h.host);
   a.style.setProperty('--st', s.css);
 
@@ -520,8 +656,14 @@ function compactRow(h) {
      answering, and showing a stale 12% CPU beside a red dot invites you to
      read it as current. The row says what is wrong instead. */
   var why = reachText(h);
-  if (h.status === 'down') {
-    var w = el('span', 'cdown', s.label + ' · ' + reachShort(h));
+  if (h.status === 'down' || h.status === 'stopped') {
+    /* The management controller's word rides in the reason rather than as a
+       flag: this row's grid has exactly one track per child, and "the BMC
+       answers, power on" is part of why it is down, not a separate fact. */
+    var bn = bmcNote(h);
+    if (bn) why += ' — ' + bn;
+    var w = el('span', h.status === 'down' ? 'cdown' : 'cdown cstop',
+               s.label + ' · ' + reachShort(h) + (bn ? ' · ' + bn : ''));
     w.title = why;
     name.title += '\n' + why;
     a.appendChild(w);
@@ -548,6 +690,20 @@ function compactRow(h) {
   pg.style.color = (p.status === 'ok' || p.acknowledged) ? 'var(--muted)' : ps.css;
   pg.title = 'Patches: ' + patchText(p) + '\n' + patchTitle(p);
   flags.appendChild(pg);
+
+  /* One flag for every check on the host, coloured by the worst of them and
+     muted while they all answer. The title names each, so the row says which
+     service without growing a column per service. */
+  var svcs = liveServices(h);
+  if (svcs.length) {
+    var worst = svcs.reduce(function (a, b) {
+      return SVC_RANK[b.severity] > SVC_RANK[a.severity] ? b : a;
+    });
+    var sf = el('span', 'cflag', svcStyle(worst).glyph);
+    sf.style.color = worst.severity === 'ok' ? 'var(--muted)' : svcStyle(worst).css;
+    sf.title = svcs.map(function (x) { return x.name + ': ' + svcText(x); }).join('\n');
+    flags.appendChild(sf);
+  }
 
   /* An acknowledged warning leaves no flag here at all. This row is a scan
      target -- forty of them, read from across a room -- and the whole job of a
@@ -592,16 +748,37 @@ function renderOverview(data, tab) {
     return h.eol && h.eol.status === 'eol' && !h.eol.acknowledged;
   }).length;
   var behind = data.hosts.filter(function (h) { return h.collector_outdated; }).length;
+  /* Services are counted, not hosts: two dead applications on one box are two
+     things to fix. Failing (red) and cannot-check (amber) are separate words
+     because one is the service and the other is our own setup. */
+  var svcFail = 0, svcWarn = 0;
+  data.hosts.forEach(function (h) {
+    liveServices(h).forEach(function (s) {
+      if (s.severity === 'critical') svcFail++;
+      else if (s.severity === 'warning') svcWarn++;
+    });
+  });
   /* Down leads. On a wall panel the headline is the only thing read from
      across the room, and "1 DOWN" is not the same news as "1 needs attention". */
+  var news = [];
+  if (downCount) news.push(downCount + ' DOWN');
+  if (bad) news.push(bad + ' need attention');
+  if (svcFail) news.push(svcFail + ' service' + (svcFail === 1 ? '' : 's') + ' failing');
+  if (svcWarn) news.push(svcWarn + ' service check' + (svcWarn === 1 ? ' needs' : 's need') + ' attention');
+  if (downCount && news.length === 1) news.push('nothing else wrong');
   metaEl.textContent = data.hosts.length + ' hosts · ' +
-    (downCount ? downCount + ' DOWN · ' : '') +
-    (bad ? bad + ' need attention' : downCount ? 'nothing else wrong' : 'all clear') +
+    (news.length ? news.join(' · ') : 'all clear') +
     (eolCount ? ' · ' + eolCount + ' past EOL' : '') +
     (behind ? ' · ' + behind + ' on an old collector' : '') + ' · ' +
     new Date(data.now * 1000).toLocaleTimeString();
 
   frag.appendChild(renderTabs(data, tab));
+
+  if (tab === 'services') {
+    frag.appendChild(renderServices(data));
+    root.replaceChildren(frag);
+    return;
+  }
 
   var hosts = tabHosts(data.hosts, tab);
   if (!hosts.length) {
@@ -662,12 +839,14 @@ function renderOverview(data, tab) {
 
     a.appendChild(patchRow(h.patches));
     if (h.fleet) a.appendChild(fleetRow(h.fleet));
+    liveServices(h).forEach(function (sv) { a.appendChild(serviceRow(sv)); });
 
     var why = reachText(h);
     var sub = el('div', 'sub', (h.stale ? 'last seen ' : 'updated ') + fmtAge(h.age_seconds) +
       // Any source but 'push' is an appliance this server polled, rather than
       // a host that installed a collector and reported in.
-      (h.source && h.source !== 'push' ? ' · via API' : '') +
+      (h.source === 'guest' ? ' · via ' + (h.parent || 'its host')
+        : h.source && h.source !== 'push' ? ' · via API' : '') +
       // Down for longer than the retention window: the meters above are empty
       // because the data is gone, not because the host reported zeroes.
       (h.no_samples ? ' · no readings left' : ''));
@@ -903,6 +1082,8 @@ function renderDetailWhy(c) {
           'last reported ' + fmtAge(c.age_seconds) + '.'
         : 'Readings below are from ' + fmtAge(c.age_seconds) + '.') + probe));
   }
+  var bn = c.status === 'down' ? bmcNote(c) : null;
+  if (bn) b.appendChild(el('div', 'why-sub', 'Management controller: ' + bn + '.'));
   return b;
 }
 
@@ -948,6 +1129,84 @@ function forgetRow(host, c) {
   return row;
 }
 
+var CATEGORY_LABEL = { temperature: 'temperature', fan: 'fans', power: 'power supplies',
+                       voltage: 'voltages', other: 'other' };
+
+function servicesPanel(c) {
+  var p = el('div', 'panel');
+  p.appendChild(el('h2', null, 'Services'));
+  c.services.forEach(function (s) {
+    var st2 = svcStyle(s);
+    var head = el('div', 'proj svchead');
+    head.style.setProperty('--st', st2.css);
+    head.appendChild(el('span', 'pdot'));
+    head.appendChild(el('span', 'fname', s.name));
+    head.appendChild(el('span', 'pval', st2.glyph + ' ' + svcText(s)));
+    head.title = svcTitle(s);
+    p.appendChild(head);
+
+    if (s.role === 'bmc') {
+      /* Said in words, because a BMC row under a host reads as part of that
+         host otherwise -- and the point of it is that it is not. */
+      p.appendChild(el('div', 'sub', 'Management controller of ' + c.host +
+        (s.target ? ' at ' + s.target : '') + ' — separate hardware, checked ' +
+        'whether or not ' + c.host + ' itself is up.'));
+    }
+    p.appendChild(el('div', 'sub', 'Checks: ' + s.checks));
+    if (s.state === 'disabled') return;
+    if (s.detail) p.appendChild(el('div', 'sub', s.detail));
+    var when = [];
+    if (s.role !== 'bmc' && s.target) when.push(s.target);
+    if (s.checked_at) {
+      when.push('checked ' + fmtAge(s.age_seconds) +
+                (s.latency_ms !== null && s.latency_ms !== undefined ? ' in ' + s.latency_ms + ' ms' : ''));
+    }
+    when.push('every ' + fmtDur(s.interval_seconds));
+    if (s.auth) when.push(s.auth === 'token' ? 'with a token' : 'with a password');
+    p.appendChild(el('div', 'sub', when.join(' · ')));
+
+    var f = s.facts || {};
+    var fx = [];
+    if (f.version) fx.push('version ' + f.version);
+    if (f.torrentCount !== undefined) {
+      fx.push(f.torrentCount + ' torrent' + (f.torrentCount === 1 ? '' : 's') + ', ' +
+              (f.activeTorrentCount || 0) + ' active, ' + (f.pausedTorrentCount || 0) + ' paused');
+    }
+    if (f.reach) {
+      Object.keys(f.reach).forEach(function (k) { fx.push(k.toUpperCase() + ': ' + f.reach[k]); });
+    }
+    if (fx.length) p.appendChild(el('div', 'sub', fx.join(' · ')));
+
+    var hw = s.hardware;
+    if (hw) {
+      if (hw.status === 'unknown') {
+        p.appendChild(el('div', 'sub', 'Hardware sensors: unknown — ' + (hw.reason || 'not read')));
+      } else {
+        var counts = hw.counts || {};
+        var line = Object.keys(counts).sort().map(function (k) {
+          var n = counts[k], tot = n.ok + n.warning + n.critical + n.unknown;
+          return (CATEGORY_LABEL[k] || k) + ' ' + n.ok + '/' + tot + ' ok';
+        });
+        if (hw.max_temp_c !== null && hw.max_temp_c !== undefined) {
+          line.push('max ' + Math.round(hw.max_temp_c) + '°C');
+        }
+        if (hw.power) line.push('chassis power ' + hw.power);
+        p.appendChild(el('div', 'sub', 'Hardware sensors: ' + line.join(' · ') +
+          (hw.checked_at ? ' · read ' + fmtAge(Math.max(0, Math.floor(Date.now() / 1000) - hw.checked_at)) : '')));
+        (hw.problems || []).forEach(function (x) {
+          var r = el('div', 'proj');
+          r.style.setProperty('--st', x.severity === 'critical' ? 'var(--st-crit)' : 'var(--st-warn)');
+          r.appendChild(el('span', 'pdot'));
+          r.appendChild(el('span', 'fname', x.name));
+          r.appendChild(el('span', 'pval', x.reading));
+          p.appendChild(r);
+        });
+      }
+    }
+  });
+  return p;
+}
+
 function renderDetail(host, data, range) {
   var c = data.current, s = hostStyle(c);
   range = range || '24h';
@@ -978,6 +1237,14 @@ function renderDetail(host, data, range) {
   var g = el('span', 'glyph', s.glyph); g.style.color = s.css; chip.appendChild(g);
   chip.appendChild(el('span', null, s.label));
   back.appendChild(chip);
+  /* A jail or container lives and dies with the machine under it, so that
+     machine is one click away. Only when config names it: nothing inside a
+     jail can see its host's name. */
+  if (c.parent) {
+    var pa = el('a', 'parent', (c.is_container ? c.virt : 'runs') + ' on ' + c.parent);
+    pa.href = '#/host/' + encodeURIComponent(c.parent);
+    back.appendChild(pa);
+  }
   back.appendChild(rangePicker(host, range));
   frag.appendChild(back);
 
@@ -1111,7 +1378,11 @@ function renderDetail(host, data, range) {
        the moment the host reboots, and nothing else is the thing this was
        asked for. */
     if (pp.status === 'security' && pp.entries && pp.entries.length) {
-      pp.entries.forEach(function (it) {
+      /* Alphabetical, so a long list can be scanned. Only the display is
+         sorted: the API and the acknowledgements keep the check's order. */
+      pp.entries.slice().sort(function (a, b) {
+        return byName(a.package, b.package);
+      }).forEach(function (it) {
         p4.appendChild(ackRow(host, 'patches', it, it));
       });
       var pending = pp.entries.filter(function (it) { return !it.acknowledged; });
@@ -1128,7 +1399,9 @@ function renderDetail(host, data, range) {
         p4.appendChild(none);
       }
     } else if (pp.packages) {
-      p4.appendChild(el('div', 'sub', pp.packages));
+      /* The same order as the rows above. patch_summary joins with ', '. */
+      p4.appendChild(el('div', 'sub',
+                        pp.packages.split(', ').sort(byName).join(', ')));
     }
     /* The check counted more than it named, so this host stays loud however
        much of the list is acknowledged. Said plainly, because otherwise it
@@ -1203,6 +1476,12 @@ function renderDetail(host, data, range) {
     panels.appendChild(pf);
   }
 
+  /* Service checks, in full: what each one actually proves, what it found,
+     and when. The card says "answering"; this is where "answering what,
+     asked how" lives -- because a web page that loads is not automations
+     running, and the panel should never let one be read as the other. */
+  if (c.services && c.services.length) panels.appendChild(servicesPanel(c));
+
   /* Support status. Shown only when it is bad news and therefore only when
      there is something to acknowledge -- a panel reading "supported" on every
      other host is the noise the EOL badge already avoids. Kept separate from
@@ -1245,7 +1524,11 @@ function renderDetail(host, data, range) {
     pe.appendChild(el('h2', null, 'Recent changes'));
     var log = el('div', 'events');
     data.events.slice(0, 12).forEach(function (ev) {
-      var to = st(ev.to_state), row = el('div', 'ev');
+      /* A service's states are its own words (failing, auth refused...), not
+         a host's, so they take the service palette. The detail names it. */
+      var isSvc = String(ev.kind || '').indexOf('service:') === 0;
+      var to = isSvc ? svcStyle({ state: ev.to_state }) : st(ev.to_state);
+      var row = el('div', 'ev');
       row.style.setProperty('--st', to.css);
       row.appendChild(el('span', 'pdot'));
       row.appendChild(el('span', 'evwhen', fmtAge(data.now - ev.ts)));
@@ -1273,7 +1556,13 @@ function renderDetail(host, data, range) {
 var TABS = [
   { id: '',      label: 'All',        title: 'Every host, one line each' },
   { id: 'bare',  label: 'Bare metal', title: 'Hosts reporting no hypervisor' },
-  { id: 'vms',   label: 'VMs',        title: 'Hosts reporting a hypervisor' }
+  { id: 'vms',   label: 'VMs',        title: 'Hosts reporting a hypervisor' },
+  { id: 'containers', label: 'Containers',
+    title: 'FreeBSD jails and Linux containers, sharing a host\'s kernel' },
+  /* Not a filter over hosts like the others: one row per service check,
+     whichever host it is attached to. Its count is checks, not hosts. */
+  { id: 'services', label: 'Services',
+    title: 'Every service check, one line each, worst first' }
 ];
 
 /* How far back the detail page is looking. Kept in the hash rather than in a
@@ -1312,17 +1601,134 @@ function currentRoute() {
   if (m) return { view: 'host', host: decodeURIComponent(m[1]), range: rangeById(m[2]).id };
   m = h.match(/^#\/host\/(.+)$/);
   if (m) return { view: 'host', host: decodeURIComponent(m[1]), range: '24h' };
-  m = h.match(/^#\/(bare|vms)$/);
+  m = h.match(/^#\/(bare|vms|containers|services)$/);
   return { view: 'overview', tab: m ? m[1] : '' };
 }
 
-/* Hosts that cannot tell whether they are virtualised appear in neither
-   filtered tab. Guessing would put them in the wrong one, and a host missing
+/* Hosts that cannot tell whether they are virtualised appear in no filtered
+   tab. Guessing would put them in the wrong one, and a host missing
    from a list is easier to notice than one silently misfiled -- the All tab
    shows everything and says "?" for them. */
+/* ---------- services table ----------
+
+   Every check on one screen, read across: which service, on which host, at
+   what address and port, asked how, and with what answer since when. Worst
+   first, because the job of this view is finding the one that is wrong;
+   within a severity, by name, so the list holds still between refreshes.
+
+   The host's own status rides along as a small dot beside its name, and is
+   never merged into the service's: "Plex failing on a host that is DOWN" and
+   "Plex failing on a host that is fine" send you to different places. */
+var SVC_ORDER = { critical: 0, warning: 1, unknown: 2, ok: 3 };
+
+function allServices(hosts) {
+  var out = [];
+  hosts.forEach(function (h) {
+    (h.services || []).forEach(function (s) { out.push({ svc: s, host: h }); });
+  });
+  return out;
+}
+
+function svcRank(s) {
+  return s.state === 'disabled' ? 9 : (SVC_ORDER[s.severity] !== undefined ? SVC_ORDER[s.severity] : 2);
+}
+
+/* The one line that says why a service reads the way it does. When it is
+   answering, that is what it answered with; otherwise the failure itself. */
+function svcSummary(s) {
+  if (s.state === 'disabled') return 'disabled in server.json';
+  if (s.state === 'ok' && s.role === 'bmc') {
+    var hw = s.hardware || {};
+    return hwText(hw) + (hw.reason && !hw.error ? ' — ' + hw.reason : '');
+  }
+  if (s.state === 'ok') {
+    return (s.detail || 'answering') + (s.facts && s.facts.version ? ' · ' + s.facts.version : '');
+  }
+  return s.detail || svcStyle(s).word;
+}
+
+/* The status cell's word. A reachable BMC whose sensors are bad is the one
+   place the word and the colour come from different fields, so say both. */
+function svcStatusWord(s) {
+  if (s.state === 'ok' && s.role === 'bmc') {
+    return s.severity === 'ok' ? 'reachable' : 'reachable, ' + hwText(s.hardware);
+  }
+  return svcStyle(s).word;
+}
+
+var SVC_COLS = [
+  ['', 'scdot'], ['Service', 'scname'], ['Host', 'schost'], ['Address', 'scaddr'],
+  ['Port', 'scports'], ['Probe', 'scprobe'], ['Status', 'scstate'],
+  ['Detail', 'scdetail'], ['Since', 'scsince'], ['Checked', 'scchecked'],
+  ['Latency', 'sclat']
+];
+
+function serviceTableRow(s, h, now) {
+  var st2 = svcStyle(s);
+  var a = el('a', 'srow' + (s.state === 'disabled' ? ' isoff' : ''));
+  a.href = '#/host/' + encodeURIComponent(h.host);
+  a.style.setProperty('--st', st2.css);
+  a.title = svcTitle(s);
+
+  a.appendChild(el('span', 'scdot'));
+  a.appendChild(el('span', 'scname', s.name));
+
+  var hc = el('span', 'schost');
+  var hs = hostStyle(h);
+  var hd = el('span', 'shdot');
+  hd.style.background = hs.css;
+  hc.appendChild(hd);
+  hc.appendChild(document.createTextNode(h.host));
+  hc.title = h.host + ': ' + hs.label + (s.role === 'bmc'
+    ? ' — this is the host\'s own status; the BMC is checked separately' : '');
+  a.appendChild(hc);
+
+  a.appendChild(el('span', 'scaddr', s.address || '–'));
+  a.appendChild(el('span', 'scports', (s.ports || []).join(', ') || '–'));
+  a.appendChild(el('span', 'scprobe', s.probe || s.kind));
+
+  var sc = el('span', 'scstate', st2.glyph + ' ' + svcStatusWord(s));
+  sc.style.color = st2.css;
+  a.appendChild(sc);
+
+  a.appendChild(el('span', 'scdetail', svcSummary(s)));
+  a.appendChild(el('span', 'scsince',
+    s.since && s.state !== 'disabled' ? fmtDur(Math.max(0, now - s.since)) : '–'));
+  a.appendChild(el('span', 'scchecked',
+    s.checked_at ? fmtAge(s.age_seconds) : '–'));
+  a.appendChild(el('span', 'sclat',
+    s.latency_ms !== null && s.latency_ms !== undefined && s.checked_at ? s.latency_ms + ' ms' : '–'));
+  return a;
+}
+
+function renderServices(data) {
+  var rows = allServices(data.hosts);
+  if (!rows.length) {
+    return el('div', 'empty', 'No service checks configured — add a services ' +
+      'block to server.json (see "Service checks" in the README).');
+  }
+  rows.sort(function (x, y) {
+    return svcRank(x.svc) - svcRank(y.svc) ||
+           String(x.svc.name).localeCompare(String(y.svc.name)) ||
+           String(x.host.host).localeCompare(String(y.host.host));
+  });
+  var table = el('div', 'stable');
+  var head = el('div', 'srow shead');
+  SVC_COLS.forEach(function (c) { head.appendChild(el('span', c[1], c[0])); });
+  table.appendChild(head);
+  rows.forEach(function (r) { table.appendChild(serviceTableRow(r.svc, r.host, data.now)); });
+  table.appendChild(el('div', 'sub snote',
+    'Each row says what was asked, not that the service is doing its job — ' +
+    'hover a row for exactly what its check proves. Click for the host.'));
+  return table;
+}
+
 function tabHosts(hosts, tab) {
-  if (tab === 'bare') return hosts.filter(function (h) { return h.is_vm === false; });
+  if (tab === 'bare')
+    return hosts.filter(function (h) { return h.is_vm === false && !h.is_container; });
   if (tab === 'vms')  return hosts.filter(function (h) { return h.is_vm === true; });
+  if (tab === 'containers')
+    return hosts.filter(function (h) { return h.is_container === true; });
   return hosts;
 }
 
@@ -1333,7 +1739,8 @@ function renderTabs(data, active) {
     a.href = '#/' + t.id;
     a.title = t.title;
     a.appendChild(el('span', null, t.label));
-    var n = tabHosts(data.hosts, t.id).length;
+    var n = t.id === 'services' ? allServices(data.hosts).length
+                                : tabHosts(data.hosts, t.id).length;
     a.appendChild(el('span', 'tabn', String(n)));
     nav.appendChild(a);
   });

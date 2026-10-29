@@ -27,6 +27,7 @@ numbers are untouched.
 | `freebsd/df-k-T-l.txt` | FreeBSD 15.1 | `-T` is accepted here and nowhere else |
 | `freebsd/zfs-list.txt`, `netbsd/zfs-list.txt` | — | `zfs list -Hp -d 0` pool roots |
 | `freebsd/cp_time.txt` | FreeBSD 15.1 | five fields, space-separated |
+| `freebsd/df-k-root.txt` | FreeBSD 15.1 | `df -k /`, which is all a jail reports of disk; captured on a host, since a jail's columns are the same |
 | `linux/apt-dist-upgrade.txt` | Debian 13 | the security origin sits *inside* the parentheses |
 | `linux/zypper-list-updates-tumbleweed.txt` | openSUSE Tumbleweed | 23 real pending updates; header and `---+---` separator must not count |
 | `linux/zypper-patch-check-tumbleweed.txt` | openSUSE Tumbleweed | the same host answering *"0 patches needed"* |
@@ -38,6 +39,11 @@ numbers are untouched.
 | `netbsd/pkgin-upgrade-none.txt` | NetBSD 11.0 | `nothing to do.` — a real zero, not a parse failure |
 | `macos/softwareupdate-none.txt` | macOS 26.6.2 | both streams combined: the all-clear string is what makes a zero safe to report |
 | `macos/softwareupdate-stdout-only.txt` | macOS 26.6.2 | the same command with stderr discarded — a lone banner, and not an all-clear |
+| `services/plex-identity.xml` | Plex Media Server 1.41.3 | `/identity`: one `MediaContainer` start tag, no token needed (machineIdentifier replaced) |
+| `services/hass-manifest.json` | Home Assistant | `/manifest.json`, the unauthenticated proof the frontend is HA's |
+| `services/transmission-rpc-409.*` | Transmission, RPC 6.0.1 | the CSRF 409 and its `X-Transmission-Session-Id` (id replaced) |
+| `services/transmission-session-stats.json` | Transmission, RPC 6.0.1 | `session-stats` from an idle daemon: zero torrents is a real answer |
+| `ipmi/channel-auth-reply.hex` | Supermicro BMC (mercury's) | the pre-session Get Channel Authentication Capabilities reply: completion 00, IPMI 2.0 |
 
 `apt-dist-upgrade.txt` is real `apt-get --just-print` output, captured with
 `-o Dir::State::status=/dev/null` because the host had nothing pending — that
@@ -61,3 +67,8 @@ headers and the summary line the parse actually depends on.
 
 `cp_time.txt` holds two lines: two successive reads, so the mock can return a
 delta rather than a single sample.
+
+Not here, on purpose: `ipmitool sdr elist` and `chassis status` output. No BMC
+credentials were available to capture any, so `tests/ipmi.py` carries
+format-derived samples inline and says so. Replace them with a real capture
+once there is one.

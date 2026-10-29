@@ -4,12 +4,13 @@
 Routes:
   POST /api/ingest        collector push (JSON, X-Netdash-Token header)
   GET  /api/overview      all hosts, latest sample + rolled-up status
-  GET  /api/host/<name>   one host: latest + recent history
+  GET  /api/host/<name>   one host: latest + recent history, with its service checks
   GET  /                  dashboard UI
 """
 
 import json
 import os
+import random
 import re
 import sys
 import threading
@@ -23,6 +24,7 @@ import db  # noqa: E402
 import eol  # noqa: E402
 import hubitat  # noqa: E402
 import reach  # noqa: E402
+import services  # noqa: E402
 import truenas  # noqa: E402
 import unifi  # noqa: E402
 
@@ -100,6 +102,17 @@ def load_config(path):
 
 def host_cfg(host):
     return (CFG.get("hosts") or {}).get(host) or {}
+
+
+# Virtualisation answers that mean "shares the host's kernel" rather than "runs
+# a kernel of its own": systemd-detect-virt's container names, plus "jail",
+# which the FreeBSD collector reports from security.jail.jailed. A container is
+# neither bare metal nor a VM, and filing it under either would be a guess the
+# tabs exist to avoid.
+CONTAINER_VIRTS = frozenset({
+    "jail", "lxc", "lxc-libvirt", "systemd-nspawn", "docker", "podman", "rkt",
+    "openvz", "wsl", "proot", "pouch", "container-other",
+})
 
 
 def thresholds_for(host):
@@ -185,6 +198,203 @@ def reach_state(host):
         return dict(r) if r else None
 
 
+# ---------- service checks ----------
+#
+# What runs ON a host, as opposed to whether the host is up -- see services.py.
+# Same treatment as REACH and for the same reasons: live state in memory, a
+# fresh verdict within one round of a restart, and nothing written per check
+# per minute. Only transitions reach the database, as events, because "Plex
+# was down for twenty minutes at 03:00" is the thing worth keeping.
+SVC = {}
+SVC_LOCK = threading.Lock()
+_SVC_PARSED = {"block": None, "checks": []}
+
+
+def service_checks():
+    """The configured checks, parsed once per config block.
+
+    Keyed on the block itself so a test that swaps CFG gets its own checks,
+    and a server without a `services` block -- every config written before
+    this existed -- gets none and does nothing at all.
+    """
+    block = CFG.get("services")
+    if _SVC_PARSED["block"] is not block:
+        _SVC_PARSED["checks"] = services.parse_config(block)
+        _SVC_PARSED["block"] = block
+    return _SVC_PARSED["checks"]
+
+
+_SEV_RANK = {"unknown": 0, "ok": 1, "warning": 2, "critical": 3}
+
+
+def services_for(host, now):
+    """Every check attached to this host, as the API shows them, and the worst
+    severity among those that are switched on. Never raises: a broken check
+    must not take a host's card with it."""
+    out = []
+    try:
+        for c in service_checks():
+            if c["host"] != host:
+                continue
+            with SVC_LOCK:
+                live = dict(SVC[c["id"]]) if c["id"] in SVC else None
+            out.append(services.view(c, live, now))
+    except Exception as e:
+        sys.stderr.write("services view %s: %s\n" % (host, e))
+    worst = None
+    for v in out:
+        if v["state"] == "disabled":
+            continue
+        if worst is None or _SEV_RANK[v["severity"]] > _SEV_RANK[worst]:
+            worst = v["severity"]
+    return out, worst
+
+
+def service_worker(c, last_recorded=None):
+    """Run one check for ever. One thread per check, so a service that hangs
+    holds up nothing but itself -- and every request inside is bounded by its
+    own timeout, so even that ends; if it somehow does not, the check goes
+    stale on the card rather than showing its last good answer.
+
+    Transitions between settled states become events. A failure still being
+    held ("1 of 2 failed checks") is not one: it either turns into a failure,
+    which is recorded then, or it clears and nothing happened.
+    """
+    memo = {}
+    interval = c["interval_seconds"]
+    # Spread the first round so a restart does not fire every check at once.
+    time.sleep(random.uniform(0, min(10.0, interval)))
+    while True:
+        try:
+            last_recorded = service_round(c, memo, last_recorded)
+        except Exception as e:  # never let the thread die quietly
+            sys.stderr.write("service %s: %s\n" % (c["id"], e))
+        time.sleep(interval)
+
+
+def service_round(c, memo, last_recorded, now=None):
+    """One check, folded into SVC, with an event if the settled state moved.
+    Returns the state now on record."""
+    now = now or time.time()
+    outcome, detail, facts, ms = services.run(c, memo, now)
+    with SVC_LOCK:
+        prev = SVC.get(c["id"])
+        new = services.fold(prev, c, outcome, detail, facts, ms, now)
+        SVC[c["id"]] = new
+    state = new["state"]
+    if state == "unknown" or state == last_recorded:
+        return last_recorded
+    if last_recorded is not None and CONN is not None:
+        try:
+            db.record_event(CONN, c["host"], "service:" + c["id"], last_recorded,
+                            state, "%s: %s" % (c["name"], new["detail"]), ts=now)
+        except Exception as e:
+            sys.stderr.write("service event %s: %s\n" % (c["id"], e))
+    elif last_recorded is None and state != services.OK:
+        # The first verdict after a start is not a transition, but a failing
+        # one is worth a line in the journal.
+        sys.stderr.write("service %s on %s: %s -- %s\n"
+                         % (c["id"], c["host"], state, new["detail"]))
+    return state
+
+
+def guest_for(host):
+    """The parent's latest word on this jail, or None. Never raises: a CFG or
+    CONN built by hand for a test has no database behind it."""
+    if CONN is None:
+        return None
+    try:
+        return db.guest(CONN, host)
+    except Exception:
+        return None
+
+
+def guest_vouched(g, now):
+    """A parent's report counts only while the parent itself is reporting. One
+    that has gone quiet is no longer saying anything about its jails."""
+    return bool(g) and now - g["seen_at"] <= stale_after_for(g["parent"])
+
+
+# The states a parent may report a jail in. Anything else is read as running,
+# which is the claim with nothing to hide behind: a running jail still has to
+# answer for itself through its samples and its probe.
+GUEST_STATES = ("running", "stopped")
+GUEST_ONLY = ("jails", "state", "boot", "address")
+
+
+# Characters a host name keeps unescaped in a dashboard URL -- the routes match
+# the raw path, so anything encodeURIComponent would escape could never be
+# looked up again.
+_GUEST_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$")
+
+
+def _guest_name(name, parent, now):
+    """The name a jail is listed under: its own, unless that is taken.
+
+    Jail names are unique per host, not per network -- mercury and cerium each
+    have a "transmission". The first to claim a name keeps it; a second jail of
+    the same name on another host is listed as name.parent. Taken means either
+    another parent is still reporting a jail of that name, or the name belongs
+    to a host that is not a jail at all. A host of that name that IS a jail,
+    with no parent on record, is this jail's own collector, and the two are
+    the same machine.
+    """
+    # Once qualified, always: the name a jail was listed under is where its
+    # history is, and it must not move back the day the other one goes quiet.
+    q = db.guest(CONN, "%s.%s" % (name, parent))
+    if q and q["parent"] == parent:
+        return q["host"]
+    g = db.guest(CONN, name)
+    if g:
+        if g["parent"] == parent or not guest_vouched(g, now):
+            return name
+        return "%s.%s" % (name, parent)
+    h = db.host_row(CONN, name)
+    if h and h["source"] != "guest" and h.get("virt") != "jail":
+        return "%s.%s" % (name, parent)
+    return name
+
+
+def ingest_jails(payload, now=None):
+    """Store the jails a host or a TrueNAS box reported alongside itself.
+
+    Each becomes a host of its own, with a sample of its own, because that is
+    what it is on the network: an address, a release, packages, a reason to be
+    up or not. The exception is a jail running its own collector. Its pushes
+    are the richer report, so while they are fresh the parent's adds only the
+    guests row -- where it runs and whether it is up -- and no second sample to
+    interleave with them.
+    """
+    entries = payload.get("jails")
+    if not isinstance(entries, list) or CONN is None:
+        return
+    parent = payload["host"]
+    now = now or time.time()
+    ts = int(payload.get("ts") or now)
+    keep = []
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        name = e.get("host")
+        if not isinstance(name, str) or not _GUEST_NAME.match(name) or name == parent:
+            continue
+        name = _guest_name(name, parent, now)
+        addr = e.get("address")
+        keep.append({"host": name,
+                     "state": e.get("state") if e.get("state") in GUEST_STATES else "running",
+                     "boot": e.get("boot"),
+                     "address": addr if isinstance(addr, str) and addr else None})
+        h = db.host_row(CONN, name)
+        if h and h["source"] == "push" and now - h["last_seen"] <= stale_after_for(name):
+            continue
+        sample = {k: v for k, v in e.items() if k not in GUEST_ONLY}
+        sample["host"] = name
+        sample["ts"] = ts
+        sample["virt"] = sample.get("virt") or "jail"
+        db.insert_sample(CONN, sample, source="guest")
+    db.record_guests(CONN, parent, keep, ts)
+
+
 def address_for(host, sample):
     """Where to probe, and how we decided -- ("10.0.0.4", "config").
 
@@ -201,6 +411,11 @@ def address_for(host, sample):
     ov = host_cfg(host).get("address")
     if ov:
         return ov, "config"
+    # A jail's host knows its address from the jail's own configuration, which
+    # beats a DNS lookup that may not have caught up with a DHCP lease.
+    g = guest_for(host)
+    if g and g.get("address"):
+        return g["address"], "parent"
     if reach.resolve(host):
         return host, "name"
     peer = sample.get("peer_addr")
@@ -584,6 +799,28 @@ def summarize(sample, now=None):
         elif (not r or r["state"] != "up") and down_after and age > down_after:
             down_reason = "absent"
 
+    # A jail its parent reports as stopped is not an outage, it is a decision
+    # -- mercury keeps three jails stopped on purpose. Grey, not red, and never
+    # down, whatever the probe or the clock says. Unless the jail is pushing
+    # samples of its own right now, which beats anything said about it.
+    #
+    # The parent's last word stands even after the parent goes quiet. Nothing
+    # starts a stopped jail on a host that is down, and the alternative is a
+    # NAS outage adding one red row per jail it was deliberately not running.
+    g = guest_for(host)
+    vouched = guest_vouched(g, now)
+    own_push = sample.get("source") == "push" and not stale
+    stopped = bool(g and g["state"] in ("stopped", "absent") and not own_push)
+    if stopped:
+        down_reason = None
+    # A running jail reported by its parent arrives fresh every poll, so
+    # freshness proves only that the parent is up. Its own address is the jail's
+    # proof of life, and a jail that stops answering it is down while its parent
+    # keeps saying "running".
+    elif (expect_up and sample.get("source") == "guest" and vouched
+          and r and r["state"] == "down"):
+        down_reason = "unreachable"
+
     virt_override = host_cfg(sample["host"]).get("virt")
     virt = virt_override if virt_override else sample.get("virt")
     virt_source = ("config" if virt_override
@@ -592,9 +829,19 @@ def summarize(sample, now=None):
     # live and self-clearing; pending patches sit amber for a week and train you
     # to ignore amber. It gets its own badge, and "needs attention" in the header
     # stays a statement about CPU, memory and disk.
-    overall = ("down" if down_reason else "stale" if stale else max(
+    overall = ("stopped" if stopped else "down" if down_reason
+               else "stale" if stale else max(
         (cpu_status, mem_status, disk_status), key=lambda s: _RANK[s]
     ))
+    # A jail listed over the TrueNAS API has no readings to judge -- the API
+    # gives none per jail -- so the rollup above can only say unknown. Its host
+    # saying "running" and its own address answering is the whole of what can
+    # be known about it, and it is a positive answer.
+    if (overall == "unknown" and sample.get("source") == "guest" and vouched
+            and g["state"] == "running" and r and r["state"] == "up"):
+        overall = "ok"
+
+    svcs, svc_severity = services_for(host, now)
 
     return {
         "host": sample["host"],
@@ -648,7 +895,30 @@ def summarize(sample, now=None):
         # reading; is_vm stays tri-state either way.
         "virt": virt,
         "virt_source": virt_source,
-        "is_vm": (None if not virt else virt != "none"),
+        "is_vm": (None if not virt
+                  else virt != "none" and virt not in CONTAINER_VIRTS),
+        "is_container": (None if not virt else virt in CONTAINER_VIRTS),
+        # The machine a jail or container runs on, from config only: a jail
+        # cannot see its host's name, and guessing it from an address would be
+        # wrong the first time two hosts share a subnet.
+        "parent": host_cfg(sample["host"]).get("parent") or (g["parent"] if g else None),
+        # What the parent says about this jail: running, stopped, or absent
+        # from its latest report; whether it starts at boot. Null for anything
+        # no parent has reported. `vouched` false means the parent has itself
+        # gone quiet, so its word is old.
+        "guest": ({"state": g["state"], "boot": (None if g["boot"] is None
+                                                 else bool(g["boot"])),
+                   "address": g["address"], "seen_at": g["seen_at"],
+                   "vouched": vouched} if g else None),
+        # What runs on the host, checked from here: an application answering,
+        # a management controller reachable. A separate axis on purpose, never
+        # folded into `status` -- that dot answers "is the machine up", and a
+        # running host with a dead Plex is a true statement a red dot would
+        # turn into a lie, while a green dot would hide the dead Plex. The
+        # badge, the header count and the event log carry this instead.
+        # Empty for every host nothing is configured against.
+        "services": svcs,
+        "services_severity": svc_severity,
         "status": overall,
     }
 
@@ -740,6 +1010,12 @@ class Handler(BaseHTTPRequestHandler):
             db.insert_sample(CONN, payload, peer=self.client_address[0])
         except Exception as e:
             return self._fail(500, "ingest %s" % payload["host"], e)
+        # After the parent's own sample, and never at its expense: a malformed
+        # jail list is logged and dropped, the host's reading is already stored.
+        try:
+            ingest_jails(payload)
+        except Exception as e:
+            sys.stderr.write("ingest %s: jails dropped: %s\n" % (payload["host"], e))
         return self._json(200, {"ok": True, "host": payload["host"]})
 
     def _forget(self, host):
@@ -1065,6 +1341,17 @@ def reach_prober():
                 # that question rather than the end of it.
                 if sample.get("source") == "truenas":
                     continue
+                # A stopped jail is not expected to answer, and a probe that
+                # says so would only be noise in the event log.
+                g = guest_for(host)
+                if (g and g["state"] in ("stopped", "absent")
+                        and sample.get("source") != "push"):
+                    continue
+                # A jail its parent reports is always probed: its samples are
+                # fresh because the parent is, which says nothing about the jail.
+                if sample.get("source") == "guest":
+                    targets.append((host, sample))
+                    continue
                 if now - sample["ts"] < max(15, stale_after_for(host) / 2):
                     with REACH_LOCK:
                         REACH[host] = {"state": "up", "probe": reach.UP, "failures": 0,
@@ -1203,8 +1490,32 @@ def disk_projection(host, mount, min_days=5):
 APPLIANCES = {"truenas": truenas, "hubitat": hubitat, "unifi": unifi}
 
 
-def appliance_poller(name, module):
-    cfg = CFG.get(name) or {}
+# Blocks that may be a list of boxes rather than one. Only modules whose caches
+# are keyed per box belong here: hubitat and unifi keep one module-wide cache,
+# so a second hub would be answered with the first one's update status.
+MULTI_BOX = {"truenas"}
+
+
+def appliance_configs(name):
+    """The enabled boxes one appliance block configures.
+
+    A `truenas` block is one box, or a list of them for a network with more
+    than one -- a TrueNAS CORE and a FreeCORE are both "truenas", polled the
+    same way and recorded under the same source, because to everything
+    downstream (the prober exclusion included) they are the same kind of thing.
+    """
+    block = CFG.get(name) or {}
+    if isinstance(block, list):
+        if name not in MULTI_BOX:
+            sys.stderr.write("config: %s takes one box, not a list; "
+                             "polling only the first\n" % name)
+            block = block[:1]
+    else:
+        block = [block]
+    return [b for b in block if isinstance(b, dict) and b.get("enabled")]
+
+
+def appliance_poller(name, module, cfg):
     interval = max(10, int(cfg.get("poll_seconds") or 60))
     # An unchanging failure repeats every interval into a journal nothing
     # rotates, so it is said once and again only when it changes -- the same
@@ -1217,13 +1528,50 @@ def appliance_poller(name, module):
             payload = module.collect(cfg)
             if payload:
                 db.insert_sample(CONN, payload, source=name)
+                ingest_jails(payload)
             last = None
         except Exception as e:
             msg = str(e)[:200]
             if msg != last:
-                sys.stderr.write("%s poll error: %s\n" % (name, msg))
+                sys.stderr.write("%s poll error (%s): %s\n"
+                                 % (name, cfg.get("display_name") or cfg.get("host"), msg))
                 last = msg
         time.sleep(interval)
+
+
+def start_service_checks():
+    """One worker per enabled check, and a word at startup about each one
+    that cannot run -- a typo should be said once, out loud, not discovered
+    as a grey row weeks later."""
+    checks = service_checks()
+    if not checks:
+        return
+    try:
+        seen = set(db.known_hosts(CONN))
+        last = db.last_service_states(CONN)
+    except Exception:
+        seen, last = set(), {}
+    started = []
+    for c in checks:
+        if not c["host"]:
+            sys.stderr.write("services: check %s names no host; it has no card "
+                             "to appear on and is not run\n" % c["id"])
+            continue
+        if c["config_error"]:
+            sys.stderr.write("services: check %s cannot run: %s\n"
+                             % (c["id"], c["config_error"]))
+            continue
+        if not c["enabled"]:
+            continue
+        if c["host"] not in seen:
+            sys.stderr.write("services: check %s is attached to %s, which has "
+                             "never reported -- it runs, but shows nowhere until "
+                             "that host does\n" % (c["id"], c["host"]))
+        threading.Thread(target=service_worker,
+                         args=(c, last.get("service:" + c["id"])),
+                         daemon=True).start()
+        started.append("%s->%s" % (c["id"], c["host"]))
+    sys.stderr.write("service checks started (%s)\n" % (", ".join(started) or "none enabled"))
 
 
 def main():
@@ -1271,11 +1619,17 @@ def main():
         threading.Thread(target=event_watcher, daemon=True).start()
         sys.stderr.write("history: rollups + event log enabled\n")
 
+    # Off the main thread: it reads the database, and the roller started just
+    # above holds the database lock through its first pass. Called inline,
+    # that kept the dashboard off the network for over a minute per restart.
+    threading.Thread(target=start_service_checks, daemon=True).start()
+
     for name, module in sorted(APPLIANCES.items()):
-        if (CFG.get(name) or {}).get("enabled"):
-            threading.Thread(target=appliance_poller, args=(name, module),
+        for cfg in appliance_configs(name):
+            threading.Thread(target=appliance_poller, args=(name, module, cfg),
                              daemon=True).start()
-            sys.stderr.write("%s poller started\n" % name)
+            sys.stderr.write("%s poller started (%s)\n"
+                             % (name, cfg.get("display_name") or cfg.get("host")))
 
     srv = Server((CFG["bind_host"], CFG["bind_port"]), Handler)
     sys.stderr.write("netdash listening on %s:%s\n" % (CFG["bind_host"], CFG["bind_port"]))

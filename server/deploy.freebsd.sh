@@ -9,8 +9,12 @@ set -eu
 [ "$(id -u)" = "0" ] || { echo "run as root" >&2; exit 1; }
 SRC=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
-command -v python3 >/dev/null 2>&1 || {
-  echo "python3 not found -- run: pkg install python3" >&2
+# The interpreter the rc script will actually run, not whatever `python3` is on
+# PATH: a box with only a versioned python3.11 has no `python3` at all, and is
+# fine as long as rc.conf names the one it does have.
+PY=$(sysrc -n netdash_python 2>/dev/null || echo /usr/local/bin/python3)
+[ -x "$PY" ] || {
+  echo "$PY not found -- run: pkg install python3, or sysrc netdash_python=<path>" >&2
   exit 1
 }
 

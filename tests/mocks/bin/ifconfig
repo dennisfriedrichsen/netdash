@@ -1,0 +1,6 @@
+#!/bin/sh
+# Mock ifconfig. Only `ifconfig -a inet` is used, inside a jail, for its first
+# non-loopback address. MOCK_INET is that address; unset means none.
+printf 'lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> metric 0 mtu 16384\n\tinet 127.0.0.1 netmask 0xff000000\n'
+[ -n "${MOCK_INET:-}" ] && printf 'epair0b: flags=8863<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> metric 0 mtu 1500\n\tinet %s netmask 0xffffff00 broadcast 10.0.0.255\n' "$MOCK_INET"
+exit 0

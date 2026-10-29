@@ -1,0 +1,6 @@
+#!/bin/sh
+# Mock date: BSD `date -j -f` (parse, don't set) is answered from
+# $NETDASH_MOCK_EPOCH so the macOS check runs on GNU systems; everything else
+# is the real date.
+[ "${1:-}" = -j ] && { echo "${NETDASH_MOCK_EPOCH:?}"; exit 0; }
+exec /bin/date "$@"

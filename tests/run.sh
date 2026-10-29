@@ -45,11 +45,16 @@ $expr
   fi
 }
 
-run_collector() { # collector, bindir  -> prints JSON
+# The mock settings are arguments, not `VAR=x run_collector` prefixes. POSIX
+# leaves it unspecified whether a prefix assignment on a function call reaches
+# the commands the function runs: bash exports them, FreeBSD's sh does not, and
+# there every collector case ran with no mocks set and failed.
+run_collector() { # bindir, collector, [VAR=value ...]  -> prints JSON
+  bin=$1; col=$2; shift 2
   NETDASH_MOCK_TMP=$(mktemp -d)
   export NETDASH_MOCK_TMP NETDASH_FIXTURES="$FIX"
-  env "PATH=$1:/usr/bin:/bin" NETDASH_CONF=/dev/null \
-      sh "$ROOT/collectors/$2/netdash-collector.sh" --print 2>/dev/null
+  env "PATH=$bin:/usr/bin:/bin" NETDASH_CONF=/dev/null "$@" \
+      sh "$ROOT/collectors/$col/netdash-collector.sh" --print 2>/dev/null
   rm -rf "$NETDASH_MOCK_TMP"
 }
 
@@ -65,11 +70,11 @@ want() { case "$1" in *"$FILTER"*) return 0 ;; esac; [ -z "$FILTER" ]; }
 if want freebsd-zfs; then
   echo "freebsd-zfs (ZFS pools plus an EFI partition)"
   B=$(mkbin x uname sysctl df zfs hostname)
-  J=$(MOCK_PHYSMEM=32090000000 MOCK_PAGESIZE=4096 MOCK_FREE=3000000 \
+  J=$(run_collector "$B" bsd \
+      MOCK_PHYSMEM=32090000000 MOCK_PAGESIZE=4096 MOCK_FREE=3000000 \
       MOCK_INACT=1500000 MOCK_LAUNDRY=50000 MOCK_ARC=8000000000 \
       MOCK_BOOTTIME="{ sec = 1787700000, usec = 123456 } Tue Aug 25 12:00:00 2026" \
-      NETDASH_MOCK_OS=FreeBSD NETDASH_MOCK_REL=15.1-RELEASE-p3 \
-      run_collector "$B" bsd)
+      NETDASH_MOCK_OS=FreeBSD NETDASH_MOCK_REL=15.1-RELEASE-p3)
   check "pools reported one per pool, not per dataset" \
         "assert [x['mount'] for x in d['disks']]==['zroot','ssdpool','/boot/efi'], d['disks']" "$J"
   check "devfs and the nfs mount excluded" \
@@ -84,11 +89,11 @@ fi
 if want freebsd-nozfs; then
   echo "freebsd-nozfs (absent sysctl must not abort the script under set -e)"
   B=$(mkbin x uname sysctl df hostname)      # no zfs shim at all
-  J=$(MOCK_PHYSMEM=32090000000 MOCK_PAGESIZE=4096 MOCK_FREE=3000000 \
+  J=$(run_collector "$B" bsd \
+      MOCK_PHYSMEM=32090000000 MOCK_PAGESIZE=4096 MOCK_FREE=3000000 \
       MOCK_INACT=1500000 MOCK_LAUNDRY=50000 \
       MOCK_BOOTTIME="{ sec = 1787700000, usec = 0 }" \
-      NETDASH_MOCK_OS=FreeBSD NETDASH_MOCK_REL=15.1-RELEASE-p3 \
-      run_collector "$B" bsd)
+      NETDASH_MOCK_OS=FreeBSD NETDASH_MOCK_REL=15.1-RELEASE-p3)
   check "collector still produces output with no zfs(8)" \
         "assert d['disks']==[{'mount':'/boot/efi','used_bytes':1331200,'total_bytes':268435456}], d['disks']" "$J"
   check "memory still reported (no ARC sysctl to read)" \
@@ -96,13 +101,81 @@ if want freebsd-nozfs; then
   rm -rf "$B"
 fi
 
+if want freebsd-jail; then
+  echo "freebsd-jail (every kernel counter in a jail is the host's)"
+  # zfs is on the PATH and cp_time, the page queues and boottime all answer --
+  # as they do in a real jail, for the host. None of it may reach the output.
+  B=$(mkbin x uname sysctl df zfs hostname ps freebsd-version ifconfig)
+  J=$(run_collector "$B" bsd \
+      MOCK_JAILED=1 MOCK_NCPU=4 MOCK_PHYSMEM=68625498112 MOCK_PAGESIZE=4096 \
+      MOCK_FREE=3000000 MOCK_INACT=1500000 MOCK_ARC=8000000000 \
+      MOCK_BOOTTIME="{ sec = 1700000000, usec = 0 }" \
+      MOCK_PS_CPU="50.0 30.0 20.0 0.0" MOCK_PS_RSS="1048576 524288 2048 1024" \
+      MOCK_PS_ETIMES="86400 86390 12 0" MOCK_USERLAND=13.2-RELEASE-p11 \
+      NETDASH_MOCK_OS=FreeBSD NETDASH_MOCK_REL=13.1-RELEASE-p9 NETDASH_MOCK_DF=df-k-root)
+  check "a jail reports itself as one, not as its bare-metal host" \
+        "assert d['virt']=='jail', d['virt']" "$J"
+  check "CPU is the jail's processes over the host's cores (100/4 = 25%)" \
+        "assert d['cpu_pct']==25.0, d['cpu_pct']" "$J"
+  check "memory used is the jail's resident set, not the host's page queues" \
+        "assert d['mem_used_bytes']==(1048576+524288+2048+1024)*1024, d['mem_used_bytes']" "$J"
+  check "against the host's RAM, which is all a jail without rctl can use" \
+        "assert d['mem_total_bytes']==68625498112, d['mem_total_bytes']" "$J"
+  check "uptime is the oldest process's age, not the host's boot" \
+        "assert d['uptime_seconds']==86400, d['uptime_seconds']" "$J"
+  check "the OS is the jail's userland, not the host's kernel" \
+        "assert d['os'].startswith('FreeBSD 13.2-RELEASE-p11'), d['os']" "$J"
+  check "disk is the jail's root, and the host's pools are not claimed" \
+        "assert [x['mount'] for x in d['disks']][0]=='/' and not any(x['mount'] in ('zroot','ssdpool') for x in d['disks']), d['disks']" "$J"
+  check "the root's size is used + available from df -k /" \
+        "r=d['disks'][0]; assert (r['used_bytes'],r['total_bytes'])==(6166252*1024,(6166252+43795868)*1024), r" "$J"
+  rm -rf "$B"
+fi
+
+if want freebsd-jailhost; then
+  echo "freebsd-jailhost (a host lists its jails; nothing is installed in them)"
+  # Constructed: one jail running (jid 3), one only in jail.conf, plus a
+  # running jail whose name the dashboard could not route to. The jexec mock
+  # runs the same script "inside", where the sysctl mock reports jailed.
+  B=$(mkbin x uname sysctl df zfs hostname ps freebsd-version jls jexec ifconfig sysrc)
+  JC=$(mktemp)
+  printf 'exec.start = "/bin/sh /etc/rc";\ntransmission {\n  host.hostname = transmission;\n}\nbackup { path = /jails/backup; }\n' > "$JC"
+  J=$(run_collector "$B" bsd \
+      MOCK_NCPU=4 MOCK_PHYSMEM=32090000000 MOCK_PAGESIZE=4096 MOCK_FREE=3000000 \
+      MOCK_INACT=1500000 MOCK_ARC=8000000000 MOCK_BOOTTIME="{ sec = 1787700000, usec = 0 }" \
+      MOCK_PS_CPU="20.0 20.0" MOCK_PS_RSS="1024 1024" MOCK_PS_ETIMES="3600 10" \
+      MOCK_USERLAND=15.1-RELEASE-p6 MOCK_INET=10.0.0.150 MOCK_JAIL_ENABLE=YES \
+      MOCK_JAIL_LIST="transmission" MOCK_JLS="3 transmission transmission.lan
+4 bad;name bad" \
+      NETDASH_JAIL_CONF="$JC" NETDASH_JAIL_STATE=/nonexistent \
+      NETDASH_MOCK_OS=FreeBSD NETDASH_MOCK_REL=15.1-RELEASE-p6 NETDASH_MOCK_DF=df-k-root)
+  rm -f "$JC"
+  check "the host reports itself as before" \
+        "assert d['host']=='mockhost' and d['virt']!='jail' and len(d['disks'])==3, d" "$J"
+  check "a running jail is measured from inside it, under its short hostname" \
+        "j=[x for x in d['jails'] if x['host']=='transmission'][0]; assert (j['state'],j['virt'],j['cpu_pct'],j['uptime_seconds'])==('running','jail',10.0,3600), j" "$J"
+  check "with the jail's own release and root, and none of the host's pools" \
+        "j=[x for x in d['jails'] if x['host']=='transmission'][0]; assert j['os'].startswith('FreeBSD 15.1-RELEASE-p6') and j['disks'][0]['mount']=='/' and not any(m['mount'] in ('zroot','ssdpool') for m in j['disks']), j" "$J"
+  check "its address is read from inside, where vnet hides it from jls" \
+        "j=[x for x in d['jails'] if x['host']=='transmission'][0]; assert j['address']=='10.0.0.150', j" "$J"
+  check "and starts at boot because rc.conf's jail_list names it" \
+        "j=[x for x in d['jails'] if x['host']=='transmission'][0]; assert j['boot'] is True, j" "$J"
+  check "a jail.conf jail jls does not list is reported stopped, not set to boot" \
+        "assert [x for x in d['jails'] if x['host']=='backup']==[{'host':'backup','os':None,'virt':'jail','state':'stopped','boot':False}], d['jails']" "$J"
+  check "a running jail is not also listed stopped, and an unroutable name is skipped" \
+        "assert sorted(x['host'] for x in d['jails'])==['backup','transmission'], d['jails']" "$J"
+  check "a jail does not list jails of its own" \
+        "j=[x for x in d['jails'] if x['host']=='transmission'][0]; assert 'jails' not in j, j" "$J"
+  rm -rf "$B"
+fi
+
 # ---------------------------------------------------------------- OpenBSD ----
 if want openbsd; then
   echo "openbsd (6-field comma cp_time, vmstat -s memory, bare-epoch boottime)"
   B=$(mkbin x uname sysctl df vmstat hostname)
-  J=$(MOCK_PHYSMEM=497573888 MOCK_BOOTTIME=1787412753 \
-      NETDASH_MOCK_OS=OpenBSD NETDASH_MOCK_REL=7.9 \
-      run_collector "$B" bsd)
+  J=$(run_collector "$B" bsd \
+      MOCK_PHYSMEM=497573888 MOCK_BOOTTIME=1787412753 \
+      NETDASH_MOCK_OS=OpenBSD NETDASH_MOCK_REL=7.9)
   check "cp_time parsed despite 6 comma-separated fields" \
         "assert d['cpu_pct'] is not None and 0 <= d['cpu_pct'] <= 100, d['cpu_pct']" "$J"
   check "memory from vmstat -s (sysctl vm.uvmexp is refused)" \
@@ -118,9 +191,9 @@ fi
 if want netbsd; then
   echo "netbsd (key=value cp_time, ZFS pools, df -l does NOT drop pseudo-fs)"
   B=$(mkbin x uname sysctl df vmstat zfs hostname)
-  J=$(MOCK_PHYSMEM64=534945792 MOCK_PHYSMEM=534945792 MOCK_BOOTTIME=1787497937 \
-      NETDASH_MOCK_OS=NetBSD NETDASH_MOCK_REL=11.0 \
-      run_collector "$B" bsd)
+  J=$(run_collector "$B" bsd \
+      MOCK_PHYSMEM64=534945792 MOCK_PHYSMEM=534945792 MOCK_BOOTTIME=1787497937 \
+      NETDASH_MOCK_OS=NetBSD NETDASH_MOCK_REL=11.0)
   check "cp_time parsed from 'user = N, nice = N, ...' pairs" \
         "assert d['cpu_pct'] is not None and 0 <= d['cpu_pct'] <= 100, d['cpu_pct']" "$J"
   check "tmpfs/kernfs/ptyfs/procfs dropped (df -l does not exclude them here)" \
@@ -129,6 +202,10 @@ if want netbsd; then
         "assert 'tank' in [x['mount'] for x in d['disks']], d['disks']" "$J"
   check "hw.physmem64 used for total" \
         "assert d['mem_total_bytes']==534945792, d['mem_total_bytes']" "$J"
+  # total - free - inactive read 74.5% from this capture (and 98% live once the
+  # inactive queue drained); the file cache on the active queue is not "used".
+  check "file cache counted as reclaimable, not free + inactive (issue #4)" \
+        "assert abs(100*d['mem_used_bytes']/d['mem_total_bytes'] - 46.9) < 0.2, d" "$J"
   rm -rf "$B"
 fi
 
@@ -136,10 +213,10 @@ fi
 if want macos-intel; then
   echo "macos-intel (APFS volumes share one container)"
   B=$(mkbin x uname sysctl df mount hostname sw_vers top vm_stat)
-  J=$(MOCK_MEMSIZE=17179869184 MOCK_BOOTTIME="{ sec = 1788000000, usec = 654321 }" \
+  J=$(run_collector "$B" macos \
+      MOCK_MEMSIZE=17179869184 MOCK_BOOTTIME="{ sec = 1788000000, usec = 654321 }" \
       NETDASH_MOCK_OS=Darwin NETDASH_MOCK_REL=15.7.9 NETDASH_MOCK_ARCH=x86_64 \
-      NETDASH_MOCK_FIXDIR=macos NETDASH_MOCK_DF=df-k-l-intel NETDASH_MOCK_MOUNT=mount-intel \
-      run_collector "$B" macos)
+      NETDASH_MOCK_FIXDIR=macos NETDASH_MOCK_DF=df-k-l-intel NETDASH_MOCK_MOUNT=mount-intel)
   check "one entry per container, not per volume" \
         "assert sorted(x['mount'] for x in d['disks'])==['/','/Volumes/photos_library'], d['disks']" "$J"
   check "boot container reports total-available (89.8%), not Data's 83.2%" \
@@ -152,10 +229,10 @@ fi
 if want macos-applesilicon; then
   echo "macos-applesilicon (Xcode simulator runtimes and Apple system volumes)"
   B=$(mkbin x uname sysctl df mount hostname sw_vers top vm_stat)
-  J=$(MOCK_MEMSIZE=17179869184 MOCK_BOOTTIME="{ sec = 1788000000, usec = 654321 }" \
+  J=$(run_collector "$B" macos \
+      MOCK_MEMSIZE=17179869184 MOCK_BOOTTIME="{ sec = 1788000000, usec = 654321 }" \
       NETDASH_MOCK_OS=Darwin NETDASH_MOCK_REL=26.6.2 NETDASH_MOCK_ARCH=arm64 \
-      NETDASH_MOCK_FIXDIR=macos NETDASH_MOCK_DF=df-k-l-applesilicon NETDASH_MOCK_MOUNT=mount-applesilicon \
-      run_collector "$B" macos)
+      NETDASH_MOCK_FIXDIR=macos NETDASH_MOCK_DF=df-k-l-applesilicon NETDASH_MOCK_MOUNT=mount-applesilicon)
   check "read-only CoreSimulator runtimes dropped (they pin 97% forever)" \
         "assert not any('CoreSimulator' in x['mount'] for x in d['disks']), d['disks']" "$J"
   check "read-write but all-nobrowse container dropped (xarts/iSCPreboot/Hardware)" \
@@ -178,7 +255,7 @@ if want linux-disks; then
 import re,subprocess,sys,json
 root,awkname=sys.argv[1],sys.argv[2]
 src=open(f"{root}/collectors/linux/netdash-collector.sh").read()
-prog=re.search(r"df -P -k 2>/dev/null; \} \| awk '(.*?)'\)", src, re.S).group(1)
+prog=re.search(r"df -P -k 2>/dev/null; \} \| awk (?:-v \S+ )?'(.*?)'\)", src, re.S).group(1)
 stream=open(f"{root}/tests/fixtures/linux/proc-mounts-opensuse.txt").read()+"@@DF@@\n"+ \
        open(f"{root}/tests/fixtures/linux/df-P-k-opensuse.txt").read()
 cmd=["busybox","awk",prog] if awkname=="busybox-awk" else ["awk",prog]
@@ -194,6 +271,34 @@ PY
     check "[$AWK] NFS mount excluded" \
           "assert not any('media' in x['mount'] for x in d['disks'])" "$J"
   done
+fi
+
+if want linux-container; then
+  echo "linux-container (an overlay root is the container's own disk)"
+  # Constructed, not captured: the docker layout, where / is overlay and the
+  # only other mounts are pseudo-filesystems. Run with and without ctr set, so
+  # the same mount table proves both halves.
+  J=$(python3 - "$ROOT" <<'PY'
+import re,subprocess,sys,json
+src=open(f"{sys.argv[1]}/collectors/linux/netdash-collector.sh").read()
+prog=re.search(r"df -P -k 2>/dev/null; \} \| awk (?:-v \S+ )?'(.*?)'\)", src, re.S).group(1)
+stream=("overlay / overlay rw,relatime,lowerdir=/var/lib/docker/overlay2/l/A 0 0\n"
+        "proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n"
+        "tmpfs /dev tmpfs rw,nosuid,size=65536k,mode=755 0 0\n"
+        "@@DF@@\n"
+        "Filesystem 1024-blocks Used Available Capacity Mounted on\n"
+        "overlay 102400000 40960000 61440000 40% /\n"
+        "tmpfs 65536 0 65536 0% /dev\n")
+def run(ctr):
+    out=subprocess.run(["awk","-v",f"ctr={ctr}",prog],input=stream,capture_output=True,text=True)
+    return json.loads("["+out.stdout+"]")
+print(json.dumps({"ctr":run(1),"host":run(0)}))
+PY
+) || J=''
+  check "a container's overlay root is reported as /" \
+        "assert [(x['mount'],x['used_bytes']) for x in d['ctr']]==[('/',40960000*1024)], d['ctr']" "$J"
+  check "while an overlay on a host is still skipped as a layer" \
+        "assert d['host']==[], d['host']" "$J"
 fi
 
 if want linux-bigmem; then
@@ -514,6 +619,45 @@ PY
         "assert not d['banner']['allclear'] and d['banner']['entries']==0, d" "$J"
   check "stderr is captured, or every Mac reads as unparseable" \
         "assert d['captures_stderr'], d" "$J"
+fi
+
+if want patches-macos-brew; then
+  echo "patches-macos-brew (Homebrew counts as other updates, never as security)"
+  B=$(mkbin x defaults softwareupdate brew date stat)
+  T=$(mktemp -d); mkdir -p "$T/brewcache/api"; : > "$T/brewcache/api/formula.jws.json"
+  NOW=$(date +%s)
+  # NETDASH_MOCK_EPOCH is the last softwareupdate scan, an hour ago.
+  mac_pc() {
+    env "PATH=$B:/usr/bin:/bin" NETDASH_CONF=/dev/null NETDASH_MOCK_TMP="$T" \
+        NETDASH_MOCK_EPOCH=$((NOW - 3600)) "$@" \
+        sh "$ROOT/collectors/macos/netdash-patchcheck.sh" --print 2>/dev/null
+  }
+  J=$(mac_pc NETDASH_MOCK_BREW_OUTDATED="$(printf 'openssl@3\nfirefox')") || J=''
+  check "outdated formulae and casks are counted into other" \
+        "assert (d['security'],d['other'],d['source'])==(0,2,'softwareupdate+brew'), d" "$J"
+  check "and are not named, since nothing classified them" \
+        "assert d['packages']=='' and 'Homebrew: 2' in d['detail'], d" "$J"
+  J=$(mac_pc) || J=''
+  check "nothing outdated is a real zero" \
+        "assert (d['other'],d['source'],d['detail'])==(0,'softwareupdate+brew',''), d" "$J"
+  # brew outdated exits 0 whether or not anything is outdated, so a failure is
+  # an error -- and a zero from it would be one nobody established.
+  J=$(mac_pc NETDASH_MOCK_BREW_OUTDATED_FAIL=1) || J=''
+  check "a failed brew outdated is reported, not counted as zero" \
+        "assert d['source']=='softwareupdate' and 'not counted' in d['detail'], d" "$J"
+  J=$(mac_pc NETDASH_MOCK_BREW_UPDATE_FAIL=1 NETDASH_MOCK_BREW_OUTDATED=curl \
+             NETDASH_MOCK_MTIME=$((NOW - 5*86400))) || J=''
+  check "a failed brew update dates the answer by Homebrew's metadata" \
+        "assert d['checked_at']==$((NOW - 5*86400)) and 'brew update failed' in d['detail'], d" "$J"
+  # The script appends /opt/homebrew/bin and /usr/local/bin to PATH itself, so
+  # on a Mac with Homebrew this case finds the real brew and can fail there.
+  B2=$(mkbin x defaults softwareupdate date stat)
+  J=$(env "PATH=$B2:/usr/bin:/bin" NETDASH_CONF=/dev/null NETDASH_MOCK_TMP="$T" \
+          NETDASH_MOCK_EPOCH=$((NOW - 3600)) \
+          sh "$ROOT/collectors/macos/netdash-patchcheck.sh" --print 2>/dev/null) || J=''
+  check "a Mac without Homebrew reports softwareupdate alone" \
+        "assert (d['other'],d['source'])==(0,'softwareupdate'), d" "$J"
+  rm -rf "$T" "$B" "$B2"
 fi
 
 if want patches-openbsd; then
@@ -1052,6 +1196,8 @@ def _with(cfgvirt, reported):
 def ov(c, r):  return _with(c, r)["virt"]
 def ovs(c, r): return _with(c, r)["virt_source"]
 def ovm(c, r): return _with(c, r)["is_vm"]
+def kind(v):
+    r=_with(None, v); return [r["is_vm"], r["is_container"]]
 
 def s(virt):
     app.CFG["hosts"]={}
@@ -1083,6 +1229,15 @@ print(json.dumps({
   "cfg_beats":  ov("none", "kvm"), "cfg_beats_src": ovs("none", "kvm"),
   # With no override the host's own answer stands, and is labelled as its own.
   "host_wins":  ov(None, "bhyve"), "host_src": ovs(None, "bhyve"),
+  # Jails and containers share a host's kernel: neither bare metal nor a VM.
+  "k_jail": kind("jail"), "k_lxc": kind("lxc"), "k_docker": kind("docker"),
+  "k_none": kind("none"), "k_bhyve": kind("bhyve"), "k_unknown": kind(None),
+  # Config can say so for a container that cannot -- and name its host.
+  "cfg_jail": _with("jail", "none")["is_container"],
+  "parent": (app.CFG.update({"hosts": {"h": {"parent": "mercury"}}}),
+             app.summarize({"host":"h","ts":now,"os":"x","uptime_seconds":1,
+                            "disks":[],"virt":"jail"}, now)["parent"])[1],
+  "no_parent": _with(None, "jail")["parent"],
 }))
 PY
   }
@@ -1106,6 +1261,16 @@ PY
         "assert (d['cfg_beats'],d['cfg_beats_src'])==('none','config'), d" "$J"
   check "without an override the host's own answer stands" \
         "assert (d['host_wins'],d['host_src'])==('bhyve','host'), d" "$J"
+  # [is_vm, is_container]. A container filed as a VM would sit on the VMs tab,
+  # and is_vm false alone would put it on Bare metal -- both wrong.
+  check "a jail or container is neither bare metal nor a VM" \
+        "assert d['k_jail']==d['k_lxc']==d['k_docker']==[False,True], d" "$J"
+  check "while bare metal and VMs are not containers, and unknown stays unknown" \
+        "assert (d['k_none'],d['k_bhyve'],d['k_unknown'])==([False,False],[True,False],[None,None]), d" "$J"
+  check "a config virt of jail makes it one" \
+        "assert d['cfg_jail'] is True, d" "$J"
+  check "the parent host comes from config, and is null without it" \
+        "assert (d['parent'],d['no_parent'])==('mercury',None), d" "$J"
 fi
 
 if want schedule; then
@@ -1940,11 +2105,12 @@ css = open(f"{root}/server/static/style.css").read()
 
 # The down branch of compactRow returns early with its own set of children,
 # so the row no longer matches the seven-column template the other rows use.
-branch = re.search(r"if \(h\.status === 'down'\) \{(.*?)\n  \}", js, re.S).group(1)
+# A stopped jail shares the branch and the template, so the test covers both.
+branch = re.search(r"if \(h\.status === 'down'(?: \|\| h\.status === 'stopped')?\) \{(.*?)\n  \}", js, re.S).group(1)
 # Children on a normal row: dot, icon, name, then whatever the branch adds.
 kids = 3 + len(re.findall(r"a\.appendChild", branch))
 
-tracks = re.search(r"\.crow\.isdown \{[^}]*grid-template-columns:([^;]+);", css).group(1)
+tracks = re.search(r"\.crow\.isdown(?:, \.crow\.isstop)? \{[^}]*grid-template-columns:([^;]+);", css).group(1)
 # Split on top-level spaces, keeping minmax(...) intact.
 cols = re.findall(r"minmax\([^)]*\)|\S+", tracks.strip())
 
@@ -2251,6 +2417,12 @@ if want render; then
     # Both ack rows on one page is what tripped the shadowing.
     check "and with a patch ack and an eol ack on the same page" \
           "assert d['detail_both_ack_rows'] is None, d['detail_both_ack_rows']" "$J"
+    check "the Containers tab holds jails and containers, and Bare metal does not" \
+          "assert d['containers_tab_holds_only_containers'] is None, d['containers_tab_holds_only_containers']" "$J"
+    check "a jail's detail page links to the host it runs on" \
+          "assert d['detail_links_a_jail_to_its_host'] is None, d['detail_links_a_jail_to_its_host']" "$J"
+    check "a stopped jail reads Stopped, on its host, and is not counted down" \
+          "assert d['stopped_jail_is_grey_and_named'] is None, d['stopped_jail_is_grey_and_named']" "$J"
     # What the whole-state ack could not express: python312 acknowledged on its
     # own, and still acknowledged when the rest of the list has moved on.
     check "every pending package gets its own acknowledge link" \
@@ -2265,6 +2437,8 @@ if want render; then
           "assert d['a_counted_but_unnamed_remainder_is_stated_and_not_ackable'] is None, d['a_counted_but_unnamed_remainder_is_stated_and_not_ackable']" "$J"
     check "and nothing on the page asks for an ack on a package it cannot show" \
           "assert d['every_listed_package_is_named_and_separately_ackable'] is None, d['every_listed_package_is_named_and_separately_ackable']" "$J"
+    check "pending packages are listed alphabetically, rows and summary alike" \
+          "assert d['pending_packages_are_listed_alphabetically'] is None, d['pending_packages_are_listed_alphabetically']" "$J"
     check "and for a host that is down" \
           "assert d['detail_down'] is None, d['detail_down']" "$J"
     check "and for one that is away" \
@@ -2341,6 +2515,38 @@ if want render; then
           "assert d['a_reporting_host_is_not_offered_forgetting'] is None, d['a_reporting_host_is_not_offered_forgetting']" "$J"
     check "a down row still names its host" \
           "assert d['down_row_names_the_host'] is None, d['down_row_names_the_host']" "$J"
+    check "a failing service is on its card, and the host itself stays OK" \
+          "assert d['a_failing_service_is_on_its_card_and_the_host_stays_ok'] is None, d['a_failing_service_is_on_its_card_and_the_host_stays_ok']" "$J"
+    check "the header counts failing services, and is not all clear beside one" \
+          "assert d['the_header_counts_failing_services'] is None, d['the_header_counts_failing_services']" "$J"
+    check "the compact row flags the worst service and names each on hover" \
+          "assert d['the_compact_row_flags_the_worst_service_and_names_them'] is None, d['the_compact_row_flags_the_worst_service_and_names_them']" "$J"
+    check "a disabled check stays off the card but is listed on the detail page" \
+          "assert d['a_disabled_check_stays_off_the_card_but_on_the_detail_page'] is None, d['a_disabled_check_stays_off_the_card_but_on_the_detail_page']" "$J"
+    check "a down host's row still carries what its BMC says" \
+          "assert d['a_down_host_row_still_carries_its_bmc'] is None, d['a_down_host_row_still_carries_its_bmc']" "$J"
+    check "the BMC says it is separate hardware, and its unread sensors unknown" \
+          "assert d['the_bmc_says_it_is_separate_and_that_its_sensors_are_unknown'] is None, d['the_bmc_says_it_is_separate_and_that_its_sensors_are_unknown']" "$J"
+    check "a BMC reporting a failed supply is red and names the supply" \
+          "assert d['a_bmc_with_a_failed_supply_is_red_and_names_it'] is None, d['a_bmc_with_a_failed_supply_is_red_and_names_it']" "$J"
+    check "a refused sensor login reads as such, in amber" \
+          "assert d['a_refused_sensor_login_reads_as_such'] is None, d['a_refused_sensor_login_reads_as_such']" "$J"
+    check "every service state has its own word; only fail is red" \
+          "assert d['every_service_state_has_its_own_word'] is None, d['every_service_state_has_its_own_word']" "$J"
+    check "a service transition renders in the event log" \
+          "assert d['a_service_event_renders_in_the_log'] is None, d['a_service_event_renders_in_the_log']" "$J"
+    check "the Services tab lists every check, worst first, disabled last" \
+          "assert d['the_services_tab_lists_every_check_worst_first'] is None, d['the_services_tab_lists_every_check_worst_first']" "$J"
+    check "a service row says where, how, what and since when, and links to its host" \
+          "assert d['a_service_row_says_where_how_and_what'] is None, d['a_service_row_says_where_how_and_what']" "$J"
+    check "a BMC row shows its host's status beside it, never instead of its own" \
+          "assert d['the_bmc_row_keeps_its_host_status_apart'] is None, d['the_bmc_row_keeps_its_host_status_apart']" "$J"
+    check "the Services tab counts checks, not hosts" \
+          "assert d['the_services_tab_counts_checks_not_hosts'] is None, d['the_services_tab_counts_checks_not_hosts']" "$J"
+    check "with no checks configured, it says how to add one" \
+          "assert d['no_checks_configured_says_how_to_add_one'] is None, d['no_checks_configured_says_how_to_add_one']" "$J"
+    check "#/services is a route" \
+          "assert d['the_services_route_is_recognised'] is None, d['the_services_route_is_recognised']" "$J"
   fi
 fi
 
@@ -2486,6 +2692,302 @@ PYEOF
         "assert d['partial']['host']=='palladium' and d['partial']['cpu_pct'] is None, d['partial']" "$J"
 fi
 
+
+# --------------------------------------------------------------- TrueNAS ----
+if want truenas; then
+  echo "truenas (a FreeCORE is polled like CORE, but is not CORE)"
+  J=$(python3 - "$ROOT" <<'PYEOF'
+import json, sys, os
+root = sys.argv[1]
+sys.path.insert(0, os.path.join(root, "server"))
+import truenas
+
+# Two boxes on one API. Only the product name and the update answer differ.
+BOXES = {
+    "nas.example":      {"product": "TrueNAS",  "version": "TrueNAS-13.0-U6.8",
+                         "update": {"status": "AVAILABLE", "version": "13.0-U6.9"},
+                         "boot": ("freenas-boot", 15569256448, 7939703808)},
+    "freecore.example": {"product": "FreeCORE", "version": "FreeCORE-13.3-RELEASE",
+                         "update": {"status": "UNAVAILABLE"},
+                         "boot": ("boot-pool", 20937965568, 4908404736)},
+    "old.example":      {"product": None,       "version": "TrueNAS-13.0-U5",
+                         "update": {"status": "UNAVAILABLE"}},
+}
+
+def fake(cfg, path, method="GET", body=None, timeout=15, auth="bearer"):
+    box = BOXES[cfg["host"]]
+    if path == "/system/product_name":
+        if box["product"] is None:
+            raise truenas.TrueNASError("GET %s -> HTTP 404" % path)
+        return box["product"]
+    if path == "/system/info":
+        return {"physmem": 8 << 30, "uptime_seconds": 1000, "version": box["version"]}
+    if path == "/pool/dataset":
+        return [{"name": "tank", "used": {"parsed": 1}, "available": {"parsed": 3}}]
+    if path == "/update/check_available":
+        return box["update"]
+    # Pool names and byte counts as the two live boxes reported them: mercury
+    # (CORE 13.0-U6.8) and freecore. old.example has no answer, so it stands in
+    # for a box where the call fails.
+    if path == "/boot/get_state" and box.get("boot"):
+        name, size, alloc = box["boot"]
+        return {"name": name, "status": "ONLINE", "healthy": True,
+                "properties": {"size": {"value": "", "rawvalue": str(size), "parsed": size},
+                               "allocated": {"value": "", "rawvalue": str(alloc), "parsed": alloc},
+                               "capacity": {"value": "", "rawvalue": "", "parsed": ""}}}
+    raise truenas.TrueNASError("%s %s -> HTTP 404" % (method, path))
+
+truenas._request = fake
+out = {h: truenas.collect({"host": h, "api_key": "k", "display_name": h.split(".")[0]})
+       for h in BOXES}
+
+sys.path.insert(0, os.path.join(root, "server"))
+import app
+app.CFG = {"truenas": [{"enabled": True, "host": "a"}, {"enabled": False, "host": "b"},
+                       {"enabled": True, "host": "c"}],
+           "hubitat": [{"enabled": True, "host": "h1"}, {"enabled": True, "host": "h2"}],
+           "unifi": {"enabled": True, "host": "g"}}
+cfgs = {n: [c["host"] for c in app.appliance_configs(n)] for n in app.CFG}
+print(json.dumps({"out": out, "cfgs": cfgs}))
+PYEOF
+)
+  check "CORE still names itself TrueNAS CORE, which the EOL override keys on" \
+        "assert d['out']['nas.example']['os']=='TrueNAS CORE 13.0 U6.8', d['out']['nas.example']['os']" "$J"
+  check "FreeCORE is named as itself, not handed CORE's end of life" \
+        "assert d['out']['freecore.example']['os']=='FreeCORE 13.3 RELEASE', d['out']['freecore.example']['os']" "$J"
+  check "a box that cannot say its product name is CORE" \
+        "assert d['out']['old.example']['os']=='TrueNAS CORE 13.0 U5', d['out']['old.example']['os']" "$J"
+  check "each box gets its own update answer, not the first one's" \
+        "assert d['out']['nas.example']['patches']['other']==1 and d['out']['freecore.example']['patches']['other']==0, d['out']" "$J"
+  check "the boot pool is reported beside the data pools, under its own name" \
+        "assert [x['mount'] for x in d['out']['nas.example']['disks']]==['tank','freenas-boot'] and [x['mount'] for x in d['out']['freecore.example']['disks']]==['tank','boot-pool'], d['out']" "$J"
+  check "sized from the zpool's own size and allocation" \
+        "r=d['out']['nas.example']['disks'][1]; assert (r['used_bytes'],r['total_bytes'])==(7939703808,15569256448), r" "$J"
+  check "a box that cannot answer for its boot pool still reports its data pools" \
+        "assert [x['mount'] for x in d['out']['old.example']['disks']]==['tank'], d['out']['old.example']" "$J"
+  check "every enabled entry of a truenas list is polled" \
+        "assert d['cfgs']['truenas']==['a','c'], d['cfgs']" "$J"
+  check "a list is refused where caches are shared, and a single block still works" \
+        "assert d['cfgs']['hubitat']==['h1'] and d['cfgs']['unifi']==['g'], d['cfgs']" "$J"
+fi
+
+if want guests; then
+  echo "guests (jails as their host reports them)"
+  J=$(python3 "$ROOT/tests/guests.py" "$ROOT") || J=''
+  check "a TrueNAS jail is listed with its parent, its release and its address" \
+        "assert d['plex'][1:]==['mercury',True,'FreeBSD 13.1-RELEASE-p9'] and d['plex_addr']==['10.0.0.133','parent'], d" "$J"
+  check "running and answering, with no readings to judge, reads ok -- not n/a" \
+        "assert d['plex'][0]=='ok', d['plex']" "$J"
+  check "a stopped jail is stopped, never down" \
+        "assert d['jellyfin']==['stopped','stopped',None], d['jellyfin']" "$J"
+  check "two hosts' jails of one name: the first keeps it, the second is name.parent" \
+        "assert d['transmission']==['stopped','mercury'] and d['cerium_tx']==['ok','cerium',2.5], d" "$J"
+  check "and the qualified name sticks, even while the first holder is quiet" \
+        "assert d['tx_name_stable'] is True, d" "$J"
+  check "a jail with its own collector gets no second, emptier sample from its parent" \
+        "assert d['ffc_samples']==[['push',1]] and d['ffc']==['ok','freecore',0.1], d" "$J"
+  check "malformed entries and unroutable names are dropped, not stored" \
+        "assert d['junk']==[], d['junk']" "$J"
+  check "a stopped jail stays stopped when its parent goes quiet, rather than red" \
+        "assert d['unvouched']=='stopped', d['unvouched']" "$J"
+  check "a jail missing from its parent's latest list reads as stopped" \
+        "assert d['absent']==['stopped','absent'], d['absent']" "$J"
+  check "a running jail whose address stops answering is down, whatever its parent says" \
+        "assert d['probe_down']==['down','unreachable'], d['probe_down']" "$J"
+  check "while a stopped jail's failed probe changes nothing" \
+        "assert d['stopped_probe']=='stopped', d['stopped_probe']" "$J"
+  check "forgetting a jail removes its parent's record of it too" \
+        "assert d['forgot'] is None, d['forgot']" "$J"
+
+  # The TrueNAS side: iocage's own field formats, as mercury returns them.
+  J=$(python3 - "$ROOT" <<'PYEOF'
+import json, sys, os, time
+sys.path.insert(0, os.path.join(sys.argv[1], "server"))
+import truenas
+addr = truenas._jail_address
+info = {"timezone": "America/Chicago", "uptime_seconds": 8560028}
+now = time.time()
+started = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - 3600))
+ROWS = [
+    {"id": "plexserver", "host_hostname": "plexserver", "state": "up", "release": "13.1-RELEASE-p9",
+     "ip4_addr": "epair0b|10.0.0.133", "boot": 1, "last_started": "2026-07-15 09:02:00"},
+    {"id": "jellyfin", "host_hostname": "jellyfin", "state": "down", "release": "13.2-RELEASE-p12",
+     "ip4_addr": "DHCP (not running)", "boot": 0, "last_started": "2025-12-20 13:59:02"},
+    {"id": "noname", "host_hostname": "", "state": "up", "release": None, "ip4_addr": "none", "boot": 0},
+]
+def fake(cfg, path, method="GET", body=None, timeout=15, auth="bearer"):
+    if path == "/jail":
+        return ROWS
+    raise truenas.TrueNASError("404")
+truenas._request = fake
+js = truenas._jails({"host": "nas"}, info)
+os.environ["TZ"] = "America/Chicago"; time.tzset()
+up = truenas._jail_uptime(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - 3600)), info, now)
+print(json.dumps({
+  "addr": [addr("epair0b|10.0.0.133"), addr("vnet0|10.0.0.5/24,lo0|127.0.0.1"),
+           addr("lo0|127.0.0.1,em0|192.168.1.9/24"), addr("DHCP (not running)"), addr("none"), addr(None)],
+  "jails": js, "up": up,
+  "capped": truenas._jail_uptime("2025-01-01 00:00:00", info, now),
+  "nozone": truenas._jail_uptime("2026-07-15 09:02:00", {}, now),
+}))
+PYEOF
+) || J=''
+  check "iocage's address formats parse to the first real address, or none" \
+        "assert d['addr']==['10.0.0.133','10.0.0.5','192.168.1.9',None,None,None], d['addr']" "$J"
+  check "an up jail is running with its address, a down one stopped with none" \
+        "assert [[j['host'],j['state'],j['address'],j['boot'],j['os']] for j in d['jails'][:2]]==[['plexserver','running','10.0.0.133',True,'FreeBSD 13.1-RELEASE-p9'],['jellyfin','stopped',None,False,'FreeBSD 13.2-RELEASE-p12']], d['jails']" "$J"
+  check "no CPU or memory is claimed -- the API has none per jail" \
+        "assert all('cpu_pct' not in j and 'mem_used_bytes' not in j for j in d['jails']), d['jails']" "$J"
+  check "a jail with no hostname is listed under its iocage name" \
+        "assert d['jails'][2]['host']=='noname' and d['jails'][2]['address'] is None, d['jails'][2]" "$J"
+  check "last_started is read in the NAS's timezone" \
+        "assert abs(d['up']-3600) <= 2, d['up']" "$J"
+  check "but never older than the NAS's own boot, and unknown without a timezone" \
+        "assert d['capped']==8560028 and d['nozone'] is None, d" "$J"
+fi
+
+# ------------------------------------------------------- service checks ----
+if want services; then
+  echo "services (an answering host is not an answering application)"
+  J=$(python3 "$ROOT/tests/services.py" "$ROOT" 2>/dev/null) || J=''
+  check "Home Assistant's frontend answering as itself is ok" \
+        "assert d['ha_ok'][0]=='ok', d['ha_ok']" "$J"
+  # A 401 from /api/ is a failed login to Home Assistant, and ip_ban counts
+  # them. Without a token, nothing but the public manifest is ever asked for.
+  check "and without a token nothing under /api/ is ever requested" \
+        "assert d['ha_untokened_paths']==['/manifest.json'], d['ha_untokened_paths']" "$J"
+  check "a page that is not Home Assistant's is a failure, not a pass" \
+        "assert d['ha_not_json'][0]==d['ha_other_app'][0]==d['ha_502'][0]=='fail', d" "$J"
+  check "with a token, the core's own RUNNING is what counts" \
+        "assert d['ha_token_ok'][:2]==['ok','core reports RUNNING'] and d['ha_token_header']==[True], d" "$J"
+  check "and a core that is up but not RUNNING, or in recovery, fails" \
+        "assert d['ha_not_running'][0]==d['ha_recovery'][0]=='fail', d" "$J"
+  check "a rejected token is auth, not fail -- and is not sent a second time" \
+        "a=d['ha_auth']; assert a[0][0]==a[1][0]=='auth' and a[2]==1, a" "$J"
+  check "until the token file changes" \
+        "assert d['ha_auth_fixed'][0]=='ok', d['ha_auth_fixed']" "$J"
+  check "a missing or empty token file is configuration, not the service" \
+        "assert d['ha_no_token_file'][0]==d['ha_empty_token'][0]=='config', d" "$J"
+  check "Plex /identity answering with a MediaContainer is ok, with its version" \
+        "assert d['plex_ok'][0]=='ok' and d['plex_ok'][2]['version'].startswith('1.41'), d['plex_ok']" "$J"
+  check "a 200 that is not a MediaContainer is a failure" \
+        "assert d['plex_wrong_body'][0]=='fail' and d['huge'][0]=='fail', d" "$J"
+  check "a pinned machineIdentifier catches a different Plex answering" \
+        "assert d['plex_id_match'][0]=='ok' and d['plex_id_mismatch'][0]=='fail', d" "$J"
+  check "401 is auth, 503 is fail" \
+        "assert (d['plex_401'][0],d['plex_503'][0])==('auth','fail'), d" "$J"
+  check "Transmission's 409 session dance ends in session-stats" \
+        "assert d['tx_ok'][0]=='ok' and d['tx_ok'][2]['torrentCount']==0 and d['tx_first_round_requests']==2, d" "$J"
+  check "and the session id is kept, so a round is one request after the first" \
+        "assert d['tx_sid_reused_requests']==1 and d['tx_methods']==['POST'], d" "$J"
+  check "an RPC that wants a password says so, as auth" \
+        "assert d['tx_needs_auth'][0]=='auth' and 'password_file' in d['tx_needs_auth'][1], d" "$J"
+  check "the right password works; a wrong one is refused once, then not resent" \
+        "a=d['tx_auth_bad']; assert d['tx_auth_ok'][0]=='ok' and a[0][0]==a[1][0]=='auth' and a[2]==1, d" "$J"
+  check "rpc-whitelist is auth; a non-success result and a 409 without an id fail" \
+        "assert (d['tx_whitelist'][0],d['tx_result'][0],d['tx_409_no_sid'][0])==('auth','fail','fail'), d" "$J"
+  check "a hung server is a failure inside the timeout" \
+        "assert d['timeout'][0]=='fail' and d['timeout_elapsed'] < 2.5, d" "$J"
+  # The bug the first draft had: read(n) waits for all n bytes, and a byte
+  # every 200ms never trips a per-recv timeout. It took twenty seconds.
+  check "and so is one that dribbles its reply a byte at a time" \
+        "assert d['trickle'][0]=='fail' and d['trickle_elapsed'] < 2.5, d" "$J"
+  check "refused is fail; a name that does not resolve is this server's error" \
+        "assert d['refused'][0]=='fail' and d['unresolvable'][0]=='error', d" "$J"
+  check "a check is off unless enabled is exactly true" \
+        "assert d['cfg'][0]==[False,None], d['cfg']" "$J"
+  check "each malformed entry says what is wrong with it" \
+        "e=[x[1] for x in d['cfg']]; assert e[2]=='plex needs a url' and 'credentials' in e[3] and 'unknown kind' in e[4] and 'duplicate' in e[6] and 'address' in e[7] and 'password_file' in e[8] and '64 hex' in e[9], e" "$J"
+  check "each check states its address, ports and probe, defaults included" \
+        "assert d['endpoints']==[['10.0.0.133',['32400/tcp'],'GET /identity'],['ha.example',['443/tcp'],'GET /manifest.json'],['10.0.0.152',['9091/tcp'],'RPC session-stats'],['10.0.0.219',['623/udp','443/tcp'],'IPMI ping + HTTPS'],['10.0.0.220',['623/udp'],'IPMI ping + HTTPS + sensors'],['10.0.0.113',['8123/tcp'],'GET /api/config']], d['endpoints']" "$J"
+  check "intervals and timeouts are clamped, and no block means no checks" \
+        "assert d['cfg_clamped']==[15,30] and d['cfg_none']==[[],[],[]], d" "$J"
+  check "a self-signed certificate is refused unless pinned or CA'd" \
+        "t=d['tls']; assert t['skipped'] or (t['unpinned'][0]=='config' and t['pinned'][0]=='ok' and t['ca_file'][0]=='ok'), t" "$J"
+  check "a certificate that does not match its pin is refused" \
+        "t=d['tls']; assert t['skipped'] or (t['wrong_pin'][0]=='config' and 'pinned' in t['wrong_pin'][1]), t" "$J"
+  check "and there is no setting that turns verification off" \
+        "t=d['tls']; assert t['skipped'] or t['verify_false_ignored'][0]=='config', t" "$J"
+  check "one failure is held as unknown; the second is fail; auth is shown at once" \
+        "assert [x[0] for x in d['fold']]==['ok','unknown','fail','ok','auth'] and '1 of 2' in d['fold'][1][2], d['fold']" "$J"
+  check "a verdict nobody has refreshed reads stale, not as its last answer" \
+        "assert d['view_stale'][:2]==['stale','warning'], d['view_stale']" "$J"
+  check "disabled, not yet checked and misconfigured are each their own state" \
+        "assert (d['view_disabled'][0],d['view_pending'][0],d['view_config'][0])==('disabled','pending','config'), d" "$J"
+  check "an old config with no services block changes nothing" \
+        "assert d['old_config']==[[],None,'ok'], d['old_config']" "$J"
+  check "a failing service is on its host's card, and the host stays ok" \
+        "a=d['attached']; assert a[0]=='ok' and a[1]=='critical' and a[2][0]==['Plex','fail','critical'], a" "$J"
+  check "a disabled check is listed but does not count toward severity" \
+        "assert d['attached'][2][1]==['Transmission','disabled','unknown'], d['attached']" "$J"
+  check "checks attach to their own host only" \
+        "assert d['other_host']==['Home Assistant'] and d['unattached']==[], d" "$J"
+  check "no token, and no token path, ever reaches the API" \
+        "assert d['api_has_secret']==[False,False,False], d['api_has_secret']" "$J"
+  check "settled changes are logged; a held single failure is not" \
+        "assert [e[1:3] for e in d['events']]==[['ok','fail'],['fail','ok']], d['events']" "$J"
+  check "and the log seeds the next start, so a recovery is never lost" \
+        "assert list(d['events_seed'].values())==['ok'], d['events_seed']" "$J"
+  check "a hung check holds up neither the API nor any other check" \
+        "assert d['api_while_hung_s'] < 0.5 and d['api_while_hung']==['pending'] and d['other_check_done']==['ok'], d" "$J"
+  # The bug the first deploy had: called inline, start_service_checks waited
+  # on the database lock behind the roller's first pass, and the server did
+  # not listen for 67 seconds after a restart.
+  J=$(python3 - "$ROOT" <<'PYEOF'
+import ast, json, sys
+tree = ast.parse(open(sys.argv[1] + "/server/app.py").read())
+main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+inline = [n for n in ast.walk(main) if isinstance(n, ast.Call)
+          and getattr(n.func, "id", None) == "start_service_checks"]
+threaded = [n for n in ast.walk(main) if isinstance(n, ast.Call)
+            and any(getattr(k.value, "id", None) == "start_service_checks" for k in n.keywords)]
+print(json.dumps({"inline": len(inline), "threaded": len(threaded)}))
+PYEOF
+) || J=''
+  check "starting the checks never delays the server listening" \
+        "assert d=={'inline':0,'threaded':1}, d" "$J"
+fi
+
+if want ipmi; then
+  echo "ipmi (a management controller is checked whether or not its OS is up)"
+  J=$(python3 "$ROOT/tests/ipmi.py" "$ROOT" 2>/dev/null) || J=''
+  check "the pre-session request is Get Channel Auth Capabilities, nothing more" \
+        "assert d['request']=='0600ff07000000000000000000092018c88100388e02b7', d['request']" "$J"
+  check "the real BMC's reply parses, IPMI 2.0 and all" \
+        "assert d['parsed']=={'completion_code':0,'channel':1,'ipmi20':True} and d['garbage'] is None, d" "$J"
+  check "an answer is up; silence, a closed port and a stranger are not" \
+        "assert d['ping_ok'][0] is True and not d['ping_silent'][0] and not d['ping_closed'][0] and not d['ping_not_ipmi'][0], d" "$J"
+  check "and silence ends at the timeout" \
+        "assert d['ping_silent_s'] < 2, d['ping_silent_s']" "$J"
+  check "without credentials the BMC is reachable and its sensors are unknown -- not ok" \
+        "r=d['reach_only']; assert r[0]=='ok' and r[2]['hardware']['status']=='unknown' and 'credentials' in r[2]['hardware']['reason'], r" "$J"
+  check "and a reachability-only BMC stays green: that was the choice made" \
+        "assert d['no_creds_view']==['ok','ok','unknown'], d['no_creds_view']" "$J"
+  check "a BMC that answers nothing fails" \
+        "assert d['not_answering'][0]=='fail', d['not_answering']" "$J"
+  check "sensors classify by status column and by discrete event text" \
+        "s={x[0]:x[2] for x in d['sensors']}; assert s['CPU Temp']=='ok' and s['DIMMA1 Temp']=='warning' and s['FAN4']=='critical' and s['PS2 Status']=='critical' and s['PS1 Status']=='ok', s" "$J"
+  check "an unpopulated fan header is no reading, not a failed fan" \
+        "s={x[0]:x[2] for x in d['sensors']}; assert s['FAN3'] is None and s['Chassis Intru'] is None, s" "$J"
+  check "the verdict is the worst sensor, chassis faults included" \
+        "h=d['hw']; assert h[0]=='critical' and h[1]==['Cooling/Fan Fault','DIMMA1 Temp','FAN4','PS2 Status'] and h[2]==86.0 and h[3]==2 and h[4]=='on', h" "$J"
+  check "a healthy board is ok; one with nothing readable is unknown" \
+        "assert d['hw_ok']=='ok' and d['hw_empty']['status']=='unknown' and d['chassis_junk'] is None, d" "$J"
+  check "a reachable BMC with a failed supply is a critical row" \
+        "assert d['with_creds'][2]=='critical' and d['view_hw']==['ok','critical','critical'], d" "$J"
+  check "ipmitool runs at USER privilege with the password read from its file" \
+        "a=d['argv']; assert a['user_privilege'] and a['password_from_file'] and a['password_absent'], a" "$J"
+  check "and only ever asks for sdr elist and chassis status" \
+        "assert d['argv']['only_reads']==['chassis status','sdr elist'], d['argv']" "$J"
+  check "sensors are read on their own slower clock" \
+        "assert d['sensor_reads_in_two_rounds']==2, d['sensor_reads_in_two_rounds']" "$J"
+  check "a refused BMC login is auth, latched against lockout, and shown amber" \
+        "a=d['denied']; assert a[1]=='auth' and 'not retried' in a[2] and a[3]==1 and d['denied_view']==['ok','warning'], d" "$J"
+  check "a hung ipmitool is cut off; a missing one or password file says so" \
+        "assert d['slow'][1]['status']=='unknown' and d['slow'][2] <= 7 and 'not installed' in d['no_tool']['reason'] and d['no_pw_file']['error']=='config', d" "$J"
+  check "the BMC password appears nowhere in what the check reports" \
+        "assert d['secret_in_output'] is False, d" "$J"
+fi
 
 # ----------------------------------------------------------------- UniFi ----
 if want unifi; then

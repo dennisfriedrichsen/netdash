@@ -1,0 +1,7 @@
+#!/bin/sh
+# Mock jls. Only `jls -h jid name host.hostname` (collector) and
+# `jls -h jid name` (patch check) are used: a header line, then one row per
+# running jail from MOCK_JLS ("jid name hostname", newline-separated).
+echo "jid name host.hostname"
+[ -n "${MOCK_JLS:-}" ] && printf '%s\n' "$MOCK_JLS"
+exit 0

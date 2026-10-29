@@ -201,10 +201,15 @@ CREATE INDEX IF NOT EXISTS idx_events_host ON events(host, ts DESC);
 -- The host reads as acknowledged only when every pending item is acked, so a
 -- newly vulnerable package still turns the badge red on its own -- without
 -- disturbing the acks already made around it.
+--
+-- missing_since is when prune() first found the package gone from the pending
+-- list, on the one source that gets a grace period for it -- see ACK_GRACE.
+-- NULL while the package is pending, and on every other source.
 CREATE TABLE IF NOT EXISTS patch_acks (
-    host      TEXT    NOT NULL,
-    package   TEXT    NOT NULL,
-    acked_at  INTEGER NOT NULL,
+    host          TEXT    NOT NULL,
+    package       TEXT    NOT NULL,
+    acked_at      INTEGER NOT NULL,
+    missing_since INTEGER,
     PRIMARY KEY (host, package)
 );
 
@@ -256,6 +261,32 @@ CREATE TABLE IF NOT EXISTS eol_acks (
     eol_date  TEXT    NOT NULL,
     acked_at  INTEGER NOT NULL
 );
+
+-- Jails as their host reports them: which machine runs each one, and whether
+-- it is running. Written by the parent on every report -- a FreeBSD collector
+-- from jls, a TrueNAS box from its jail list -- and read by summarize(), which
+-- is what turns a stopped jail grey instead of red.
+--
+-- Its own table rather than columns on samples, because it outlives them in
+-- both directions. A jail with its own collector keeps pushing its own
+-- samples, and the parent's report must still say where it runs without
+-- writing a second, emptier sample beside them. And a jail that is stopped
+-- has no samples worth taking at all; what is known about it is this row.
+--
+-- state is "running", "stopped", or "absent": in the parent's previous report
+-- and not in this one. On a plain FreeBSD host jls only lists running jails,
+-- so a jail that stops simply vanishes from the report -- absent is how that
+-- reads as stopped rather than as a jail that went silent for no reason.
+-- seen_at is when the parent last said anything about it; a parent that goes
+-- quiet stops vouching for its jails, and they fall back to their own samples.
+CREATE TABLE IF NOT EXISTS guests (
+    host     TEXT    PRIMARY KEY,
+    parent   TEXT    NOT NULL,
+    state    TEXT    NOT NULL,
+    boot     INTEGER,
+    address  TEXT,
+    seen_at  INTEGER NOT NULL
+);
 """
 
 
@@ -263,6 +294,9 @@ CREATE TABLE IF NOT EXISTS eol_acks (
 # does nothing on an existing database, so a deploy onto a live box would keep
 # the old table and every insert would fail on the unknown column.
 _ADDED_COLUMNS = {
+    "patch_acks": [
+        ("missing_since", "INTEGER"),
+    ],
     "samples": [
         ("patch_security", "INTEGER"),
         ("patch_other", "INTEGER"),
@@ -603,6 +637,22 @@ def insert_sample(conn, payload, source="push", peer=None):
         return sid
 
 
+# How long an acknowledged macOS update may be missing from the pending list
+# before its ack is dropped. softwareupdate's cached list can come up empty for
+# a day and then offer the same update again: argon reported
+# "macOS 27.0.1-26A5434", then nothing, then the same label a day later, and
+# the prune in between had deleted the ack that was made against it.
+#
+# Only macOS, because only there does the reappearance of a name prove nothing
+# changed. The label carries the version and the build, so the same label is
+# the same update that was reviewed. apt and dnf report bare names -- openssl,
+# not openssl at a version -- and a fresh openssl advisory inside the window
+# would come back already silenced. The BSDs name the installed version too,
+# and could join this list if their audits turn out to flicker the same way.
+ACK_GRACE = 3 * 86400
+GRACE_SOURCES = ("softwareupdate", "softwareupdate+brew")
+
+
 def prune(conn, retention_hours, rollup_days=None, event_days=None):
     """Drop raw samples past the window, and rollups past a much longer one.
 
@@ -641,18 +691,32 @@ def prune(conn, retention_hours, rollup_days=None, event_days=None):
         # reporting patches has not told us anything about what is pending, and
         # dropping its acks on that silence would un-silence the lot the moment
         # it came back.
+        #
+        # Except on macOS, where an ack outlives a short absence. See ACK_GRACE.
+        now = int(time.time())
         for s in latest_per_host(conn):
             if s["patch_checked_at"] is None:
                 continue
-            keep = patch_pending(conn, s["host"])
-            if keep:
-                conn.execute(
-                    "DELETE FROM patch_acks WHERE host=? AND package NOT IN (%s)"
-                    % ",".join("?" * len(keep)),
-                    [s["host"]] + keep,
-                )
-            else:
-                conn.execute("DELETE FROM patch_acks WHERE host=?", (s["host"],))
+            host = s["host"]
+            keep = set(patch_pending(conn, host))
+            gone = [r["package"] for r in conn.execute(
+                "SELECT package FROM patch_acks WHERE host=?", (host,))
+                if r["package"] not in keep]
+            if s["patch_source"] not in GRACE_SOURCES:
+                conn.executemany("DELETE FROM patch_acks WHERE host=? AND package=?",
+                                 [(host, p) for p in gone])
+                continue
+            # Back on the list: the absence was the blip, and the clock resets.
+            conn.executemany(
+                "UPDATE patch_acks SET missing_since=NULL WHERE host=? AND package=?",
+                [(host, p) for p in keep])
+            conn.executemany(
+                """UPDATE patch_acks SET missing_since=? WHERE host=? AND package=?
+                     AND missing_since IS NULL""",
+                [(now, host, p) for p in gone])
+            conn.executemany(
+                "DELETE FROM patch_acks WHERE host=? AND package=? AND missing_since<=?",
+                [(host, p, now - ACK_GRACE) for p in gone])
         conn.execute(
             "DELETE FROM eol_acks WHERE host NOT IN (SELECT DISTINCT host FROM samples)"
         )
@@ -816,6 +880,19 @@ def last_states(conn):
         return {r["host"]: r["to_state"] for r in rows}
 
 
+def last_service_states(conn):
+    """The most recent to_state per service check, keyed by event kind
+    ("service:<id>"). The same job last_states does for hosts: a restart must
+    not forget that Plex was down, or its recovery would never be logged."""
+    with _DB:
+        rows = conn.execute(
+            """SELECT kind, to_state FROM events e
+                WHERE kind LIKE 'service:%' AND id = (SELECT MAX(id) FROM events
+                                                      WHERE kind=e.kind)"""
+        ).fetchall()
+        return {r["kind"]: r["to_state"] for r in rows}
+
+
 # Cached because latest_per_host runs in four background loops and the answer
 # cannot change while the process is up -- the schema is settled by connect().
 _SAMPLE_COLS = None
@@ -933,10 +1010,66 @@ def forget_host(conn, host):
                 "DELETE FROM %s WHERE sample_id IN "
                 "(SELECT id FROM samples WHERE host=?)" % t, (host,))
         for t in ("samples", "rollups", "disk_rollups", "patch_acks",
-                  "patch_pending", "eol_acks", "hosts"):
+                  "patch_pending", "eol_acks", "guests", "hosts"):
             conn.execute("DELETE FROM %s WHERE host=?" % t, (host,))
         conn.commit()
     return bool(known)
+
+
+def record_guests(conn, parent, entries, ts):
+    """Store what a parent just said about its jails.
+
+    entries: [{"host", "state", "boot", "address"}], already validated. Every
+    jail this parent reported before and did not mention now becomes "absent"
+    -- keeping its address and boot flag, which are still the last known ones.
+    A jail that moved to another parent is that parent's now; the old one's
+    silence about it is not news.
+    """
+    with _DB:
+        named = set()
+        for e in entries:
+            named.add(e["host"])
+            conn.execute(
+                """INSERT INTO guests (host, parent, state, boot, address, seen_at)
+                     VALUES (?,?,?,?,?,?)
+                   ON CONFLICT(host) DO UPDATE SET
+                     parent = excluded.parent, state = excluded.state,
+                     boot = excluded.boot,
+                     address = COALESCE(excluded.address, guests.address),
+                     seen_at = excluded.seen_at""",
+                (e["host"], parent, e["state"],
+                 None if e.get("boot") is None else int(bool(e["boot"])),
+                 e.get("address"), int(ts)),
+            )
+        for r in conn.execute("SELECT host FROM guests WHERE parent=?", (parent,)).fetchall():
+            if r["host"] not in named:
+                conn.execute("UPDATE guests SET state='absent', seen_at=? WHERE host=?",
+                             (int(ts), r["host"]))
+        conn.commit()
+
+
+def host_row(conn, host):
+    """The register entry for one host -- its last source and last_seen -- plus
+    the virt its newest sample reported, or None if the host is unknown."""
+    with _DB:
+        r = conn.execute(
+            """SELECT h.*, (SELECT virt FROM samples WHERE host = h.host
+                             ORDER BY ts DESC LIMIT 1) AS virt
+                 FROM hosts h WHERE h.host=?""", (host,)).fetchone()
+        return dict(r) if r else None
+
+
+def guest(conn, host):
+    """What a parent last said about this jail, or None if none ever has."""
+    with _DB:
+        r = conn.execute("SELECT * FROM guests WHERE host=?", (host,)).fetchone()
+        return dict(r) if r else None
+
+
+def guests(conn):
+    """{host: row} for every jail some parent has reported."""
+    with _DB:
+        return {r["host"]: dict(r) for r in conn.execute("SELECT * FROM guests")}
 
 
 def history(conn, host, since_seconds):
@@ -973,7 +1106,8 @@ def ack_patch(conn, host, packages, now):
     with _DB:
         conn.executemany(
             """INSERT INTO patch_acks (host, package, acked_at) VALUES (?,?,?)
-               ON CONFLICT(host, package) DO UPDATE SET acked_at=excluded.acked_at""",
+               ON CONFLICT(host, package) DO UPDATE SET
+                 acked_at=excluded.acked_at, missing_since=NULL""",
             [(host, p, now) for p in packages],
         )
         conn.commit()

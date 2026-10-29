@@ -5,7 +5,7 @@
 set -eu
 
 # Kept in sync with the repository VERSION file by tests/run.sh.
-NETDASH_VERSION="0.4.1"
+NETDASH_VERSION="0.5.0"
 
 MODE="${1:-}"
 
@@ -32,6 +32,14 @@ NETDASH_URL="${NETDASH_URL:-}"
 NETDASH_TOKEN="${NETDASH_TOKEN:-}"
 HOST="${NETDASH_HOSTNAME:-$(hostname -s 2>/dev/null || hostname)}"
 
+# ---- Jail ----
+# A FreeBSD jail runs on its host's kernel, so every kernel counter read below
+# -- cp_time, physmem, the page queues, boottime, vm_guest -- describes the
+# HOST. Reported as-is, a jail on a TrueNAS box shows that box's CPU, memory
+# and uptime under the jail's name. security.jail.jailed is 1 only inside one;
+# the other BSDs have no such sysctl and read as not jailed.
+JAILED=$(sysctl -n security.jail.jailed 2>/dev/null || true)
+
 # ---- CPU: two samples of kern.cp_time ----
 # Three different renderings of the same counters:
 #   FreeBSD  1000 50 500 20 8430                     (5, space-separated)
@@ -43,6 +51,17 @@ HOST="${NETDASH_HOSTNAME:-$(hostname -s 2>/dev/null || hostname)}"
 # quietly depending on idle staying the last field.
 # Idle is last on all three, so sum every field and take the last as idle.
 cp_time() { sysctl -n kern.cp_time 2>/dev/null | tr -cd '0-9 ,\n' | tr ',' ' '; }
+if [ "$JAILED" = 1 ]; then
+  # Inside a jail ps sees only the jail's own processes, so their summed %cpu
+  # is the jail's share. ps counts one fully busy core as 100, so divide by the
+  # core count to land on the same 0-100 scale as cp_time. %cpu is ps's
+  # decaying average rather than a one-second delta: it lags a spike by a few
+  # seconds, which is the price of not needing racct on the host.
+  NCPU=$(sysctl -n hw.ncpu 2>/dev/null || true)
+  CPU=$(ps -ax -o %cpu= 2>/dev/null | awk -v n="${NCPU:-0}" '
+    { s += $1 } END { if (n+0 <= 0) { print "null"; exit }
+                      p=s/n; if(p>100)p=100; printf "%.1f", p }')
+else
 S1=$(cp_time); sleep 1; S2=$(cp_time)
 CPU=$(awk -v a="$S1" -v b="$S2" 'BEGIN{
   na=split(a,A," "); nb=split(b,B," ")
@@ -53,6 +72,7 @@ CPU=$(awk -v a="$S1" -v b="$S2" 'BEGIN{
   p=100*(dt-di)/dt; if(p<0)p=0; if(p>100)p=100
   printf "%.1f", p
 }')
+fi
 
 # ---- Memory ----
 # Reported as "not reclaimable": free, inactive and laundry pages are available
@@ -72,6 +92,14 @@ sysctl_n() { sysctl -n "$1" 2>/dev/null || true; }
 case "$OSNAME" in
 FreeBSD)
   MEM_TOTAL=$(sysctl_n hw.physmem)
+  if [ "$JAILED" = 1 ]; then
+    # The page queues are the host's. The jail's footprint is its processes'
+    # resident memory, against the host's RAM -- a jail has no memory size of
+    # its own unless rctl caps it. Shared libraries are counted once per
+    # process that maps them, so this reads a little high, never low.
+    MEM_USED=$(ps -ax -o rss= 2>/dev/null | awk '{ s += $1 } END { printf "%.0f", s*1024 }')
+    [ -n "$MEM_TOTAL" ] || MEM_TOTAL=null
+  else
   PS=$(sysctl_n vm.stats.vm.v_page_size)
   FREE=$(sysctl_n vm.stats.vm.v_free_count)
   INACT=$(sysctl_n vm.stats.vm.v_inactive_count)
@@ -83,6 +111,7 @@ FreeBSD)
   else
     MEM_TOTAL="${MEM_TOTAL:-null}"
   fi
+  fi
   ;;
 OpenBSD|NetBSD)
   # OpenBSD refuses to expose vm.uvmexp through sysctl -- it answers "use vmstat
@@ -92,18 +121,29 @@ OpenBSD|NetBSD)
   #
   # Field-exact matching matters here: a loose /pages free/ also matches
   # "66725 pages freed by pagedaemon", which is a lifetime counter, not a gauge.
+  #
+  # What counts as reclaimable differs. NetBSD keeps file cache on the active
+  # queue as well as the inactive one, so free + inactive counted most of the
+  # cache as used: an idle 512 MiB host with no swap in use read 77%, and 98%
+  # whenever the pagedaemon happened to have drained the inactive queue. NetBSD
+  # reports the whole cache as "cached file pages", so subtract that in place
+  # of inactive -- not as well as it: the inactive pages overlap the file
+  # pages, and subtracting both would count part of the cache twice. OpenBSD
+  # has no such counter and keeps free + inactive (issue #4).
   MEM_TOTAL=$(sysctl_n hw.physmem64); [ -n "$MEM_TOTAL" ] || MEM_TOTAL=$(sysctl_n hw.physmem)
   eval "$(vmstat -s 2>/dev/null | awk '
     $2=="bytes" && $3=="per" && $4=="page"  { ps=$1 }
     $2=="pages" && $3=="free"     && NF==3  { free=$1 }
     $2=="pages" && $3=="inactive" && NF==3  { inact=$1 }
-    END { printf "VM_PS=%.0f\nVM_FREE=%.0f\nVM_INACT=%.0f\n", ps, free, inact }')"
+    $2=="cached" && $3=="file" && $4=="pages" && NF==4 { file=$1; hasfile=1 }
+    END { printf "VM_PS=%.0f\nVM_FREE=%.0f\nVM_INACT=%.0f\nVM_FILE=%s\n", ps, free, inact, (hasfile ? sprintf("%.0f", file) : "") }')"
   VM_PS=${VM_PS:-0}; VM_FREE=${VM_FREE:-0}; VM_INACT=${VM_INACT:-0}
+  VM_RECLAIM=${VM_FILE:-$VM_INACT}
   if [ -n "$MEM_TOTAL" ] && [ "$VM_PS" -gt 0 ] && [ "$VM_FREE" -gt 0 ]; then
     # Same shape as the FreeBSD formula: physical total minus what the system
-    # can reclaim (free + inactive), so every host means the same thing.
-    MEM_USED=$(awk -v t="$MEM_TOTAL" -v ps="$VM_PS" -v f="$VM_FREE" -v i="$VM_INACT" 'BEGIN{
-      u = t - (f+i)*ps; if (u<0) u=0; printf "%.0f", u }')
+    # can reclaim, so every host means the same thing.
+    MEM_USED=$(awk -v t="$MEM_TOTAL" -v ps="$VM_PS" -v f="$VM_FREE" -v r="$VM_RECLAIM" 'BEGIN{
+      u = t - (f+r)*ps; if (u<0) u=0; printf "%.0f", u }')
   else
     MEM_TOTAL="${MEM_TOTAL:-null}"
   fi
@@ -133,9 +173,11 @@ if command -v zfs >/dev/null 2>&1; then
 fi
 
 if [ "$OSNAME" = "FreeBSD" ]; then
-  OTHER=$(df -k -T -l 2>/dev/null | awk '
+  # In a jail, / is reported on its own below, whatever its filesystem.
+  OTHER=$(df -k -T -l 2>/dev/null | awk -v jailed="$JAILED" '
     NR>1 && $3+0 > 0 && $2 !~ /^(zfs|devfs|procfs|fdescfs|tmpfs|linprocfs|linsysfs|nullfs|cd9660|fusefs|nfs|nfs4|smbfs|cifs)$/ {
       mp=$7; for(i=8;i<=NF;i++) mp=mp" "$i
+      if (jailed == 1 && mp == "/") next
       gsub(/\\/,"\\\\",mp); gsub(/"/,"\\\"",mp)
       printf "%s{\"mount\":\"%s\",\"used_bytes\":%.0f,\"total_bytes\":%.0f}", (n++?",":""), mp, $4*1024, $3*1024
     }')
@@ -148,6 +190,18 @@ else
     }')
 fi
 
+# A jail's root is usually a ZFS dataset, which the filter above drops in favour
+# of whole pools -- and a jail cannot see the pools. Its root is the one disk
+# that is its own, so it is reported directly. Datasets share their pool's free
+# space, so this is the host pool's fullness as seen from the jail. nullfs
+# mounts stay excluded: they are the host's storage lent in, not the jail's.
+if [ "$JAILED" = 1 ]; then
+  ZPOOLS=""
+  JROOT=$(df -k / 2>/dev/null | awk '
+    NR==2 && $2+0 > 0 { printf "{\"mount\":\"/\",\"used_bytes\":%.0f,\"total_bytes\":%.0f}", $3*1024, ($3+$4)*1024 }')
+  if [ -n "$JROOT" ] && [ -n "$OTHER" ]; then OTHER="$JROOT,$OTHER"
+  else OTHER="$JROOT$OTHER"; fi
+fi
 if [ -n "$ZPOOLS" ] && [ -n "$OTHER" ]; then DISKS="$ZPOOLS,$OTHER"
 else DISKS="$ZPOOLS$OTHER"; fi
 
@@ -160,6 +214,18 @@ BOOT=$(printf '%s' "$RAWBOOT" | sed -n 's/^{ *sec *= *\([0-9][0-9]*\).*/\1/p')
 if [ -n "$BOOT" ]; then UPTIME=$(( $(date +%s) - BOOT )); else UPTIME=0; fi
 OS="$(uname -sr)"
 ARCH=$(uname -m)
+if [ "$JAILED" = 1 ]; then
+  # boottime is the host's. A jail has no boot of its own, but its oldest
+  # process started when the jail did, give or take a few seconds.
+  # A jail with nothing running in it but this script has no age to read --
+  # null, not the host's uptime, which is the one number known to be wrong.
+  JUP=$(ps -ax -o etimes= 2>/dev/null | awk '$1+0 > m { m = $1+0 } END { if (m > 0) printf "%.0f", m }')
+  UPTIME=${JUP:-null}
+  # uname -r is the host's kernel; the jail's own release is its userland,
+  # which is what its packages and patches are built against.
+  JREL=$(freebsd-version -u 2>/dev/null || true)
+  [ -n "$JREL" ] && OS="FreeBSD $JREL"
+fi
 
 # ---- Virtualisation ----
 # FreeBSD answers directly. OpenBSD and NetBSD have no equivalent sysctl, so
@@ -182,7 +248,9 @@ virt_name() {
 }
 case "$OSNAME" in
 FreeBSD)
-  V=$(sysctl_n kern.vm_guest)
+  # kern.vm_guest inside a jail answers for the host, so a jail on a physical
+  # box would read as bare metal.
+  if [ "$JAILED" = 1 ]; then V=jail; else V=$(sysctl_n kern.vm_guest); fi
   [ -n "$V" ] && VIRT="\"$V\""
   ;;
 OpenBSD|NetBSD)
@@ -220,9 +288,109 @@ for f in $PATCH_FILES; do
   P=$(tr -d '\n' < "$f" 2>/dev/null || true)
   case "$P" in '{'*'}') PATCHES="$P"; break ;; esac
 done
+# Run inside a jail by its host (see "Jails, from the host" below), the host's
+# copy of the jail's patch check arrives here directly: it lives on the host,
+# never in the jail's filesystem where the jail could rewrite it.
+case "${NETDASH_PATCHES_JSON:-}" in
+  '{'*'}'|null) PATCHES="$NETDASH_PATCHES_JSON" ;;
+esac
 
-JSON=$(printf '{"host":"%s","os":"%s (%s)","cpu_pct":%s,"mem_used_bytes":%s,"mem_total_bytes":%s,"uptime_seconds":%d,"disks":[%s],"patches":%s,"virt":%s,"collector_version":"%s"}' \
-  "$HOST" "$OS" "$ARCH" "$CPU" "$MEM_USED" "$MEM_TOTAL" "$UPTIME" "$DISKS" "$PATCHES" "$VIRT" "$NETDASH_VERSION")
+# ---- Address, inside a jail ----
+# The jail's host reports where the jail can be probed, and with vnet -- every
+# iocage jail on a TrueNAS box -- jls on the host knows no address at all. From
+# inside, ifconfig lists only the jail's own interfaces.
+EXTRA=""
+if [ "$JAILED" = 1 ]; then
+  JADDR=$(ifconfig -a inet 2>/dev/null | awk '$1=="inet" && $2 !~ /^127\./ { print $2; exit }')
+  case "$JADDR" in
+    *[!0-9.]*|"") ;;
+    *) EXTRA=",\"address\":\"$JADDR\"" ;;
+  esac
+fi
+
+# ---- Jails, from the host ----
+# A host reports its own jails, so a jail needs nothing installed to be listed:
+# running ones from jls, stopped ones from jail.conf and iocage, which jls
+# cannot see. Each running jail is measured by running THIS script inside it
+# with jexec -- the same jail-mode readings an in-jail collector takes, from
+# the jail's own ps, df and freebsd-version. Jail-side binaries run as the
+# jail's root inside the jail, never as the host's: nothing from a jail's
+# filesystem is executed or trusted out here.
+#
+# The script travels as sh -c's argument, not on stdin, and stdin is
+# /dev/null: anything inside that reads a terminal -- pkg's bootstrapper asks
+# "fetch and install it now?" -- must read end-of-file, not the script.
+#
+# Names are kept to what the server accepts. A jail named outside that set is
+# skipped rather than escaped: it could not be looked up on the dashboard.
+jail_boot() { # name -> true|false|null, from rc.conf's jail_enable/jail_list
+  case "$(sysrc -n jail_enable 2>/dev/null || true)" in
+    [Yy][Ee][Ss]) ;;
+    "") echo null; return ;;
+    *) echo false; return ;;
+  esac
+  JL=$(sysrc -n jail_list 2>/dev/null || true)
+  if [ -z "$JL" ]; then echo true; return; fi
+  case " $JL " in *" $1 "*) echo true ;; *) echo false ;; esac
+}
+JAILS=""
+if [ "$OSNAME" = FreeBSD ] && [ "$JAILED" != 1 ] && [ "${NETDASH_JAILS:-yes}" != no ] \
+   && command -v jls >/dev/null 2>&1 && command -v jexec >/dev/null 2>&1; then
+  SELF=$(cat "$0" 2>/dev/null || true)
+  JSTATE=${NETDASH_JAIL_STATE:-/var/db/netdash-collector/jails}
+  JTMP=$(mktemp "${TMPDIR:-/tmp}/netdash-jails.XXXXXX")
+  RUNNING=" "
+  jls -h jid name host.hostname 2>/dev/null | sed 1d > "$JTMP" || true
+  while read -r JID JNAME JHOST; do
+    [ -n "$JID" ] || continue
+    case "$JNAME" in ""|*[!A-Za-z0-9_.-]*) continue ;; esac
+    # Its hostname, short, is what a collector inside it would call itself,
+    # and what TrueNAS lists it as -- so every source agrees on one name.
+    JSHORT=${JHOST%%.*}
+    case "$JSHORT" in ""|-|*[!A-Za-z0-9_.-]*) JSHORT=$JNAME ;; esac
+    RUNNING="$RUNNING$JNAME "
+    JP=null
+    if [ -r "$JSTATE/$JNAME.json" ]; then
+      P=$(tr -d '\n' < "$JSTATE/$JNAME.json" 2>/dev/null || true)
+      case "$P" in '{'*'}') JP=$P ;; esac
+    fi
+    E=""
+    [ -n "$SELF" ] && E=$(env -u ASSUME_ALWAYS_YES NETDASH_CONF=/dev/null NETDASH_JAILS=no \
+        NETDASH_HOSTNAME="$JSHORT" NETDASH_PATCHES_JSON="$JP" \
+        jexec "$JID" /bin/sh -c "$SELF" netdash-collector --print </dev/null 2>/dev/null || true)
+    # A jail with no /bin/sh, or one whose run failed, is still running: it is
+    # listed with no readings rather than left out.
+    case "$E" in
+      '{'*'}') ;;
+      *) E="{\"host\":\"$JSHORT\",\"virt\":\"jail\"}" ;;
+    esac
+    E="${E%\}},\"state\":\"running\",\"boot\":$(jail_boot "$JNAME")}"
+    JAILS="$JAILS${JAILS:+,}$E"
+  done < "$JTMP"
+  # Stopped: every jail a manager knows of that jls did not just list.
+  { for f in ${NETDASH_JAIL_CONF:-/etc/jail.conf /etc/jail.conf.d/*.conf}; do
+      [ -r "$f" ] && awk '/^[ \t]*[A-Za-z0-9_.-]+[ \t]*\{/ {
+        sub(/^[ \t]*/, ""); sub(/[ \t]*\{.*/, ""); print "conf", $0, "-" }' "$f"
+    done
+    if command -v iocage >/dev/null 2>&1; then
+      iocage list -h 2>/dev/null | awk -F '\t' '$3=="down" { print "iocage", $2, $4 }'
+    fi
+  } > "$JTMP" 2>/dev/null || true
+  while read -r JSRC JNAME JREL; do
+    case "$JNAME" in ""|*[!A-Za-z0-9_.-]*) continue ;; esac
+    case "$RUNNING" in *" $JNAME "*) continue ;; esac
+    RUNNING="$RUNNING$JNAME "
+    JOS=null
+    case "$JREL" in -|""|*[!A-Za-z0-9._-]*) ;; *) JOS="\"FreeBSD $JREL\"" ;; esac
+    if [ "$JSRC" = conf ]; then JB=$(jail_boot "$JNAME"); else JB=null; fi
+    JAILS="$JAILS${JAILS:+,}{\"host\":\"$JNAME\",\"os\":$JOS,\"virt\":\"jail\",\"state\":\"stopped\",\"boot\":$JB}"
+  done < "$JTMP"
+  rm -f "$JTMP"
+  EXTRA="$EXTRA,\"jails\":[$JAILS]"
+fi
+
+JSON=$(printf '{"host":"%s","os":"%s (%s)","cpu_pct":%s,"mem_used_bytes":%s,"mem_total_bytes":%s,"uptime_seconds":%s,"disks":[%s],"patches":%s,"virt":%s,"collector_version":"%s"%s}' \
+  "$HOST" "$OS" "$ARCH" "$CPU" "$MEM_USED" "$MEM_TOTAL" "$UPTIME" "$DISKS" "$PATCHES" "$VIRT" "$NETDASH_VERSION" "$EXTRA")
 
 if [ "$MODE" = "--print" ]; then printf '%s\n' "$JSON"; exit 0; fi
 

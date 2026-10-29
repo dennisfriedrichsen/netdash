@@ -1,5 +1,9 @@
 """Poll a TrueNAS CORE box over its REST API v2.0. Nothing is installed on the NAS.
 
+Also polls anything else that serves the CORE API -- FreeCORE, the community
+continuation of CORE, answers every endpoint below identically. Only the name
+differs, and /system/product_name (unauthenticated) is where it says so.
+
 Auth: API keys authenticate as `Authorization: Bearer <key>` (the box's own OpenAPI
 document only advertises HTTP basic, but Bearer is what GUI-created API keys use on
 CORE 13.x). We send Bearer and fall back to basic if the box rejects it.
@@ -8,6 +12,9 @@ Endpoints (verified live against TrueNAS CORE 13.0-U6.8):
   GET  /system/info        -> physmem, uptime_seconds, version
   POST /reporting/get_data -> cpu / memory / arcsize series
   GET  /pool/dataset       -> per-pool used+available (root datasets only)
+  GET  /boot/get_state     -> the boot pool, which /pool/dataset leaves out
+  GET  /jail               -> every iocage jail, running or not (see _jails)
+  GET  /system/product_name -> "TrueNAS" on CORE, "FreeCORE" on FreeCORE
 
 Not yet verified against the live box:
   POST /update/check_available -> {"status": "AVAILABLE"|"UNAVAILABLE", "version": ...}
@@ -22,6 +29,8 @@ Quirks this module works around, all confirmed on the live box:
 """
 
 import base64
+import datetime
+import ipaddress
 import json
 import re
 import ssl
@@ -29,6 +38,10 @@ import sys
 import time
 import urllib.error
 import urllib.request
+try:
+    import zoneinfo
+except ImportError:          # Python < 3.9: jail uptimes go unreported
+    zoneinfo = None
 
 
 class TrueNASError(Exception):
@@ -150,11 +163,130 @@ def _pools(cfg):
     return out
 
 
+def _boot_pool(cfg):
+    """The OS drive, as one more disk row named for its pool.
+
+    /pool/dataset lists data pools only, so without this the boot pool -- where
+    every update leaves another boot environment behind until someone deletes
+    it -- was never shown at all. It is named freenas-boot on CORE and
+    boot-pool on FreeCORE, and both answer this endpoint the same way (verified
+    live on each). Its zpool size and allocation are used as they are: a boot
+    pool is a single disk or a mirror, with no raidz parity to make the raw
+    size overstate what is usable.
+
+    Best-effort, like the metric graphs: a box that cannot answer still reports
+    its data pools. Returns a list so the caller can simply add it on.
+    """
+    try:
+        st = _request(cfg, "/boot/get_state") or {}
+    except TrueNASError:
+        return []
+    props = st.get("properties") or {}
+    size = (props.get("size") or {}).get("parsed")
+    alloc = (props.get("allocated") or {}).get("parsed")
+    if not st.get("name") or size is None or alloc is None or int(size) <= 0:
+        return []
+    return [{"mount": st["name"], "used_bytes": int(alloc), "total_bytes": int(size)}]
+
+
+def _jail_address(ip4_addr):
+    """The jail's IPv4 address from iocage's ip4_addr, or None.
+
+    iocage writes "<iface>|<addr>[/<mask>]", comma-separated when there are
+    several -- "epair0b|10.0.0.133" on mercury for a running DHCP jail -- and
+    "DHCP (not running)" or "none" when there is nothing to report. The first
+    non-loopback address wins; anything that does not parse is no address,
+    rather than a string the prober would try to ping.
+    """
+    for part in str(ip4_addr or "").split(","):
+        addr = part.split("|")[-1].split("/")[0].strip()
+        try:
+            ip = ipaddress.IPv4Address(addr)
+        except ValueError:
+            continue
+        if not ip.is_loopback and not ip.is_unspecified:
+            return str(ip)
+    return None
+
+
+def _jail_uptime(last_started, info, now):
+    """Seconds since iocage last started the jail, or None.
+
+    last_started is the NAS's wall-clock time with no zone -- "2026-10-16
+    02:05:25" -- so it is read in the timezone /system/info reports. A jail
+    whose start predates the NAS's own boot cannot have been running since
+    then; iocage keeps the stamp across reboots, so that is capped at the NAS's
+    uptime rather than reported as months the jail was not running.
+    """
+    tz = info.get("timezone")
+    if not last_started or not tz or zoneinfo is None:
+        return None
+    try:
+        started = datetime.datetime.strptime(str(last_started), "%Y-%m-%d %H:%M:%S")
+        started = started.replace(tzinfo=zoneinfo.ZoneInfo(tz)).timestamp()
+    except (ValueError, zoneinfo.ZoneInfoNotFoundError):
+        return None
+    up = now - started
+    if info.get("uptime_seconds"):
+        up = min(up, float(info["uptime_seconds"]))
+    return int(up) if up >= 0 else None
+
+
+def _jails(cfg, info):
+    """Every jail on the box, for the server to list as hosts of their own.
+
+    What CORE's API knows: whether each jail is up, its release, its address,
+    whether it starts at boot, and when it last started. What it does not:
+    CPU, memory or disk per jail -- pcpu and memoryuse in the same records are
+    rctl limits, "off" here, and used/available read "readonly". So these
+    entries carry no metrics, and a jail with its own collector supplies them.
+
+    Best-effort: a box with no jails, or with the jail plugin not activated,
+    answers with an error or an empty list, and either way reports no jails.
+    """
+    try:
+        rows = _request(cfg, "/jail") or []
+    except TrueNASError:
+        return []
+    now = time.time()
+    out = []
+    for j in rows:
+        if not isinstance(j, dict):
+            continue
+        # The jail's hostname is what a collector inside it reports itself as,
+        # so it is the name both sources agree on. iocage defaults it to the
+        # jail name, which stands in when it is unset.
+        name = str(j.get("host_hostname") or j.get("id") or "").split(".")[0]
+        if not name:
+            continue
+        up = j.get("state") == "up"
+        rel = j.get("release")
+        out.append({
+            "host": name,
+            "os": ("FreeBSD %s" % rel) if rel else None,
+            "virt": "jail",
+            "state": "running" if up else "stopped",
+            "boot": None if j.get("boot") is None else bool(j.get("boot")),
+            "address": _jail_address(j.get("ip4_addr")) if up else None,
+            "uptime_seconds": _jail_uptime(j.get("last_started"), info, now) if up else None,
+        })
+    return out
+
+
 # update.check_available contacts iXsystems' update server, so it is polled on
 # its own slow interval rather than at the metric rate. The last good answer is
 # kept across metric polls; when the call fails it is returned unchanged and
 # ages out into "unknown" on the dashboard rather than flipping to a wrong value.
-_PATCH_CACHE = {"ts": 0.0, "value": None, "error": None}
+#
+# One cache per box, keyed by host. A single shared cache meant a second NAS
+# was answered with the first one's update status -- and, gated on the first
+# one's attempt time, never asked at all.
+_PATCH_CACHES = {}
+
+
+def _patch_cache(cfg):
+    return _PATCH_CACHES.setdefault(cfg.get("host"),
+                                    {"ts": 0.0, "value": None, "error": None})
 
 
 def _patches(cfg):
@@ -167,6 +299,7 @@ def _patches(cfg):
     Note for later: `update.check_available` was removed in TrueNAS 25.x in
     favour of `update.status`. This call is why the poller is CORE-specific.
     """
+    cache = _patch_cache(cfg)
     now = time.time()
     interval = int(cfg.get("patch_poll_seconds") or 3600)
     # Gate on the last ATTEMPT, not the last success. Gating on a cached value
@@ -174,9 +307,9 @@ def _patches(cfg):
     # update-master.ixsystems.com -- was retried on every 60s metric poll
     # instead of hourly, and made the NAS attempt an internet round trip each
     # time. Recording the attempt first is what makes the interval real.
-    if now - _PATCH_CACHE["ts"] < interval:
-        return _PATCH_CACHE["value"]
-    _PATCH_CACHE["ts"] = now
+    if now - cache["ts"] < interval:
+        return cache["value"]
+    cache["ts"] = now
 
     try:
         r = _request(cfg, "/update/check_available", "POST", {}) or {}
@@ -186,15 +319,16 @@ def _patches(cfg):
         # failure hourly would bury everything else -- but staying silent leaves
         # a permanently "unknown" badge with no explanation anywhere.
         msg = str(e)[:200]
-        if msg != _PATCH_CACHE["error"]:
-            sys.stderr.write("truenas update check unavailable: %s\n" % msg)
-            _PATCH_CACHE["error"] = msg
-        return _PATCH_CACHE["value"]
-    _PATCH_CACHE["error"] = None
+        if msg != cache["error"]:
+            sys.stderr.write("truenas update check unavailable on %s: %s\n"
+                             % (cfg.get("display_name") or cfg.get("host"), msg))
+            cache["error"] = msg
+        return cache["value"]
+    cache["error"] = None
 
     status = str(r.get("status") or "").upper()
     if status not in ("AVAILABLE", "UNAVAILABLE"):
-        return _PATCH_CACHE["value"]
+        return cache["value"]
 
     version = r.get("version") or ""
     value = {
@@ -205,14 +339,31 @@ def _patches(cfg):
         "detail": ("%s available" % version).strip() if status == "AVAILABLE"
                   else "no per-package security classification on CORE",
     }
-    _PATCH_CACHE.update(ts=now, value=value)
+    cache.update(ts=now, value=value)
     return value
+
+
+def _product(cfg):
+    """What the box calls itself, as the OS string should name it.
+
+    CORE answers "TrueNAS", and is shown as "TrueNAS CORE" because that is the
+    string the EOL override and the dashboard icon already key on. Anything
+    else -- "FreeCORE" -- is shown as it names itself: it is a different
+    product with its own support life, and calling it TrueNAS CORE would hand
+    it CORE's end-of-life date. A box too old to answer is CORE.
+    """
+    try:
+        name = str(_request(cfg, "/system/product_name") or "").strip()
+    except TrueNASError:
+        name = ""
+    return "TrueNAS CORE" if name in ("", "TrueNAS") else name
 
 
 def collect(cfg):
     """Return a payload in the same shape the host collectors POST."""
     if not cfg.get("api_key"):
-        raise TrueNASError("truenas.api_key is not set in config.json")
+        raise TrueNASError("api_key is not set for %s in config.json"
+                           % (cfg.get("display_name") or cfg.get("host")))
 
     info = _request(cfg, "/system/info") or {}
     physmem = info.get("physmem")
@@ -227,17 +378,20 @@ def collect(cfg):
     except TrueNASError:
         pass   # metrics are best-effort; pools and uptime still report
 
-    version = (info.get("version") or "").replace("TrueNAS-", "").replace("-", " ", 1)
+    # "TrueNAS-13.0-U6.8" -> "13.0 U6.8". The product prefix is stripped
+    # whatever it says, since the name comes from _product instead.
+    version = re.sub(r"^[A-Za-z]\w*-", "", info.get("version") or "").replace("-", " ", 1)
     return {
         "host": cfg.get("display_name") or cfg["host"],
         "ts": int(time.time()),
-        "os": ("TrueNAS CORE %s" % version).strip(),
+        "os": ("%s %s" % (_product(cfg), version)).strip(),
         "cpu_pct": cpu,
         "mem_used_bytes": mem,
         "mem_total_bytes": physmem,
         "uptime_seconds": int(info["uptime_seconds"]) if info.get("uptime_seconds") else None,
-        "disks": _pools(cfg),
+        "disks": _pools(cfg) + _boot_pool(cfg),
         "patches": _patches(cfg),
+        "jails": _jails(cfg, info),
     }
 
 
@@ -246,4 +400,7 @@ if __name__ == "__main__":
     import sys
     path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "config.json")
-    print(json.dumps(collect(json.load(open(path))["truenas"]), indent=2))
+    block = json.load(open(path))["truenas"]
+    # The block is one box or a list of them; check every one configured.
+    for one in (block if isinstance(block, list) else [block]):
+        print(json.dumps(collect(one), indent=2))
