@@ -278,7 +278,7 @@ if want linux-container; then
   # Constructed, not captured: the docker layout, where / is overlay and the
   # only other mounts are pseudo-filesystems. Run with and without ctr set, so
   # the same mount table proves both halves.
-  J=$(python3 - "$ROOT" <<'PY'
+  snippet() { python3 - "$@" <<'PY'
 import re,subprocess,sys,json
 src=open(f"{sys.argv[1]}/collectors/linux/netdash-collector.sh").read()
 prog=re.search(r"df -P -k 2>/dev/null; \} \| awk (?:-v \S+ )?'(.*?)'\)", src, re.S).group(1)
@@ -294,7 +294,8 @@ def run(ctr):
     return json.loads("["+out.stdout+"]")
 print(json.dumps({"ctr":run(1),"host":run(0)}))
 PY
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   check "a container's overlay root is reported as /" \
         "assert [(x['mount'],x['used_bytes']) for x in d['ctr']]==[('/',40960000*1024)], d['ctr']" "$J"
   check "while an overlay on a host is still skipped as a layer" \
@@ -2696,7 +2697,7 @@ fi
 # --------------------------------------------------------------- TrueNAS ----
 if want truenas; then
   echo "truenas (a FreeCORE is polled like CORE, but is not CORE)"
-  J=$(python3 - "$ROOT" <<'PYEOF'
+  snippet() { python3 - "$@" <<'PYEOF'
 import json, sys, os
 root = sys.argv[1]
 sys.path.insert(0, os.path.join(root, "server"))
@@ -2750,7 +2751,8 @@ app.CFG = {"truenas": [{"enabled": True, "host": "a"}, {"enabled": False, "host"
 cfgs = {n: [c["host"] for c in app.appliance_configs(n)] for n in app.CFG}
 print(json.dumps({"out": out, "cfgs": cfgs}))
 PYEOF
-)
+  }
+  J=$(snippet "$ROOT")
   check "CORE still names itself TrueNAS CORE, which the EOL override keys on" \
         "assert d['out']['nas.example']['os']=='TrueNAS CORE 13.0 U6.8', d['out']['nas.example']['os']" "$J"
   check "FreeCORE is named as itself, not handed CORE's end of life" \
@@ -2800,7 +2802,7 @@ if want guests; then
         "assert d['forgot'] is None, d['forgot']" "$J"
 
   # The TrueNAS side: iocage's own field formats, as mercury returns them.
-  J=$(python3 - "$ROOT" <<'PYEOF'
+  snippet() { python3 - "$@" <<'PYEOF'
 import json, sys, os, time
 sys.path.insert(0, os.path.join(sys.argv[1], "server"))
 import truenas
@@ -2831,7 +2833,8 @@ print(json.dumps({
   "nozone": truenas._jail_uptime("2026-07-15 09:02:00", {}, now),
 }))
 PYEOF
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   check "iocage's address formats parse to the first real address, or none" \
         "assert d['addr']==['10.0.0.133','10.0.0.5','192.168.1.9',None,None,None], d['addr']" "$J"
   check "an up jail is running with its address, a down one stopped with none" \
@@ -2933,7 +2936,7 @@ if want services; then
   # The bug the first deploy had: called inline, start_service_checks waited
   # on the database lock behind the roller's first pass, and the server did
   # not listen for 67 seconds after a restart.
-  J=$(python3 - "$ROOT" <<'PYEOF'
+  snippet() { python3 - "$@" <<'PYEOF'
 import ast, json, sys
 tree = ast.parse(open(sys.argv[1] + "/server/app.py").read())
 main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
@@ -2943,7 +2946,8 @@ threaded = [n for n in ast.walk(main) if isinstance(n, ast.Call)
             and any(getattr(k.value, "id", None) == "start_service_checks" for k in n.keywords)]
 print(json.dumps({"inline": len(inline), "threaded": len(threaded)}))
 PYEOF
-) || J=''
+  }
+  J=$(snippet "$ROOT") || J=''
   check "starting the checks never delays the server listening" \
         "assert d=={'inline':0,'threaded':1}, d" "$J"
 fi
