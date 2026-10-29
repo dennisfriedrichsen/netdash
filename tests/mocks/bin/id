@@ -1,0 +1,6 @@
+#!/bin/sh
+# Mock id. Only -u is used; $NETDASH_MOCK_UID defaults to root.
+case "$1" in
+  -u) echo "${NETDASH_MOCK_UID:-0}" ;;
+  *)  exit 1 ;;
+esac

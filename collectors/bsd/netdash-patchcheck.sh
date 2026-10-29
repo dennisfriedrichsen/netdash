@@ -114,6 +114,21 @@ join_names() {
 }
 SECPKGS=""
 
+# Counts the upgrades in `pkg_add -u -n` output on stdin. See the OpenBSD
+# branch for why only "old->new: ok" lines count, and why a same-version
+# quirks line does not.
+pkg_add_upgrades() {
+  awk '
+    { sub(/[ \t\r]+$/, "") }
+    !/^[^ ]+->[^ ]+: ok$/ { next }
+    {
+      line = $0; sub(/: ok$/, "", line)
+      i = index(line, "->"); old = substr(line, 1, i - 1); new = substr(line, i + 2)
+      if (old ~ /^quirks-/ && (old == new || old == "quirks-" new)) next
+      n++
+    }
+    END { print n + 0 }'
+}
 
 case "$OSNAME" in
 FreeBSD)
@@ -244,17 +259,31 @@ OpenBSD)
   # the same source syspatch already uses here. Gating on PKG_PATH skipped this
   # entirely on every normally configured host.
   #
-  # pkg_add prints the quirks signature line whenever it reads the index:
-  #   quirks-7.194 signed on 2026-09-01T16:57:41Z
-  # That is not an update. Counting raw lines reported one phantom pending
-  # package on a host with nothing to do (verified on OpenBSD 7.9), so it is
-  # dropped before counting.
-  OTH=$(run pkg_add -u -n | grep -v '^quirks-[0-9][^ ]* signed on ' | grep -c . || true)
+  # Only upgrade lines are counted, one per line:
+  #   curl-8.10.1->8.11.0: ok
+  # Everything else pkg_add says is not an update. It prints the quirks
+  # signature whenever it reads the index, and quirks is always run through
+  # the updater first, so a host with nothing pending says:
+  #   quirks-7.227 signed on 2026-10-28T17:12:24Z
+  #   quirks-7.227->7.227: ok
+  # Counting every line but the signature reported a phantom pending package
+  # there (verified on openbsd8dot0), so a same-version quirks line is dropped
+  # too. A quirks version change is a real upgrade and still counts.
+  #
+  # Both streams are read and the exit status kept: with stderr discarded and
+  # the status swallowed, an unreachable mirror printed nothing and read as a
+  # clean zero. A failed check reports other as null -- not counted -- instead.
+  if PKGOUT=$(pkg_add -u -n 2>&1); then
+    OTH=$(printf '%s\n' "$PKGOUT" | pkg_add_upgrades)
+  else
+    OTH=null
+    DET="package check failed (pkg_add -u -n); packages not counted"
+  fi
 
   # /etc/installurl points at the release package set. OpenBSD's security-fixed
   # packages are built separately, so set PKG_PATH to a packages-stable path in
   # collector.conf if you want those counted here.
-  [ -n "${PKG_PATH:-}" ] || DET="release packages only (PKG_PATH unset)"
+  [ -n "${PKG_PATH:-}" ] || [ "$OTH" = null ] || DET="release packages only (PKG_PATH unset)"
   ;;
 
 NetBSD)

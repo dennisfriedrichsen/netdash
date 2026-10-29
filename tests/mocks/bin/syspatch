@@ -1,0 +1,6 @@
+#!/bin/sh
+# Mock syspatch. $NETDASH_MOCK_SYSPATCH is the `syspatch -c` list; empty is a
+# current box, which prints nothing and exits 0.
+[ "$1" = -c ] || exit 1
+[ -n "${NETDASH_MOCK_SYSPATCH:-}" ] && printf '%s\n' "$NETDASH_MOCK_SYSPATCH"
+exit 0

@@ -706,18 +706,10 @@ print(json.dumps({
   # output on stdout; only the status tells them apart.
   "guards_exit_status": bool(re.search(r"if ! OUT=\$\(syspatch -c", ob)),
   "no_swallow": "syspatch -c 2>/dev/null || true" not in ob,
-  "quirks_none": int(subprocess.run(
-      ["sh","-c","grep -v '^quirks-[0-9][^ ]* signed on ' | grep -c . || true"],
-      input=open(f"{root}/tests/fixtures/openbsd/pkg_add-un-none.txt").read(),
-      capture_output=True,text=True).stdout or 0),
-  "quirks_naive": int(subprocess.run(["grep","-c","."],
-      input=open(f"{root}/tests/fixtures/openbsd/pkg_add-un-none.txt").read(),
-      capture_output=True,text=True).stdout or 0),
   "requires_root": 'id -u' in ob,
   # pkg_add falls back to /etc/installurl when PKG_PATH is unset, so gating the
   # package count on PKG_PATH skipped it on every normally configured host.
   "no_pkgpath_gate": 'if [ -n "${PKG_PATH:-}" ]; then' not in ob,
-  "quirks_filtered": bool(re.search(r"grep -v '\^quirks", ob)),
 }))
 PY
   }
@@ -734,10 +726,54 @@ PY
         "assert d['requires_root'], d" "$J"
   check "the package count is not gated on PKG_PATH" \
         "assert d['no_pkgpath_gate'], d" "$J"
-  # "quirks-7.194 signed on ..." is printed whenever pkg_add reads the index and
-  # is not an update; counting it reported one phantom package on an idle host.
-  check "pkg_add's quirks signature line is not counted as an update" \
-        "assert d['quirks_filtered'] and d['quirks_none']==0 and d['quirks_naive']==1, d" "$J"
+
+  # The package count, end to end through the real script. The two fixtures are
+  # real captures; the upgrade lines below are not -- no host with pending
+  # packages was available -- and follow pkg_add's "old->new: ok" form.
+  B=$(mkbin uname id syspatch pkg_add)
+  ob_pc() {
+    env "PATH=$B:/usr/bin:/bin" NETDASH_CONF=/dev/null NETDASH_MOCK_OS=OpenBSD "$@" \
+        sh "$ROOT/collectors/bsd/netdash-patchcheck.sh" --print 2>/dev/null
+  }
+  SIG='quirks-7.227 signed on 2026-10-28T17:12:24Z'
+  # Nothing pending on openbsd8dot0: the signature, then quirks run through the
+  # updater at the version it already has. Reported as other=1 in 0.5.1.
+  J=$(ob_pc NETDASH_MOCK_PKG_ADD="$(cat "$FIX/openbsd/pkg_add-un-quirks-same.txt")") || J=''
+  check "a same-version quirks line is not an update" \
+        "assert (d['security'],d['other'])==(0,0), d" "$J"
+  # "quirks-7.194 signed on ..." alone, as OpenBSD 7.9 prints it.
+  J=$(ob_pc NETDASH_MOCK_PKG_ADD="$(cat "$FIX/openbsd/pkg_add-un-none.txt")") || J=''
+  check "the quirks signature line alone is not an update" \
+        "assert d['other']==0, d" "$J"
+  J=$(ob_pc) || J=''
+  check "empty output from a successful check is a real zero" \
+        "assert d['other']==0 and d['detail'].startswith('release packages only'), d" "$J"
+  J=$(ob_pc NETDASH_MOCK_PKG_ADD="$(printf '%s\n' "$SIG" 'curl-8.10.1->8.11.0: ok' \
+        'python-3.12.7->3.12.8: ok' 'nghttp2-1.64.0p0->1.64.0p1: ok')") || J=''
+  check "each upgrade line counts once" \
+        "assert d['other']==3, d" "$J"
+  J=$(ob_pc NETDASH_MOCK_PKG_ADD="$(printf '%s\n' "$SIG" 'quirks-7.227->7.228: ok')") || J=''
+  check "a quirks version change is a real upgrade" \
+        "assert d['other']==1, d" "$J"
+  # Informational lines on both streams around the real upgrades: only the
+  # upgrades count.
+  J=$(ob_pc NETDASH_MOCK_PKG_ADD="$(printf '%s\n' "$SIG" 'quirks-7.227->7.227: ok' \
+        'curl-8.10.1->8.11.0: ok' 'Read shared items: ok' 'libnghttp3-1.6.0: ok' \
+        'gnupg-2.4.5->2.4.7: ok')" \
+        NETDASH_MOCK_PKG_ADD_ERR="$(printf '%s\n' 'Running tags: ok' \
+        'New and changed readme(s):' '        /usr/local/share/doc/pkg-readmes/gnupg')") || J=''
+  check "informational output around real upgrades is not counted" \
+        "assert d['other']==2, d" "$J"
+  # An unreachable mirror: nothing on stdout, the reason on stderr, non-zero
+  # exit. In 0.5.1 that read as a clean zero.
+  J=$(ob_pc NETDASH_MOCK_PKG_ADD_EXIT=1 \
+        NETDASH_MOCK_PKG_ADD_ERR='https://cdn.openbsd.org/pub/OpenBSD/8.0/packages/amd64/: no route to host') || J=''
+  check "a failed package check is unknown, not zero" \
+        "assert d['other'] is None and 'package check failed' in d['detail'] and d['security']==0, d" "$J"
+  J=$(ob_pc NETDASH_MOCK_PKG_ADD="$SIG" NETDASH_MOCK_PKG_ADD_EXIT=1) || J=''
+  check "a failed package check with partial output is still unknown" \
+        "assert d['other'] is None, d" "$J"
+  rm -rf "$B"
 fi
 
 if want patches-fedora; then

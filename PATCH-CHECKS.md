@@ -382,8 +382,21 @@ quirks-7.194 signed on 2026-09-01T16:57:41Z
 ```
 
 That is the *entire* output on a host with nothing to update, and it is not an
-update — counting raw lines reported one phantom pending package. The line is
-dropped before counting.
+update — counting raw lines reported one phantom pending package. Newer
+releases also run quirks itself through the updater at the version it already
+has, which is not an update either:
+
+```
+$ doas pkg_add -u -n
+quirks-7.227 signed on 2026-10-28T17:12:24Z
+quirks-7.227->7.227: ok
+```
+
+So only upgrade lines (`curl-8.10.1->8.11.0: ok`) are counted, and a
+same-version quirks line is dropped; a quirks version change still counts.
+Both streams are read and the exit status is checked: a `pkg_add` that fails —
+an unreachable mirror prints nothing on stdout — reports `other` as null with
+*package check failed* in the detail, rather than a clean zero.
 
 `/etc/installurl` points at the release package set, and OpenBSD's
 security-fixed packages are built separately, so set `PKG_PATH` to a

@@ -1,0 +1,8 @@
+#!/bin/sh
+# Mock pkg_add, for `pkg_add -u -n` only. $NETDASH_MOCK_PKG_ADD is what it
+# prints on stdout, $NETDASH_MOCK_PKG_ADD_ERR on stderr, and
+# $NETDASH_MOCK_PKG_ADD_EXIT its exit status.
+[ "$*" = "-u -n" ] || exit 2
+[ -n "${NETDASH_MOCK_PKG_ADD:-}" ] && printf '%s\n' "$NETDASH_MOCK_PKG_ADD"
+[ -n "${NETDASH_MOCK_PKG_ADD_ERR:-}" ] && printf '%s\n' "$NETDASH_MOCK_PKG_ADD_ERR" >&2
+exit "${NETDASH_MOCK_PKG_ADD_EXIT:-0}"
