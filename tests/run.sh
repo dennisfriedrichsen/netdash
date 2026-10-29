@@ -3197,6 +3197,44 @@ PYEOF
         "assert d['seeded']=={'cerium': 'ok'}, d['seeded']" "$J"
 fi
 
+if want history-seed; then
+  echo "history-seed (reseeding reads a long event log without stalling startup)"
+  snippet() { python3 - "$@" <<'PYEOF'
+import json, os, sys, tempfile, time
+sys.path.insert(0, os.path.join(sys.argv[1], "server"))
+import db
+
+conn = db.connect(os.path.join(tempfile.mkdtemp(), "t.db"))
+# A flapping host's never-pruned log, as on the live server: thousands of
+# status events for one host. The seeding query held the lock for a minute.
+rows = []
+for i in range(4000):
+    rows.append(("silicon", "status", "ok" if i % 2 else "stale", "stale" if i % 2 else "ok"))
+    if i % 10 == 0:
+        rows.append(("cerium", "status", "ok", "down" if i % 20 else "ok"))
+    if i % 50 == 0:
+        rows.append(("plexserver", "service:plex", "ok", "fail" if i % 100 else "ok"))
+with db._DB:
+    conn.executemany("INSERT INTO events (ts, host, kind, from_state, to_state)"
+                     " VALUES (?, ?, ?, ?, ?)",
+                     [(1000 + n, *r) for n, r in enumerate(rows)])
+    conn.commit()
+# A newer non-status event must not stand in for the host's last status.
+db.record_event(conn, "cerium", "service:plex", "fail", "ok", None)
+t = time.time(); hosts = db.last_states(conn); th = time.time() - t
+t = time.time(); svcs = db.last_service_states(conn); ts = time.time() - t
+print(json.dumps({"hosts": hosts, "svcs": svcs, "th": th, "ts": ts}))
+PYEOF
+  }
+  J=$(snippet "$ROOT") || J=''
+  check "each host is seeded from its newest status event" \
+        "assert d['hosts']=={'silicon':'stale','cerium':'down'}, d['hosts']" "$J"
+  check "and each service check from its newest event" \
+        "assert d['svcs']=={'service:plex':'ok'}, d['svcs']" "$J"
+  check "seeding from thousands of events takes well under a second" \
+        "assert d['th'] < 1 and d['ts'] < 1, (d['th'], d['ts'])" "$J"
+fi
+
 
 # ----------------------------------------------------------------- icons ----
 if want icons; then

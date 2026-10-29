@@ -870,12 +870,17 @@ def last_states(conn):
     Without this a restart forgets what every host was last seen doing, and the
     first sweep silently treats whatever it finds as the starting state -- so a
     machine that went down during a deploy would never produce an event at all.
+
+    One grouped pass for the newest id per host, not a correlated MAX(id) per
+    row: that re-scanned a host's whole history for each of its events, and
+    with events never pruned it held the lock -- and so every request -- for
+    over a minute after each restart.
     """
     with _DB:
         rows = conn.execute(
-            """SELECT host, to_state FROM events e
-                WHERE kind='status' AND id = (SELECT MAX(id) FROM events
-                                               WHERE host=e.host AND kind='status')"""
+            """SELECT host, to_state FROM events
+                WHERE id IN (SELECT MAX(id) FROM events
+                              WHERE kind='status' GROUP BY host)"""
         ).fetchall()
         return {r["host"]: r["to_state"] for r in rows}
 
@@ -886,9 +891,9 @@ def last_service_states(conn):
     not forget that Plex was down, or its recovery would never be logged."""
     with _DB:
         rows = conn.execute(
-            """SELECT kind, to_state FROM events e
-                WHERE kind LIKE 'service:%' AND id = (SELECT MAX(id) FROM events
-                                                      WHERE kind=e.kind)"""
+            """SELECT kind, to_state FROM events
+                WHERE id IN (SELECT MAX(id) FROM events
+                              WHERE kind LIKE 'service:%' GROUP BY kind)"""
         ).fetchall()
         return {r["kind"]: r["to_state"] for r in rows}
 
