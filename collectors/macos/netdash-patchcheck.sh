@@ -183,7 +183,14 @@ DET=""
 # an acknowledgement against a brew name would be silencing an unclassified
 # update as if someone had reviewed it.
 SRC=softwareupdate
-BREW=$(command -v brew 2>/dev/null || true)
+# NETDASH_BREW names the brew to use; set but empty means there is none. Only
+# the tests need it: PATH above already reaches the standard prefixes, so a
+# Mac with Homebrew finds the real one even when PATH holds nothing but shims.
+if [ "${NETDASH_BREW+set}" = set ]; then
+  BREW="$NETDASH_BREW"
+else
+  BREW=$(command -v brew 2>/dev/null || true)
+fi
 if [ -n "$BREW" ]; then
   # Homebrew refuses to run as root, and `sudo brew services start` makes this
   # a LaunchDaemon that does exactly that. Run it as whoever owns the prefix --
@@ -191,7 +198,7 @@ if [ -n "$BREW" ]; then
   BREW_USER=""
   BREW_OK=1
   if [ "$(id -u)" -eq 0 ]; then
-    BREW_USER=$(stat -f %Su "$(brew --prefix 2>/dev/null)" 2>/dev/null || true)
+    BREW_USER=$(stat -f %Su "$("$BREW" --prefix 2>/dev/null)" 2>/dev/null || true)
     case "$BREW_USER" in ""|root) BREW_OK=0 ;; esac
   fi
   # NO_AUTO_UPDATE because the refresh below is the one place that is allowed
