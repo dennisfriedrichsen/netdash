@@ -651,10 +651,11 @@ if want patches-macos-brew; then
   check "a failed brew update dates the answer by Homebrew's metadata" \
         "assert d['checked_at']==$((NOW - 5*86400)) and 'brew update failed' in d['detail'], d" "$J"
   # The script appends /opt/homebrew/bin and /usr/local/bin to PATH itself, so
-  # on a Mac with Homebrew this case finds the real brew and can fail there.
+  # leaving brew out of the shims is not enough: on a Mac with Homebrew it would
+  # find the real one. An empty NETDASH_BREW says there is none.
   B2=$(mkbin x defaults softwareupdate date stat)
   J=$(env "PATH=$B2:/usr/bin:/bin" NETDASH_CONF=/dev/null NETDASH_MOCK_TMP="$T" \
-          NETDASH_MOCK_EPOCH=$((NOW - 3600)) \
+          NETDASH_MOCK_EPOCH=$((NOW - 3600)) NETDASH_BREW= \
           sh "$ROOT/collectors/macos/netdash-patchcheck.sh" --print 2>/dev/null) || J=''
   check "a Mac without Homebrew reports softwareupdate alone" \
         "assert (d['other'],d['source'])==(0,'softwareupdate'), d" "$J"
