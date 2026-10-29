@@ -18,7 +18,7 @@
 set -eu
 
 # Kept in sync with the repository VERSION file by tests/run.sh.
-NETDASH_VERSION="0.4.1"
+NETDASH_VERSION="0.5.0"
 
 MODE="${1:-}"
 
@@ -42,6 +42,9 @@ REFRESH="${NETDASH_PATCH_REFRESH:-yes}"
 
 OSNAME=$(uname -s)
 NOW=$(date +%s)
+# Inside a FreeBSD jail the running kernel is the host's: uname -r names the
+# host's release, not the jail's. See the collector's note on jails.
+JAILED=$(sysctl -n security.jail.jailed 2>/dev/null || true)
 SEC=null
 OTH=null
 SRC=unknown
@@ -49,6 +52,45 @@ DET=""
 CHECKED=""
 
 run() { "$@" 2>/dev/null || true; }
+
+# ---- Jails, from the host ----
+# The collector lists this host's jails (see its "Jails, from the host"); this
+# is their patch status, checked the same way it would be from inside: THIS
+# script, run in each running jail with jexec, so the jail-aware base checks
+# apply and pkg reads the jail's own packages. Done first, so a host whose own
+# check bails out early -- no vulnerability database -- still checks its jails.
+#
+# Each result is kept on the host, under a directory only root writes, keyed by
+# jail name: never inside the jail's filesystem, where the jail's root could
+# plant a symlink for the host's root to write through. The collector hands it
+# back into the jail's report.
+#
+# As in the collector, the script is sh -c's argument and stdin is /dev/null,
+# so pkg's bootstrap prompt in a jail without pkg reads end-of-file and
+# declines; that jail's check then fails, and it reads unknown.
+if [ "$OSNAME" = FreeBSD ] && [ "$JAILED" != 1 ] && [ "${NETDASH_JAILS:-yes}" != no ] \
+   && [ "$MODE" != "--print" ] && command -v jls >/dev/null 2>&1; then
+  JSTATE=${NETDASH_JAIL_STATE:-/var/db/netdash-collector/jails}
+  SELF=$(cat "$0" 2>/dev/null || true)
+  if [ -n "$SELF" ] && mkdir -p "$JSTATE" 2>/dev/null; then
+    chmod 755 "$JSTATE" 2>/dev/null || true
+    jls -h jid name 2>/dev/null | sed 1d | while read -r JID JNAME; do
+      case "$JNAME" in ""|*[!A-Za-z0-9_.-]*) continue ;; esac
+      OUT=$(env -u ASSUME_ALWAYS_YES NETDASH_CONF=/dev/null NETDASH_JAILS=no \
+            NETDASH_PATCH_REFRESH="$REFRESH" \
+            jexec "$JID" /bin/sh -c "$SELF" netdash-patchcheck --print </dev/null 2>/dev/null || true)
+      case "$OUT" in
+        '{'*'}')
+          printf '%s\n' "$OUT" > "$JSTATE/$JNAME.json.tmp" &&
+            mv "$JSTATE/$JNAME.json.tmp" "$JSTATE/$JNAME.json" &&
+            chmod 644 "$JSTATE/$JNAME.json" ;;
+        # A failed check leaves the previous result to age into "unknown",
+        # exactly as the host's own check does.
+        *) echo "netdash-patchcheck: jail $JNAME: no result; keeping the previous one" >&2 ;;
+      esac
+    done
+  fi
+fi
 
 # BSD stat(1), not GNU: -f %m, not -c %Y.
 mtime() { [ -e "$1" ] && stat -f %m "$1" 2>/dev/null || true; }
@@ -140,7 +182,16 @@ FreeBSD)
       # What `freebsd-update cron` does, minus its random 1-3600s sleep, which
       # exists to spread a fleet across the hour and is wrong for a job that is
       # already on its own timer.
-      run freebsd-update --not-running-from-cron fetch >/dev/null
+      #
+      # In a jail, freebsd-update would take the release from uname -r -- the
+      # host's kernel -- and fetch patches for a base the jail is not running.
+      # --currently-running names the jail's own userland instead.
+      if [ "$JAILED" = 1 ]; then
+        run freebsd-update --not-running-from-cron \
+          --currently-running "$(freebsd-version -u)" fetch >/dev/null
+      else
+        run freebsd-update --not-running-from-cron fetch >/dev/null
+      fi
     fi
     # Set as soon as the branch is entered, not only when something turns up
     # pending -- a clean `updatesready` (exit 2, nothing staged) is base
@@ -286,8 +337,12 @@ fi
 # which is the whole point on a pkgbase host, where the kernel arrives as an
 # ordinary package upgrade with nothing to announce it.
 # OpenBSD and NetBSD have no equivalent, so they stay null.
+#
+# A jail has no kernel of its own to reboot onto: any kernel under its /boot is
+# never run, and restarting the jail changes nothing, so it stays null rather
+# than raising a flag that no action inside the jail could clear.
 REBOOT=null
-if [ "$OSNAME" = FreeBSD ] && command -v freebsd-version >/dev/null 2>&1; then
+if [ "$OSNAME" = FreeBSD ] && [ "$JAILED" != 1 ] && command -v freebsd-version >/dev/null 2>&1; then
   KINST=$(freebsd-version -k 2>/dev/null || true)
   KRUN=$(uname -r)
   if [ -n "$KINST" ]; then

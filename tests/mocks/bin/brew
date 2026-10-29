@@ -1,0 +1,13 @@
+#!/bin/sh
+# Mock brew. $NETDASH_MOCK_BREW_OUTDATED is the `brew outdated --quiet` list;
+# _FAIL variables make the named subcommand exit non-zero.
+case "$1" in
+  --prefix)     echo "${NETDASH_MOCK_TMP:-/tmp}" ;;
+  --cache)      echo "${NETDASH_MOCK_TMP:-/tmp}/brewcache" ;;
+  --repository) echo /nonexistent ;;
+  update)       [ -z "${NETDASH_MOCK_BREW_UPDATE_FAIL:-}" ] ;;
+  outdated)     [ -z "${NETDASH_MOCK_BREW_OUTDATED_FAIL:-}" ] || exit 1
+                [ -n "${NETDASH_MOCK_BREW_OUTDATED:-}" ] && printf '%s\n' "$NETDASH_MOCK_BREW_OUTDATED"
+                exit 0 ;;
+  *)            exit 1 ;;
+esac

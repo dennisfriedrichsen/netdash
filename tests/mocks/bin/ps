@@ -1,0 +1,10 @@
+#!/bin/sh
+# Mock ps. Only `ps -ax -o <keyword>=` is used, one keyword per call; each
+# MOCK_PS_* variable is that column for every process, space-separated.
+case "$*" in
+  *%cpu*)   v=$MOCK_PS_CPU ;;
+  *rss*)    v=$MOCK_PS_RSS ;;
+  *etimes*) v=$MOCK_PS_ETIMES ;;
+  *) exit 1 ;;
+esac
+for x in $v; do echo "$x"; done

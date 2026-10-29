@@ -16,7 +16,7 @@
 set -eu
 
 # Kept in sync with the repository VERSION file by tests/run.sh.
-NETDASH_VERSION="0.4.1"
+NETDASH_VERSION="0.5.0"
 
 MODE="${1:-}"
 
@@ -129,10 +129,10 @@ fi
 
 # "Recommended: YES" is the closest thing macOS has to a security
 # classification; Rapid Security Responses appear in the same list. Homebrew
-# packages are a separate question and deliberately not reported, as are
-# --include-config-data items (XProtect and friends), which macOS installs
-# silently and never shows in the Software Update pane -- reporting something
-# the user cannot act on would be noise.
+# packages are counted further down. --include-config-data items (XProtect
+# and friends) are deliberately not reported: macOS installs them silently and
+# never shows them in the Software Update pane, and reporting something the
+# user cannot act on would be noise.
 LIST=$(su_list)
 if printf '%s' "$LIST" | grep -q 'No new software available'; then
   SEC=0
@@ -175,11 +175,90 @@ DET=""
 [ "$AUTO" = "0" ] && DET="automatic update checks are disabled on this Mac"
 [ $(( NOW - CHECKED )) -gt 86400 ] && DET="${DET:+$DET; }last successful scan was over a day ago"
 
+# ---- Homebrew ----
+# Where Homebrew is installed, its outdated formulae and casks are pending
+# updates too -- openssl, curl and every browser cask live there, not in
+# softwareupdate. Homebrew publishes no security classification, so they are
+# counted into `other` and never named: `packages` is the security list, and
+# an acknowledgement against a brew name would be silencing an unclassified
+# update as if someone had reviewed it.
+SRC=softwareupdate
+# NETDASH_BREW names the brew to use; set but empty means there is none. Only
+# the tests need it: PATH above already reaches the standard prefixes, so a
+# Mac with Homebrew finds the real one even when PATH holds nothing but shims.
+if [ "${NETDASH_BREW+set}" = set ]; then
+  BREW="$NETDASH_BREW"
+else
+  BREW=$(command -v brew 2>/dev/null || true)
+fi
+if [ -n "$BREW" ]; then
+  # Homebrew refuses to run as root, and `sudo brew services start` makes this
+  # a LaunchDaemon that does exactly that. Run it as whoever owns the prefix --
+  # the account that installed it, whose cache and taps are the real ones.
+  BREW_USER=""
+  BREW_OK=1
+  if [ "$(id -u)" -eq 0 ]; then
+    BREW_USER=$(stat -f %Su "$("$BREW" --prefix 2>/dev/null)" 2>/dev/null || true)
+    case "$BREW_USER" in ""|root) BREW_OK=0 ;; esac
+  fi
+  # NO_AUTO_UPDATE because the refresh below is the one place that is allowed
+  # to reach the network, and it reports whether it worked.
+  brew_() {
+    if [ -n "$BREW_USER" ]; then
+      sudo -u "$BREW_USER" -H env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 "$BREW" "$@"
+    else
+      env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 "$BREW" "$@"
+    fi
+  }
+
+  if [ "$BREW_OK" -eq 0 ]; then
+    DET="${DET:+$DET; }Homebrew not checked: cannot tell which user owns it"
+  else
+    BREW_FRESH=0
+    if [ "$REFRESH" = yes ]; then
+      brew_ update --quiet >/dev/null 2>&1 && BREW_FRESH=1
+    fi
+
+    # `brew outdated` exits 0 whether or not anything is outdated (it fails
+    # only when given named packages), so a non-zero status is a real error,
+    # and empty output from a successful run is a real zero.
+    BOUT=""; rc=0
+    BOUT=$(brew_ outdated --quiet 2>/dev/null) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      BN=$(printf '%s\n' "$BOUT" | grep -c . || true)
+      OTH=$(( OTH + BN ))
+      SRC=softwareupdate+brew
+      [ "$BN" -gt 0 ] && DET="${DET:+$DET; }Homebrew: $BN outdated"
+
+      # Without a refresh the list is only as current as Homebrew's metadata,
+      # so checked_at must not claim otherwise -- the same rule as the Linux
+      # check. The API cache is what `brew update` rewrites; FETCH_HEAD covers
+      # a Homebrew installed with HOMEBREW_NO_INSTALL_FROM_API.
+      if [ "$BREW_FRESH" -eq 0 ]; then
+        BMETA=""
+        for f in "$(brew_ --cache 2>/dev/null)/api/formula.jws.json" \
+                 "$(brew_ --repository 2>/dev/null)/.git/FETCH_HEAD"; do
+          [ -e "$f" ] && BMETA=$(stat -f %m "$f" 2>/dev/null || true)
+          [ -n "$BMETA" ] && break
+        done
+        if [ -n "$BMETA" ]; then
+          [ "$BMETA" -lt "$CHECKED" ] && CHECKED=$BMETA
+        else
+          DET="${DET:+$DET; }Homebrew metadata age unknown"
+        fi
+        [ "$REFRESH" = yes ] && DET="${DET:+$DET; }brew update failed"
+      fi
+    else
+      DET="${DET:+$DET; }brew outdated failed; Homebrew packages not counted"
+    fi
+  fi
+fi
+
 # macOS installs its updates at reboot rather than leaving a booted system
 # running stale code, so there is no equivalent state to report. Emitted as
 # null for a consistent payload shape.
 JSON=$(printf '{"security":%s,"other":%s,"reboot_required":null,"checked_at":%d,"source":"%s","detail":"%s","packages":"%s"}' \
-  "$SEC" "$OTH" "$CHECKED" "softwareupdate" "$DET" "$SECPKGS")
+  "$SEC" "$OTH" "$CHECKED" "$SRC" "$DET" "$SECPKGS")
 
 if [ "$MODE" = "--print" ]; then printf '%s\n' "$JSON"; exit 0; fi
 

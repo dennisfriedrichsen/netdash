@@ -54,10 +54,11 @@ an LLM agent instead of doing it by hand.
 | `reachability` | probing that turns silence into **DOWN** (see below) |
 | `eol` | end-of-life lookups via endoflife.date (see below) |
 | `thresholds` | warn/crit percentages per metric |
-| `hosts` | per-host thresholds, staleness, address and `virt` overrides (see below) |
+| `hosts` | per-host thresholds, staleness, address, `virt` overrides and a container's `parent` (see below) |
 | `truenas` | API polling for the NAS (see below) |
 | `hubitat` | polling for a Hubitat Elevation hub (see below) |
 | `unifi` | polling for a UniFi OS console and the devices it has adopted (see below) |
+| `services` | application and management-controller checks attached to existing hosts (see Service checks) |
 
 ### Thresholds
 
@@ -96,7 +97,8 @@ per-host settings, keyed by the name the collector reports:
   "netbsd11dot0": { "thresholds": { "mem": { "warn": 92 } } },
   "argon":        { "stale_after_seconds": 900, "expect_up": false },
   "hassium":      { "address": "10.0.0.42" },
-  "truenas-core": { "virt": "none" }
+  "truenas-core": { "virt": "none" },
+  "plexserver":   { "parent": "mercury" }
 }
 ```
 
@@ -286,6 +288,7 @@ work.
 | NetBSD | 11.0 | cron, 60s |
 | macOS | 15 (Intel), 26 (Apple Silicon) | Homebrew + launchd, 60s |
 | TrueNAS | CORE 13.0 | server-side API poll, no collector installed |
+| FreeCORE | 15.1 | same server-side API poll as TrueNAS CORE |
 
 Architectures covered: `x86_64` (`amd64` as the BSDs spell it), `aarch64`
 (Debian), `armv7l` (Pi 3 B+), `arm64` (Apple Silicon). The collectors pass
@@ -492,7 +495,7 @@ install gets none of it — trusting it there would read an unpatched-since-2025
 box as supported until 2030. Absent a product-specific reason to trust it, an
 `eolFrom` release reads EOL.
 
-## Bare metal or VM
+## Bare metal, VM or container
 
 Each collector reports whether it is virtualised, and the dashboard splits the
 fleet on it.
@@ -501,12 +504,16 @@ fleet on it.
 |---|---|
 | Linux (systemd) | `systemd-detect-virt` — prints `none` and exits **1** on bare metal, so the word is the signal, not the status |
 | Linux (no systemd) | the CPUID hypervisor flag, then DMI `sys_vendor`/`product_name` for the name |
-| FreeBSD / TrueNAS | `sysctl -n kern.vm_guest` |
+| FreeBSD / TrueNAS | `sysctl -n kern.vm_guest`; inside a jail, `security.jail.jailed` answers `jail` first |
+| Linux containers, no systemd | `/run/.containerenv` (podman), `/.dockerenv` (docker), `container=` in pid 1's environment (LXC, nspawn) |
 | OpenBSD / NetBSD | DMI strings via sysctl, matched against known hypervisor vendors |
 | macOS | `sysctl -n kern.hv_vmm_present` |
 
-`virt` is `"none"`, a hypervisor name (`bhyve`, `kvm`, `vmware`, …), or **null**
-when the host cannot tell. `is_vm` is tri-state for the same reason everything
+`virt` is `"none"`, a hypervisor name (`bhyve`, `kvm`, `vmware`, …), a container
+type (`jail`, `lxc`, `docker`, `podman`, …), or **null** when the host cannot
+tell. `is_container` is true for the container types, and `is_vm` is false for
+them — a container shares its host's kernel, so it is neither a VM nor bare
+metal. `is_vm` is tri-state for the same reason everything
 else here is: a host that cannot answer is not a bare-metal host, and collapsing
 null to false would file every pre-0.4.0 collector under "bare metal" — the one
 answer nobody checked.
@@ -526,15 +533,103 @@ Config wins over the collector, and `virt_source` in the API reports which
 answered — `"config"` or `"host"` — so a value someone typed is never
 indistinguishable from one a machine measured. The card's hover says so too.
 
+### Jails and containers
+
+A FreeBSD jail or Linux container runs on its host's kernel, so most of what a
+collector normally reads — CPU counters, memory page queues, boot time —
+describes the **host**. Inside one, the collectors measure the guest instead:
+
+| reading | FreeBSD jail | Linux container |
+|---|---|---|
+| CPU | summed `%cpu` of the jail's processes over the host's cores | the cgroup's CPU time over its quota, or its visible cores |
+| memory | summed resident memory of the jail's processes, against the host's RAM | the cgroup's charge less inactive file cache, against its limit, or the host's RAM |
+| uptime | age of the jail's oldest process | `/proc/uptime` when lxcfs serves it, else time since pid 1 started |
+| disk | the jail's `/` | the root filesystem, including docker's overlay |
+| OS | `freebsd-version -u`, the jail's userland | `/etc/os-release`, as usual |
+
+`ps` only lists the jail's own processes, which is what makes the FreeBSD
+figures possible without enabling racct on the host. Summed resident memory
+counts a shared library once per process that maps it, so it reads a little
+high. A jail's `/` is a dataset in the host's pool, so its fullness is that
+pool's. In a jail the patch check fetches base updates for the jail's own
+release rather than the host kernel's, and never reports a reboot as required,
+since restarting a jail does not change its kernel.
+
+### Jails reported by their host
+
+A jail does not need a collector of its own: its host lists it.
+
+| host | how it finds its jails | what each jail gets |
+|---|---|---|
+| FreeBSD (the collector) | `jls` for running jails; `/etc/jail.conf`, `/etc/jail.conf.d/*.conf` and `iocage list` for stopped ones | everything in the table above — the host runs the same collector inside each running jail with `jexec` — plus patch status from the daily check, run the same way |
+| TrueNAS / FreeCORE (the poller) | the API's `/jail` list, running or not | state, release, address, start-at-boot, uptime from `last_started`. **No CPU, memory or disk**: the API has none per jail |
+
+Each jail is listed as a host of its own, on the **Containers** tab, with its
+parent known — no `parent` entry needed. Its address comes from the host (or,
+for a vnet jail, from `ifconfig` inside it), so reachability probing works with
+no config. Its release feeds the end-of-life check like any other host's.
+
+**Stopped jails are grey, "Stopped", never down.** A jail its host lists as
+stopped — or one its host listed before and no longer does, which is what
+stopping a jail looks like to `jls` — is a decision, not an outage. The card
+says whether it is set to start at boot. That last word stands while the host
+itself is quiet: a NAS outage does not turn its stopped jails red.
+
+A running jail is **probed every sweep**, because its samples arrive fresh
+whenever its host does, which proves nothing about the jail. Running and
+answering is OK even with no readings to judge (a TrueNAS jail); not answering
+is down, whatever the host says.
+
+**A jail with its own collector** (the one above) still pushes for itself, and
+those pushes win: the host's report adds only where it runs and whether it is
+up, never a second, emptier sample beside them. That is how a TrueNAS jail gets
+CPU and memory — install the collector inside it.
+
+**Names.** A jail is listed under its short hostname, which is also what a
+collector inside it calls itself and what TrueNAS lists it as. Jail names are
+unique per host, not per network, so the second host to report a name gets
+`name.parent` — mercury's `transmission` and cerium's `transmission.cerium` —
+and keeps it. Names outside `A-Z a-z 0-9 _ . -` are skipped.
+
+On the FreeBSD side nothing from a jail's filesystem runs as the host's root:
+`jexec` runs the host's copy of the script as the jail's root, inside the jail.
+The script travels as an argument, with stdin from `/dev/null`, so pkg's
+bootstrap prompt in a jail without pkg declines instead of eating the script.
+Each jail's patch result is kept on the host, in
+`/var/db/netdash-collector/jails/<name>.json`, never written into the jail.
+Set `NETDASH_JAILS=no` in `collector.conf` to stop a host reporting its jails.
+
+`parent` in the config still works, and wins — for a jail whose host reports
+nothing, such as one on a Linux box:
+
+```json
+"hosts": { "plexserver": { "parent": "mercury" } }
+```
+
+The detail page links to the host either way (`jail on mercury`).
+
+The in-jail collector needs cron running inside the jail; jails started with
+`/etc/rc` have it. Linux containers are reported only from inside, by their own
+collector, which needs cron or systemd: LXC system containers have that, most
+docker images do not.
+
 ## Tabs
 
 - **All** — one line per host, sized so roughly forty fit on a screen without
   scrolling. Colour carries urgency, the number carries the value, and hovering
   carries everything else. No meters: a bar needs vertical space to read, and at
   this density the number *is* the signal.
-- **Bare metal** / **VMs** — the full cards, filtered. These lists are short
+- **Bare metal** / **VMs** / **Containers** — the full cards, filtered.
+  Containers holds FreeBSD jails and Linux containers alike. These lists are short
   enough to afford the detail, and they are where you go to look at a machine
   rather than scan for the one that is wrong.
+- **Services** — one line per service check rather than per host: service,
+  host (with the host's own status as a small dot beside it), address, port,
+  probe, status, detail, how long it has been in that state, when it was last
+  checked and how long the check took. Worst first, disabled checks last and
+  dimmed. The tab's count is checks, not hosts. On narrower screens the probe,
+  checked and latency columns go first, then address, port, detail and since;
+  hovering a row always gives the full story, and clicking it opens the host.
 
 Hosts that cannot report virtualisation appear under **All** only, with the
 count called out beside the tabs. Guessing would file them under the wrong tab;
@@ -580,7 +675,7 @@ which commands are wrong in ways that fail silently — is in
 | FreeBSD | `pkg audit`; `freebsd-update updatesready` unless pkgbase | yes, and base separately |
 | OpenBSD | `syspatch -c` (base) + `pkg_add -u -n` (packages) | yes, for base |
 | NetBSD | `pkg_admin audit` | yes for packages; **base has no patch mechanism** |
-| macOS | `softwareupdate --list --no-scan` | `Recommended: YES` |
+| macOS | `softwareupdate --list --no-scan`, plus `brew outdated` where Homebrew is installed | `Recommended: YES`; Homebrew is unclassified |
 | TrueNAS CORE | `update.check_available` | no, OS image only |
 
 Two rules hold everywhere:
@@ -673,6 +768,21 @@ sudo python3 /opt/netdash/server/truenas.py /etc/netdash/server.json
 ```
 
 That prints exactly what the dashboard will show, or the API error.
+
+**FreeCORE** serves the same API and is configured the same way. More than one
+box makes the block a list, each entry with its own `display_name`:
+
+```json
+"truenas": [
+  { "enabled": true, "host": "truenas.example", "api_key": "1-xxxxx" },
+  { "enabled": true, "host": "freecore.example", "display_name": "freecore", "api_key": "1-yyyyy" }
+]
+```
+
+A FreeCORE box reports itself as `FreeCORE <version>`, not as TrueNAS CORE, so
+it gets the NAS icon but not CORE's end-of-life date. endoflife.date does not
+track it either, so give it its own `eol.overrides` entry if you want one.
+`truenas` is the only block that takes a list.
 
 ## Hubitat
 
@@ -861,6 +971,191 @@ including paths that cannot exist**. A 401 therefore says nothing about
 whether the Integration API is enabled — only that UniFi OS rejected the
 request before routing it. Test with a real key or the answer is meaningless.
 
+## Service checks
+
+A host that answers is not an application that works. hassium can push a
+perfect sample every minute while Home Assistant on it has crashed, and its
+card would be green. Service checks are the server asking the application
+itself, read-only, and showing the answer **beside** the host's own status
+rather than inside it -- the same separation patches and the UniFi fleet have.
+A green host with a red Plex row says exactly that; neither is allowed to
+paint over the other.
+
+Nothing runs unless it is configured, and a check is off unless it says
+`"enabled": true`. A config with no `services` block behaves exactly as
+before, and collectors and their payload are untouched -- every check runs on
+this server.
+
+```json
+"services": {
+  "interval_seconds": 60,
+  "timeout_seconds": 5,
+  "failures_before_fail": 2,
+  "checks": [
+    { "kind": "home_assistant", "host": "hassium", "enabled": true,
+      "url": "http://10.0.0.113:8123" },
+    { "kind": "plex", "host": "plexserver", "enabled": true,
+      "url": "http://10.0.0.133:32400" },
+    { "kind": "transmission", "host": "transmission", "enabled": true,
+      "url": "http://10.0.0.152:9091" },
+    { "kind": "ipmi", "host": "mercury", "enabled": true, "address": "10.0.0.219",
+      "tls_fingerprint_sha256": "1A:24:99:54:E1:93:7F:10:...:40:33" }
+  ]
+}
+```
+
+`host` is the name the host already has on the dashboard; the check appears on
+that card and nowhere else. It is not a new host. A check whose host has never
+reported is said once at startup and shows nowhere until the host does.
+
+### What each check proves -- and does not
+
+The card and the detail page say this in the same words. None of these is
+proof the service is doing its job: a web interface that loads is not a
+download making progress.
+
+| kind | asks | ok means | does **not** mean |
+|---|---|---|---|
+| `home_assistant`, no token | `GET /manifest.json` | the HA web frontend answers as Home Assistant | the core is running, or any automation is |
+| `home_assistant`, `token_file` | `GET /api/config` (Bearer) | the core reports `state: RUNNING`, not in recovery/safe mode | integrations or automations work |
+| `plex` | `GET /identity` | Plex Media Server answers with its MediaContainer | libraries are mounted, or anything plays |
+| `transmission` | RPC `session-stats` (a read) | the daemon answers its RPC | any torrent is making progress |
+| `ipmi` | IPMI Get Channel Auth Capabilities on 623/udp, plus HTTPS `GET /` | the management controller is alive | anything about the OS -- that is the host's own status |
+
+The Transmission jail shares cerium's address, 10.0.0.152, and the check uses
+it; it is attached to the `transmission` host so it shows on the jail's card.
+
+Optional per kind: `machine_identifier` (plex) pins which Plex server must
+answer; `rpc_path` (transmission) if it is not `/transmission/rpc`;
+`username` + `password_file` (transmission, ipmi). Per check: `id` (default
+`<kind>-<host>`), `name`, `interval_seconds` (15-3600), `timeout_seconds`
+(1-30), `failures_before_fail`, `stale_after_seconds` (default three intervals).
+
+### States
+
+| state | colour | meaning |
+|---|---|---|
+| answering | green | the check passed |
+| failing | **red** | the service did not answer properly: timeout, refused, 5xx, a reply that is not this service's, HA not RUNNING |
+| rechecking | grey | one failure, held until it repeats `failures_before_fail` times -- one dropped packet is not an outage |
+| auth refused | amber | the service answered and refused the credential, or needs one |
+| misconfigured | amber | the check cannot run as configured: no URL, unreadable credential file, certificate does not match its pin |
+| cannot check | amber | this server's side: name does not resolve, no route, ipmitool missing |
+| stale | amber | no result for `stale_after_seconds` -- the checker itself is stuck |
+| not checked yet | grey | the server just started |
+| disabled | grey | in config with `"enabled": false`; listed on the detail page only |
+
+Only failing is red, for the reason reach.py gives: a dashboard that paints a
+service red because of its own broken plumbing teaches you to stop believing
+red. Failures are counted in the header ("1 service failing"), flagged on the
+host's compact row, and every settled change lands in the host's event log
+(`service:<id>`). A held single failure is not logged. The **Services** tab lists every check
+on one screen -- see Tabs.
+
+The API carries, per check, `address`, `ports` (e.g. `["623/udp", "443/tcp"]`)
+and `probe` (the request in a few words), derived from the same config the
+check runs from.
+
+### Polling
+
+One thread per check, so a service that hangs holds up only itself. Every
+request has a deadline on the whole exchange, not just per read -- a server
+dribbling one byte at a time is cut off at `timeout_seconds` like a silent
+one. The API never waits on a check: it reads the last verdict from memory.
+Verdicts live in memory, like reachability; only transitions are written.
+
+### Credentials
+
+Never in `server.json`, never in the API, never in a log. Each lives in its
+own file, named in config and read at check time:
+
+```sh
+install -m 0440 -o root -g netdash /dev/null /usr/local/etc/netdash/hass.token
+# then put the token in it with an editor, not on a command line
+```
+
+* **Home Assistant**: optional. Without one, the check is the public manifest
+  and nothing under `/api/` is ever requested -- an unauthenticated `/api/`
+  request is a failed login to HA, and with `ip_ban_enabled` enough of them
+  ban this server. With one (Profile -> Security -> Long-lived access tokens,
+  ideally for a dedicated non-admin user), set `token_file`.
+* **Transmission**: only if `rpc-authentication-required` is on; then
+  `username` + `password_file`.
+* **IPMI sensors**: a BMC account with **USER** privilege -- created by you on
+  the BMC; netdash never touches BMC settings -- plus `username` +
+  `password_file`, and `ipmitool` installed on this server
+  (`pkg install ipmitool` / `apt install ipmitool`).
+
+A credential that is refused is **not sent again** until its file changes, so
+a typo cannot walk into HA's ip_ban, Transmission's brute-force lockout or a
+BMC's account lockout one poll at a time. Fix the file; the next round
+retries.
+
+### TLS
+
+Always verified; there is no setting to turn that off. For a device with a
+self-signed certificate -- every BMC -- pin it:
+
+```sh
+echo | openssl s_client -connect 10.0.0.219:443 2>/dev/null \
+  | openssl x509 -noout -fingerprint -sha256
+```
+
+and put the result in `tls_fingerprint_sha256` (colons optional). The pin is
+compared right after the handshake, before a byte of the request is sent; a
+certificate that stops matching is reported as misconfigured, which is what a
+firmware update that regenerates the certificate looks like -- and also what
+someone else answering at that address looks like. Or give `ca_file`.
+
+### The BMC
+
+mercury's management controller (a Supermicro at 10.0.0.219) is a check
+attached to mercury, shown as a **BMC** row on its card and a section of its
+detail page that says in words it is separate hardware. It is checked whether
+or not mercury is up, and when mercury is DOWN its row says what the BMC says:
+`DOWN · no reply from 10.0.0.2 · BMC answers, power on` is a hung OS;
+`power off` is a different trip to the rack.
+
+Two levels, and the second may stay unknown indefinitely without that being a
+fault:
+
+* **Reachable** -- no credentials. The IPMI pre-session Get Channel
+  Authentication Capabilities on 623/udp (the first packet of every ipmitool
+  session; it changes nothing) and the HTTPS interface, pinned. Either
+  answering is enough; neither is a failure.
+* **Hardware** -- with credentials and ipmitool: `ipmitool -I lanplus -L USER
+  sdr elist` and `chassis status`, every `sensor_interval_seconds` (default
+  300). Temperatures, fans, power supplies and voltages are graded by
+  ipmitool's threshold status and by discrete event text ("Failure detected",
+  "AC lost"); chassis faults (power, cooling, drive) are critical. A
+  reachable BMC reporting a failed supply is a red row. An unpopulated fan
+  header ("No Reading") is not a failed fan. The password goes to ipmitool as
+  `-f <file>`, never in argv or the environment, and USER privilege means the
+  session cannot issue a single write.
+
+Without credentials the row reads `reachable · sensors unknown` and stays
+green -- reachability-only was the choice made. Configured credentials that
+fail (refused login, ipmitool missing) turn it amber. Nothing is ever shown
+as `sensors ok` that was not read.
+
+Redfish was tried first and is not usable on this BMC: even the
+unauthenticated service root answers `OemLicenseNotPassed` (it wants
+Supermicro's SUM/DCMS/OOB licence).
+
+### Troubleshooting
+
+* `services: check X cannot run: ...` at startup -- the reason is the config
+  error; the card shows it as misconfigured.
+* `service X on H: auth -- ... not retried until ... changes` -- fix the
+  credential file; the next round picks it up.
+* **cannot check / cannot resolve** -- this server cannot reach the address.
+  It is not the service, and netdash does not fix it by changing networking.
+* **stale** -- the check thread produced nothing for three intervals: look
+  for `service X:` lines in the journal.
+* To see exactly what a check does, from the server:
+  `curl -s http://10.0.0.133:32400/identity`; for the BMC
+  `ipmitool -I lanplus -H 10.0.0.219 -U <user> -f <file> -L USER sdr elist`.
+
 ## History
 
 Raw samples answer *what is it doing*. They are the wrong tool for *is this
@@ -1013,7 +1308,11 @@ glyph's geometry and fails on a path command it cannot read, an element that
 draws nothing, or a shape that leaves the 24×24 viewBox. It says nothing about
 whether an icon *looks* right — only a person looking at the PNG can say that.
 
-108 cases, no network, no root, nothing installed — `sh`, `awk` and `python3`.
+The service and IPMI cases stand up their own HTTP, HTTPS and UDP servers on
+127.0.0.1 (HTTPS only where `openssl` exists to make a certificate); nothing
+leaves the machine.
+
+The suite needs no network, no root and nothing installed — `sh`, `awk` and `python3`.
 The BSD and macOS cases run the real collector end to end against mocked
 `sysctl`/`df`/`mount`/`vmstat`; the Linux cases drive its awk programs directly,
 since `/proc` reads cannot be intercepted through `PATH`.

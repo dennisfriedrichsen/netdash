@@ -132,7 +132,7 @@ nothing.
 | FreeBSD | `pkg audit -q`, `freebsd-update updatesready` | none needed | **yes, both** |
 | OpenBSD | — | `syspatch -c` | no |
 | NetBSD | `pkg_admin audit` | `pkg_admin fetch-pkg-vulnerabilities` | yes, if enabled |
-| macOS | read `com.apple.SoftwareUpdate.plist` | none needed | **yes, every 6h** |
+| macOS | read `com.apple.SoftwareUpdate.plist`; `brew outdated` | `brew update`, Homebrew only | **yes, every 6h** (Apple only) |
 | TrueNAS CORE | `update.check_available` (server-side) | n/a | n/a |
 
 ### Debian, Ubuntu, Raspbian — **verified** on Debian 13
@@ -549,10 +549,39 @@ reported as *unknown*, not zero: both cases count zero entries, so the count
 alone cannot tell "nothing pending" from "nothing understood", and only the
 explicit `No new software available` string makes zero safe to report.
 
-Homebrew packages (`brew outdated`) are a separate question and deliberately
-not reported, as are `--include-config-data` items (XProtect and friends),
-which macOS installs silently and never shows in the Software Update pane —
-reporting something the user cannot act on is noise.
+`--include-config-data` items (XProtect and friends) are deliberately not
+reported: macOS installs them silently and never shows them in the Software
+Update pane, and reporting something the user cannot act on is noise.
+
+**Homebrew, where it is installed.** openssl, curl and most browsers on a Mac
+come from Homebrew, not from softwareupdate, so a Mac Apple calls current can
+still be well behind. When `brew` is on the PATH the daily check runs
+`brew update --quiet` (skipped under `NETDASH_PATCH_REFRESH="no"`) and then
+`brew outdated --quiet`, which lists formulae and casks; casks that update
+themselves are left out, as `brew outdated` does without `--greedy`. `source`
+becomes `softwareupdate+brew`.
+
+- **Counted into `other`, never `security`, and never named.** Homebrew
+  publishes no security classification. `packages` is the security list that
+  acknowledgements are made against, so a brew name there would let someone
+  silence an unclassified update as though it had been reviewed. `detail` says
+  how many of the other updates are Homebrew's.
+- **`brew outdated` exits 0 whether or not anything is outdated**; it fails
+  only when given package names. So a non-zero exit is an error, and the check
+  reports Apple's counts alone with a note rather than a Homebrew zero it
+  never established.
+- **A failed `brew update` dates the answer by Homebrew's metadata.**
+  `checked_at` drops to the mtime of the API cache (`formula.jws.json`), or of
+  `FETCH_HEAD` for a git-based install, if that is older than the last
+  softwareupdate scan — the same rule as the Linux check, so stale brew counts
+  age into *unknown* instead of posing as current.
+- **Homebrew refuses to run as root.** Under `sudo brew services start` the
+  check is a LaunchDaemon running as root, so brew commands run via
+  `sudo -u` as the owner of `brew --prefix` — the account whose taps and cache
+  are the real ones. A prefix owned by root is not checked, and `detail` says
+  so.
+
+Unverified on hardware so far: the brew half has been run only against mocks.
 
 ### TrueNAS CORE — **verified**, and it cannot answer
 

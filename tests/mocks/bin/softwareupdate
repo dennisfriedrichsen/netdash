@@ -1,0 +1,4 @@
+#!/bin/sh
+# Mock softwareupdate: the real all-clear, split across streams as macOS does.
+echo "Software Update Tool"
+echo "No new software available." >&2

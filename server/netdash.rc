@@ -33,6 +33,15 @@ load_rc_config "$name"
 
 pidfile="/var/run/${name}.pid"
 
+# The account app.py runs as, handed to daemon(8)'s -u below and then unset.
+# rc.subr reads ${name}_user as "run the whole command under su(1) as this
+# user", which would start daemon itself as netdash -- and an unprivileged
+# daemon cannot write its pidfile in /var/run, so every start failed with
+# "ppidfile: Permission denied" and stop/status could never find the
+# supervisor. daemon must start as root; it drops to this user for app.py.
+_netdash_runas="${netdash_user}"
+unset netdash_user
+
 # daemon(8) does the actual fork/detach so run_rc_command can invoke this
 # synchronously and return once it has. -P records the supervisor's own pid,
 # not app.py's -- that is deliberate: rc.subr's default status/stop check
@@ -40,9 +49,12 @@ pidfile="/var/run/${name}.pid"
 # under the same supervisor if it ever dies, so the recorded pid keeps
 # meaning "is netdash supposed to be running" across a respawn. -S sends
 # app.py's stderr (its only logging) to syslog under the "netdash" tag,
-# the rc.d analogue of journalctl capturing a systemd unit's stderr.
+# the rc.d analogue of journalctl capturing a systemd unit's stderr. -f
+# points daemon's own stdio at /dev/null first: without it the supervisor
+# holds open whatever started it, and `service netdash start | tail` -- or
+# deploy.freebsd.sh run under anything that captures output -- never sees EOF.
 command="/usr/sbin/daemon"
-command_args="-P ${pidfile} -r -S -t ${name} -u ${netdash_user} \
+command_args="-P ${pidfile} -f -r -S -t ${name} -u ${_netdash_runas} \
 /usr/bin/env NETDASH_CONFIG=${netdash_config} ${netdash_python} ${netdash_dir}/app.py"
 
 run_rc_command "$1"

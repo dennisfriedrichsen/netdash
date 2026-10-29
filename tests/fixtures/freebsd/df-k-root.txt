@@ -1,0 +1,2 @@
+Filesystem      1024-blocks    Used    Avail Capacity  Mounted on
+/dev/ufs/rootfs    54306652 6166252 43795868    12%    /
