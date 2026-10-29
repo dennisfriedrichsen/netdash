@@ -280,6 +280,20 @@ function fmtBytes(b) {
   while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
   return (v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)) + ' ' + u[i];
 }
+/* Disk in powers of 1000, the way Finder and every drive label count it, so a
+   Mac reading "45 GB free" here reads the same in its own Get Info window.
+   Memory stays in powers of 1024: that is how RAM is sold and reported. */
+function fmtDiskBytes(b) {
+  if (b === null || b === undefined) return '–';
+  var u = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'], i = 0, v = b;
+  while (v >= 1000 && i < u.length - 1) { v /= 1000; i++; }
+  return (v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)) + ' ' + u[i];
+}
+/* What a disk card is for: how much can still be written. */
+function fmtDiskFree(d) {
+  if (d.used_bytes === null || d.used_bytes === undefined) return 'of ' + fmtDiskBytes(d.total_bytes);
+  return fmtDiskBytes(d.total_bytes - d.used_bytes) + ' free of ' + fmtDiskBytes(d.total_bytes);
+}
 function fmtPct(p) { return (p === null || p === undefined) ? '–' : p.toFixed(0) + '%'; }
 function fmtAge(s) {
   if (s === null || s === undefined) return '';
@@ -657,7 +671,7 @@ function renderOverview(data, tab) {
     });
     a.appendChild(meter('Disk' + (worst ? ' · ' + worst.mount : ''),
       h.disk.worst_pct, h.disk.status,
-      worst ? fmtBytes(worst.used_bytes) + ' of ' + fmtBytes(worst.total_bytes) +
+      worst && worst.total_bytes ? fmtDiskFree(worst) +
               (h.disk.mounts.length > 1 ? '  (+' + (h.disk.mounts.length - 1) + ' more)' : '') : ''));
 
     a.appendChild(patchRow(h.patches));
@@ -1046,7 +1060,7 @@ function renderDetail(host, data, range) {
     bd.appendChild(document.createTextNode(fmtPct(d.pct)));
     if (d.total_bytes) {
       bd.appendChild(el('span', 'unit',
-        '  ' + fmtBytes(d.used_bytes) + ' of ' + fmtBytes(d.total_bytes)));
+        '  ' + fmtDiskFree(d)));
     }
     bd.style.color = st(d.status).css;
     pd.appendChild(bd);
