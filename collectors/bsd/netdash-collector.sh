@@ -75,9 +75,12 @@ CPU=$(awk -v a="$S1" -v b="$S2" 'BEGIN{
 fi
 
 # ---- Memory ----
-# Reported as "not reclaimable": free, inactive and laundry pages are available
-# to the system, and the ZFS ARC is cache. This matches the Linux collector's
-# MemAvailable and the TrueNAS poller, so every host means the same thing.
+# Reported as "not reclaimable": free and inactive pages are available to the
+# system, and the ZFS ARC is cache. Laundry pages are not: they are dirty, and
+# must be written out -- usually to swap -- before they can be reused, so they
+# count as used. This matches the Linux collector's MemAvailable (which counts
+# anonymous memory as used) and the TrueNAS poller (active + wired + laundry,
+# less ARC), so every host means the same thing (issue #7).
 # Any sysctl that does not exist leaves the value null rather than wrong.
 OSNAME=$(uname -s)
 MEM_TOTAL=null
@@ -103,11 +106,10 @@ FreeBSD)
   PS=$(sysctl_n vm.stats.vm.v_page_size)
   FREE=$(sysctl_n vm.stats.vm.v_free_count)
   INACT=$(sysctl_n vm.stats.vm.v_inactive_count)
-  LAUND=$(sysctl_n vm.stats.vm.v_laundry_count); LAUND=${LAUND:-0}
   ARC=$(sysctl_n kstat.zfs.misc.arcstats.size); ARC=${ARC:-0}
   if [ -n "$MEM_TOTAL" ] && [ -n "$PS" ] && [ -n "$FREE" ] && [ -n "$INACT" ]; then
-    MEM_USED=$(awk -v t="$MEM_TOTAL" -v ps="$PS" -v f="$FREE" -v i="$INACT" -v l="$LAUND" -v a="$ARC" 'BEGIN{
-      u = t - (f+i+l)*ps - a; if (u<0) u=0; printf "%.0f", u }')
+    MEM_USED=$(awk -v t="$MEM_TOTAL" -v ps="$PS" -v f="$FREE" -v i="$INACT" -v a="$ARC" 'BEGIN{
+      u = t - (f+i)*ps - a; if (u<0) u=0; printf "%.0f", u }')
   else
     MEM_TOTAL="${MEM_TOTAL:-null}"
   fi

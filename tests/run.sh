@@ -80,7 +80,12 @@ if want freebsd-zfs; then
   check "devfs and the nfs mount excluded" \
         "assert not any('nas' in x['mount'] or x['mount']=='/dev' for x in d['disks'])" "$J"
   check "ARC excluded from memory (else a ZFS box drifts to 100%)" \
-        "assert 16 < 100*d['mem_used_bytes']/d['mem_total_bytes'] < 18, d" "$J"
+        "assert 17 < 100*d['mem_used_bytes']/d['mem_total_bytes'] < 18, d" "$J"
+  # 32090000000 - (3000000 free + 1500000 inactive)*4096 - 8e9 ARC. The 50000
+  # laundry pages are dirty and must be written out before reuse, so they stay
+  # in used, as the TrueNAS poller counts them (issue #7).
+  check "laundry pages count as used, not available" \
+        "assert d['mem_used_bytes']==5658000000, d['mem_used_bytes']" "$J"
   check "boottime anchored on the brace, not usec (~20000d bug)" \
         "assert 0 < d['uptime_seconds'] < 86400*400, d['uptime_seconds']" "$J"
   rm -rf "$B"
