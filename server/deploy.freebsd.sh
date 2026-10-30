@@ -10,13 +10,24 @@ set -eu
 SRC=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 # The interpreter the rc script will actually run, not whatever `python3` is on
-# PATH: a box with only a versioned python3.11 has no `python3` at all, and is
+# PATH: a box with only a versioned python3.X has no `python3` at all, and is
 # fine as long as rc.conf names the one it does have.
+#
+# Pinning a versioned path is also how this breaks. A pkg upgrade to the next
+# Python removes the old binary, the running server carries on from memory,
+# and nothing notices until the next restart fails. So a missing pin gets its
+# own message: "pkg install python3" is wrong advice when python3 is already
+# there and only rc.conf is out of date.
 PY=$(sysrc -n netdash_python 2>/dev/null || echo /usr/local/bin/python3)
-[ -x "$PY" ] || {
-  echo "$PY not found -- run: pkg install python3, or sysrc netdash_python=<path>" >&2
+if [ ! -x "$PY" ]; then
+  if [ "$PY" != /usr/local/bin/python3 ] && [ -x /usr/local/bin/python3 ]; then
+    echo "rc.conf pins netdash_python=$PY, which no longer exists (removed by a" >&2
+    echo "Python upgrade?) -- run: sysrc netdash_python=/usr/local/bin/python3" >&2
+  else
+    echo "$PY not found -- run: pkg install python3, or sysrc netdash_python=<path>" >&2
+  fi
   exit 1
-}
+fi
 
 # FreeBSD convention: third-party software and its config live under
 # /usr/local (matching where the bsd collector already puts
