@@ -128,6 +128,34 @@ check('overview_cards', function () {
 });
 check('overview_empty', function () { overview([], ''); });
 
+// -- the All tab, grouped by OS --
+check('all_tab_groups_by_os_when_asked', function () {
+  var hs = [host({ host: 'arch', os: 'Arch Linux' }),
+            host({ host: 'deb1' }),
+            host({ host: 'fbsd', os: 'FreeBSD 15.0' }),
+            host({ host: 'deb2', os: 'Debian 13' }),
+            host({ host: 'mystery', os: null }),
+            host({ host: 'suse', os: 'openSUSE Tumbleweed' })];
+  var labels = ctx.osGroups(hs).map(function (g) {
+    return g.label + ':' + g.hosts.map(function (h) { return h.host; }).join('+');
+  }).join(' ');
+  if (labels !== 'Arch:arch Debian:deb1+deb2 FreeBSD:fbsd openSUSE:suse Unknown OS:mystery') {
+    throw new Error(labels);
+  }
+  var saved = ctx.localStorage.getItem;
+  try {
+    overview(hs, '');
+    if (countClass(top()[1], 'cgroup')) throw new Error('grouped without being asked');
+    ctx.localStorage.getItem = function (k) { return k === 'netdash-group' ? 'os' : null; };
+    overview(hs, '');
+    if (countClass(top()[1], 'cgroup') !== 5) throw new Error('expected 5 group headings');
+    if (countClass(top()[1], 'crow') !== 6) throw new Error('a host went missing');
+    if (textOf(top()[0]).indexOf('By OS') < 0) throw new Error('no toggle on the All tab');
+    overview(hs, 'vms');
+    if (textOf(top()[0]).indexOf('By OS') >= 0) throw new Error('toggle leaked onto VMs');
+  } finally { ctx.localStorage.getItem = saved; }
+});
+
 // -- behaviour a user would notice --
 check('acked_eol_soon_has_no_triangle', function () {
   if (textOf(ctx.compactRow(host({ eol: SOON }))).indexOf('⚠') < 0) {

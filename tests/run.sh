@@ -2490,6 +2490,8 @@ if want render; then
     # Both ack rows on one page is what tripped the shadowing.
     check "and with a patch ack and an eol ack on the same page" \
           "assert d['detail_both_ack_rows'] is None, d['detail_both_ack_rows']" "$J"
+    check "the All tab groups by OS when asked, unknowns last, and only the All tab offers it" \
+          "assert d['all_tab_groups_by_os_when_asked'] is None, d['all_tab_groups_by_os_when_asked']" "$J"
     check "the Containers tab holds jails and containers, and Bare metal does not" \
           "assert d['containers_tab_holds_only_containers'] is None, d['containers_tab_holds_only_containers']" "$J"
     check "a jail's detail page links to the host it runs on" \

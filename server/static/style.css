@@ -83,6 +83,12 @@ button.link:hover { color: var(--text-1); }
   background: var(--grid); border-radius: 9px; padding: 0 7px;
 }
 .tabnote { margin-left: auto; color: var(--muted); font-size: 12px; }
+/* A–Z / By OS on the All tab. Pushed right like the note; when the note is
+   there too it already holds the margin, so this just sits beside it. */
+.grouping { display: inline-flex; gap: 4px; }
+.grouping.after { margin-left: 8px; }
+.grouping button.link { padding: 2px 9px; font-size: 12px; }
+.grouping button.link.on { color: var(--text-1); background: var(--surface-1); font-weight: 650; }
 
 /* ---------- compact list ----------
    The density view: one line per host, sized so ~40 fit on a 1080p screen
@@ -138,6 +144,20 @@ button.link:hover { color: var(--text-1); }
    fighting the text contrast. */
 .crow.isdown { background: color-mix(in srgb, var(--st-crit) 12%, transparent); }
 .crow.isdown:hover { background: color-mix(in srgb, var(--st-crit) 20%, transparent); }
+
+/* A group heading spans the whole grid, so each OS starts on a fresh line
+   and its hosts flow into the columns beneath it. */
+.cgroup {
+  grid-column: 1 / -1; display: flex; align-items: center; gap: 8px;
+  padding: 12px 8px 4px; margin-bottom: 2px; border-bottom: 1px solid var(--border);
+  color: var(--text-2); font-size: 13px; font-weight: 650;
+}
+.cgroup:first-child { padding-top: 0; }
+.cgroup .cicon { width: 16px; height: 16px; color: var(--muted); }
+.cgroup .tabn {
+  font-size: 12px; font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums;
+  background: var(--grid); border-radius: 9px; padding: 0 7px;
+}
 
 @media (min-width: 1500px) {
   .compact { grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); }

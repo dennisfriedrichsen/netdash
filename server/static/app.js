@@ -741,6 +741,62 @@ function compactRow(h) {
   return a;
 }
 
+/* ---------- grouping the All tab by OS ----------
+   The icon families, named, except that the two catch-alls -- generic Linux
+   and FreeBSD-or-other-BSD -- take the OS string's own first word. Fedora,
+   Arch and openSUSE share a penguin, but lumping them under "Linux" would
+   hide exactly the split you group by OS to see. */
+var OS_GROUPS = {
+  apple: 'macOS', nas: 'TrueNAS', debian: 'Debian', ubuntu: 'Ubuntu',
+  raspberry: 'Raspberry Pi OS', openbsd: 'OpenBSD', netbsd: 'NetBSD',
+  gateway: 'UniFi', hub: 'Hubitat', unknown: 'Unknown OS'
+};
+
+function osGroupLabel(os) {
+  var fam = osFamily(os);
+  if (OS_GROUPS[fam]) return OS_GROUPS[fam];
+  var w = String(os || '').trim().split(/[\s\/]+/)[0];
+  return w && !/^\d/.test(w) && w.toLowerCase() !== 'linux' ? w
+       : fam === 'bsd' ? 'BSD' : 'Linux';
+}
+
+/* Groups alphabetically, case-folded so openSUSE does not sort after Ubuntu,
+   with the unknowns last: they are the group you want to shrink, not read
+   first. Hosts keep the order the server sent them in. */
+function osGroups(hosts) {
+  var by = {}, out = [];
+  hosts.forEach(function (h) {
+    var k = osGroupLabel(h.os);
+    if (!by[k]) out.push(by[k] = { label: k, hosts: [] });
+    by[k].hosts.push(h);
+  });
+  return out.sort(function (a, b) {
+    return (a.label === OS_GROUPS.unknown) - (b.label === OS_GROUPS.unknown) ||
+           a.label.toLowerCase().localeCompare(b.label.toLowerCase());
+  });
+}
+
+/* Per browser, like the theme: the wall panel and the laptop can want
+   different things, and nobody needs to link to a sort order. */
+function allGrouping() {
+  try { return localStorage.getItem('netdash-group') === 'os' ? 'os' : ''; }
+  catch (e) { return ''; }
+}
+
+function groupToggle() {
+  var cur = allGrouping();
+  var wrap = el('span', 'tabnote grouping');
+  [['', 'A–Z'], ['os', 'By OS']].forEach(function (o) {
+    var b = el('button', 'link' + (o[0] === cur ? ' on' : ''), o[1]);
+    b.onclick = function () {
+      try { localStorage.setItem('netdash-group', o[0]); } catch (e) {}
+      restart();
+    };
+    wrap.appendChild(b);
+  });
+  return wrap;
+}
+
 /* ---------- overview ---------- */
 
 function renderOverview(data, tab) {
@@ -807,7 +863,19 @@ function renderOverview(data, tab) {
      machine rather than scan for the one that is wrong. */
   if (tab === '') {
     var list = el('div', 'compact');
-    hosts.forEach(function (h) { list.appendChild(compactRow(h)); });
+    if (allGrouping() === 'os') {
+      osGroups(hosts).forEach(function (g) {
+        var gh = el('div', 'cgroup');
+        var gi = osIcon(g.hosts[0].os); gi.classList.add('cicon');
+        gh.appendChild(gi);
+        gh.appendChild(el('span', null, g.label));
+        gh.appendChild(el('span', 'tabn', String(g.hosts.length)));
+        list.appendChild(gh);
+        g.hosts.forEach(function (h) { list.appendChild(compactRow(h)); });
+      });
+    } else {
+      hosts.forEach(function (h) { list.appendChild(compactRow(h)); });
+    }
     frag.appendChild(list);
     root.replaceChildren(frag);
     return;
@@ -1766,6 +1834,11 @@ function renderTabs(data, active) {
     var note = el('span', 'tabnote', unknown + ' cannot report virtualisation');
     note.title = 'These appear only under All. Re-run install.sh to collect it.';
     nav.appendChild(note);
+  }
+  if (active === '') {
+    var g = groupToggle();
+    if (unknown) g.classList.add('after');
+    nav.appendChild(g);
   }
   return nav;
 }
