@@ -1227,9 +1227,7 @@ function renderDetail(host, data, range) {
   titleEl.textContent = host;
   metaEl.textContent = (c.os || 'unknown os') + ' · ' + fmtUptime(c.uptime_seconds) +
     ' · ' + (c.stale ? 'last seen ' : 'updated ') + fmtAge(c.age_seconds) +
-    (c.collector_version ? ' · collector v' + c.collector_version : '') +
-    (c.eol && c.eol.status === 'eol' ? ' · PAST EOL'
-      : c.eol && c.eol.status === 'eol_soon' ? ' · EOL ' + c.eol.eol_date : '');
+    (c.collector_version ? ' · collector v' + c.collector_version : '');
 
   var frag = document.createDocumentFragment();
 
@@ -1251,6 +1249,11 @@ function renderDetail(host, data, range) {
   var g = el('span', 'glyph', s.glyph); g.style.color = s.css; chip.appendChild(g);
   chip.appendChild(el('span', null, s.label));
   back.appendChild(chip);
+  /* The same badge the overview card carries, beside the status chip. As
+     muted text at the end of the header line "EOL 2026-09-30" was easy to
+     miss (issue #3); the date is in the badge's tooltip. */
+  var eb = eolBadge(c.eol);
+  if (eb) back.appendChild(eb);
   /* A jail or container lives and dies with the machine under it, so that
      machine is one click away. Only when config names it: nothing inside a
      jail can see its host's name. */

@@ -149,6 +149,42 @@ check('unacked_eol_past_has_a_triangle', function () {
     throw new Error('past EOL must still show red on the All view');
   }
 });
+// -- the detail page carries the same EOL badge as the overview (issue #3) --
+function findClass(node, cls) {
+  if (!node || typeof node !== 'object') return null;
+  if (String(node.className || '').split(' ').indexOf(cls) >= 0) return node;
+  for (var i = 0; i < (node.children || []).length; i++) {
+    var f = findClass(node.children[i], cls);
+    if (f) return f;
+  }
+  return null;
+}
+check('detail_eol_soon_is_a_yellow_badge', function () {
+  ctx.renderDetail('fbsd', detail(host({ eol: SOON })));
+  var b = findClass(ctx.root, 'eolbadge');
+  if (!b) throw new Error('no EOL badge on the detail page');
+  if (b.textContent !== 'EOL soon') throw new Error('badge reads ' + b.textContent);
+  if (b.style.color !== 'var(--st-warn)') throw new Error('badge is ' + b.style.color);
+  if (b.title.indexOf('2026-09-30') < 0) throw new Error('the date is gone: ' + b.title);
+  if (ctx.metaEl.textContent.indexOf('EOL') >= 0) {
+    throw new Error('still muted text in the header too: ' + ctx.metaEl.textContent);
+  }
+});
+check('detail_eol_past_is_a_red_badge', function () {
+  ctx.renderDetail('mercury', detail(host({ eol: PAST })));
+  var b = findClass(ctx.root, 'eolbadge');
+  if (!b) throw new Error('no EOL badge on the detail page');
+  if (b.textContent !== 'EOL') throw new Error('badge reads ' + b.textContent);
+  if (b.style.color !== 'var(--st-crit)') throw new Error('badge is ' + b.style.color);
+  if (ctx.metaEl.textContent.indexOf('EOL') >= 0) {
+    throw new Error('still muted text in the header too: ' + ctx.metaEl.textContent);
+  }
+});
+check('detail_supported_has_no_eol_badge', function () {
+  ctx.renderDetail('h', detail(host()));
+  if (findClass(ctx.root, 'eolbadge')) throw new Error('a supported release grew a badge');
+});
+
 // -- the adopted fleet, which the console's card and detail page both render --
 var FLEET = { total: 3, online: 2, offline: 1, offline_names: ['Nano HD'], updatable: 1,
   members: [

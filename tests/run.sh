@@ -2481,6 +2481,12 @@ if want render; then
           "assert d['detail_eol_past'] is None, d['detail_eol_past']" "$J"
     check "and for one whose warning is acknowledged" \
           "assert d['detail_eol_acked'] is None, d['detail_eol_acked']" "$J"
+    check "a release nearing EOL is a yellow badge on the detail page, date in its tooltip" \
+          "assert d['detail_eol_soon_is_a_yellow_badge'] is None, d['detail_eol_soon_is_a_yellow_badge']" "$J"
+    check "one past EOL is the red badge there, as on the overview" \
+          "assert d['detail_eol_past_is_a_red_badge'] is None, d['detail_eol_past_is_a_red_badge']" "$J"
+    check "and a supported release has no badge at all" \
+          "assert d['detail_supported_has_no_eol_badge'] is None, d['detail_supported_has_no_eol_badge']" "$J"
     # Both ack rows on one page is what tripped the shadowing.
     check "and with a patch ack and an eol ack on the same page" \
           "assert d['detail_both_ack_rows'] is None, d['detail_both_ack_rows']" "$J"
