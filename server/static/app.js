@@ -296,6 +296,19 @@ function storagePanel(c) {
   b.style.color = st(sg.status).css;
   p.appendChild(b);
 
+  /* SMART only where something reports it -- TrueNAS, for now. The whole
+     box's count comes first, ahead of the pools, so it is not read as the
+     last pool's; each pool then counts its own disks. Failing disks are
+     named by serial, which is what is printed on the drive you are about
+     to pull. */
+  if (sg.smart) {
+    var ages = sg.smart.map(function (d) { return d.age_hours; })
+      .filter(function (h) { return h !== null && h !== undefined; });
+    var sum = 'SMART: ' + smartCount(sg.smart);
+    if (ages.length) sum += ' · newest test ' + fmtAge(Math.min.apply(null, ages) * 3600) + ' ago';
+    p.appendChild(el('div', 'sub', sum));
+  }
+
   /* Data pools first, the boot pool last, each in the order reported. */
   sg.pools.slice().sort(function (x, y) { return (x.boot ? 1 : 0) - (y.boot ? 1 : 0); })
     .forEach(function (pl) {
@@ -323,36 +336,46 @@ function storagePanel(c) {
         r.appendChild(el('span', 'pval', d.state));
         p.appendChild(r);
       });
+      if (sg.smart) {
+        var mine = sg.smart.filter(function (d) { return d.pool === pl.name; });
+        if (mine.length) p.appendChild(el('div', 'sub', 'SMART: ' + smartCount(mine)));
+        smartRows(p, mine);
+      }
     });
 
-  /* SMART only where something reports it -- TrueNAS, for now. Failing
-     disks are named by serial, which is what is printed on the drive you
-     are about to pull. */
+  /* Disks in no pool -- a spare, one not yet assigned -- after the pools. */
   if (sg.smart) {
-    var failed = sg.smart.filter(function (d) { return d.severity === 'critical'; });
-    var noted = sg.smart.filter(function (d) { return d.severity !== 'critical' && d.note; });
-    var ages = sg.smart.map(function (d) { return d.age_hours; })
-      .filter(function (h) { return h !== null && h !== undefined; });
-    var sum = 'SMART: ' + sg.smart.length + ' disk' + (sg.smart.length === 1 ? '' : 's') +
-      (failed.length ? ' · ' + failed.length + ' failed' : ' · no failed tests');
-    if (ages.length) sum += ' · newest test ' + fmtAge(Math.min.apply(null, ages) * 3600) + ' ago';
-    p.appendChild(el('div', 'sub', sum));
-    failed.concat(noted).forEach(function (d) {
-      var r = el('div', 'proj');
-      r.style.setProperty('--st', d.severity === 'critical' ? 'var(--st-crit)' : 'var(--st-none)');
-      r.appendChild(el('span', 'pdot'));
-      r.appendChild(el('span', 'fname', (d.serial || d.disk) + ' (' + d.disk +
-        (d.pool ? ', ' + d.pool : '') + ')'));
-      r.appendChild(el('span', 'pval', d.severity === 'critical'
-        ? (d.status_verbose || 'failed') : d.note));
-      r.title = [d.model, d.test, d.status_verbose].filter(Boolean).join(' · ');
-      p.appendChild(r);
-    });
+    var loose = sg.smart.filter(function (d) { return !d.pool; });
+    if (loose.length && loose.length < sg.smart.length) {
+      p.appendChild(el('div', 'sub', 'Not in a pool: ' + smartCount(loose)));
+    }
+    smartRows(p, loose);
   }
-  p.appendChild(el('div', 'sub', 'Scrubs warn after ' + sg.limits.scrub_max_age_days +
-    ' days' + (sg.smart ? '; a disk untested for ' + sg.limits.smart_max_age_days +
-    ' days is noted.' : '.')));
   return p;
+}
+
+/* "5 disks · no failed tests", or "· 1 failed". */
+function smartCount(ds) {
+  var failed = ds.filter(function (d) { return d.severity === 'critical'; });
+  return ds.length + ' disk' + (ds.length === 1 ? '' : 's') +
+    (failed.length ? ' · ' + failed.length + ' failed' : ' · no failed tests');
+}
+
+/* A row for each failed disk, then each with a note, of those given. */
+function smartRows(p, ds) {
+  var failed = ds.filter(function (d) { return d.severity === 'critical'; });
+  var noted = ds.filter(function (d) { return d.severity !== 'critical' && d.note; });
+  failed.concat(noted).forEach(function (d) {
+    var r = el('div', 'proj');
+    r.style.setProperty('--st', d.severity === 'critical' ? 'var(--st-crit)' : 'var(--st-none)');
+    r.appendChild(el('span', 'pdot'));
+    r.appendChild(el('span', 'fname', (d.serial || d.disk) + ' (' + d.disk +
+      (d.pool ? ', ' + d.pool : '') + ')'));
+    r.appendChild(el('span', 'pval', d.severity === 'critical'
+      ? (d.status_verbose || 'failed') : d.note));
+    r.title = [d.model, d.test, d.status_verbose].filter(Boolean).join(' · ');
+    p.appendChild(r);
+  });
 }
 
 function _sevRank(s) { return { ok: 1, warning: 2, critical: 3 }[s] || 0; }

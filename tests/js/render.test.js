@@ -1108,9 +1108,28 @@ check('the_storage_panel_names_the_pool_and_the_disks_to_pull', function () {
   ctx.renderDetail('mercury', detail(host(NAS)));
   var t = textOf(ctx.root);
   ['Pool health', 'tank', 'DEGRADED', 'ada4 · SERIAL-ADA4', 'FAULTED', 'freenas-boot (boot)',
-   'SERIAL-ADA3 (ada3, tank)', 'Completed: read failure', '8 disks · 1 failed',
-   'Scrubs warn after 42 days']
+   'SERIAL-ADA3 (ada3, tank)', 'Completed: read failure', '8 disks · 1 failed']
     .forEach(function (w) { if (t.indexOf(w) < 0) throw new Error('missing ' + w + ': ' + t); });
+});
+check('smart_is_counted_under_the_pool_its_disks_belong_to', function () {
+  ctx.renderDetail('mercury', detail(host(NAS)));
+  var t = textOf(ctx.root);
+  // The box's total ahead of the first pool, so it is not read as the boot
+  // pool's; then tank's five, tank001's two and freenas-boot's one.
+  var from = t.indexOf('Pool health');
+  ['SMART: 8 disks · 1 failed', 'tank', 'SMART: 5 disks · 1 failed', 'SERIAL-ADA3 (ada3, tank)',
+   'tank001', 'SMART: 2 disks · no failed tests',
+   'freenas-boot (boot)', 'SMART: 1 disk · no failed tests']
+    .forEach(function (w) {
+      var i = t.indexOf(w, from);
+      if (i < 0) throw new Error('missing or out of order ' + w + ': ' + t);
+      from = i + w.length;
+    });
+  if (t.indexOf('Not in a pool') >= 0) throw new Error('every disk has a pool: ' + t);
+  var spare = JSON.parse(JSON.stringify(STORAGE));
+  spare.smart[5].pool = null;
+  ctx.renderDetail('mercury', detail(host(merge(NAS, { storage: spare }))));
+  if (textOf(ctx.root).indexOf('Not in a pool: 1 disk · no failed tests') < 0) throw new Error(textOf(ctx.root));
 });
 check('the_card_says_which_pool_turned_the_dot', function () {
   overview([host(NAS)], 'bare');
@@ -1128,6 +1147,10 @@ check('a_healthy_pool_set_reads_healthy_and_a_plain_host_has_no_row', function (
   if (textOf(ctx.root).indexOf('SMART') >= 0) throw new Error('SMART line with no SMART source');
   overview([host()], 'vms');
   if (textOf(ctx.root).indexOf('Pools') >= 0) throw new Error('a host without ZFS grew a Pools row');
+});
+check('the_storage_panel_has_no_thresholds_footnote', function () {
+  ctx.renderDetail('mercury', detail(host(NAS)));
+  if (textOf(ctx.root).indexOf('Scrubs warn after') >= 0) throw new Error(textOf(ctx.root));
 });
 check('a_storage_event_takes_the_status_palette', function () {
   ctx.renderDetail('mercury', detail(host(NAS), { events: [
