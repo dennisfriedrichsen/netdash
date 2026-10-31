@@ -135,11 +135,12 @@ check('all_tab_groups_by_os_when_asked', function () {
             host({ host: 'fbsd', os: 'FreeBSD 15.0' }),
             host({ host: 'deb2', os: 'Debian 13' }),
             host({ host: 'mystery', os: null }),
-            host({ host: 'suse', os: 'openSUSE Tumbleweed' })];
+            host({ host: 'suse', os: 'openSUSE Tumbleweed' }),
+            host({ host: 'slack', os: 'Slackware 15.0 x86_64 (x86_64)' })];
   var labels = ctx.osGroups(hs).map(function (g) {
     return g.label + ':' + g.hosts.map(function (h) { return h.host; }).join('+');
   }).join(' ');
-  if (labels !== 'Arch:arch Debian:deb1+deb2 FreeBSD:fbsd openSUSE:suse Unknown OS:mystery') {
+  if (labels !== 'Arch:arch Debian:deb1+deb2 FreeBSD:fbsd openSUSE:suse Slackware:slack Unknown OS:mystery') {
     throw new Error(labels);
   }
   var saved = ctx.localStorage.getItem;
@@ -148,8 +149,8 @@ check('all_tab_groups_by_os_when_asked', function () {
     if (countClass(top()[1], 'cgroup')) throw new Error('grouped without being asked');
     ctx.localStorage.getItem = function (k) { return k === 'netdash-group' ? 'os' : null; };
     overview(hs, '');
-    if (countClass(top()[1], 'cgroup') !== 5) throw new Error('expected 5 group headings');
-    if (countClass(top()[1], 'crow') !== 6) throw new Error('a host went missing');
+    if (countClass(top()[1], 'cgroup') !== 6) throw new Error('expected 6 group headings');
+    if (countClass(top()[1], 'crow') !== 7) throw new Error('a host went missing');
     if (textOf(top()[0]).indexOf('By OS') < 0) throw new Error('no toggle on the All tab');
     overview(hs, 'vms');
     if (textOf(top()[0]).indexOf('By OS') >= 0) throw new Error('toggle leaked onto VMs');
@@ -642,6 +643,7 @@ check('appliances_get_their_own_icons', function () {
   var want = [['UniFi OS 5.1.31', 'gateway'], ['Hubitat C-8 Pro 2.5.1.174', 'hub'],
               ['TrueNAS CORE 13.0-U6.8', 'nas'], ['FreeCORE 13.3', 'nas'],
               ['Debian GNU/Linux 13', 'debian'],
+              ['Slackware 15.0 x86_64 (x86_64)', 'linux'],
               ['FreeBSD 15.1', 'bsd'], ['', 'unknown']];
   want.forEach(function (c) {
     var got = ctx.osFamily(c[0]);

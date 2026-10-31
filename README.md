@@ -283,6 +283,7 @@ work.
 | Linux (glibc) | Debian 13, Ubuntu 22.04 / 24.04 / 26.04, Raspbian 13 | systemd timer, 30s |
 | Linux (other) | Fedora 43, Arch (rolling), openSUSE Tumbleweed | systemd timer, 30s |
 | Linux (musl) | Alpine 3.24 | OpenRC + BusyBox crond, 60s |
+| Linux (no systemd) | Slackware 15.0 | dcron, 60s |
 | FreeBSD | 15.1 | cron, 60s |
 | OpenBSD | 7.9 | cron, 60s |
 | NetBSD | 11.0 | cron, 60s |
@@ -672,6 +673,7 @@ which commands are wrong in ways that fail silently — is in
 | openSUSE Leap | `zypper patch-check` | yes |
 | openSUSE Tumbleweed | `zypper list-updates` | **no — rolling, ships no patch metadata** |
 | Alpine | `apk list --upgradable` | **no — nothing on the host consumes secdb** |
+| Slackware | `slackpkg upgrade-all`, declined; ChangeLog `(* Security fix *)` | yes, from the ChangeLog |
 | FreeBSD | `pkg audit`; `freebsd-update updatesready` unless pkgbase | yes, and base separately |
 | OpenBSD | `syspatch -c` (base) + `pkg_add -u -n` (packages) | yes, for base |
 | NetBSD | `pkg_admin audit` | yes for packages; **base has no patch mechanism** |

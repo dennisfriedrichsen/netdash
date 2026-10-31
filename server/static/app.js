@@ -574,10 +574,11 @@ function osFamily(os) {
   if (s.indexOf('openbsd') > -1) return 'openbsd';
   if (s.indexOf('netbsd') > -1) return 'netbsd';
   if (s.indexOf('bsd') > -1) return 'bsd';
-  /* 'suse' is here because openSUSE is the one distro whose PRETTY_NAME carries
-     no 'Linux' -- "openSUSE Tumbleweed", "openSUSE Leap 15.6" -- so it fell
+  /* 'suse' and 'slackware' are here because their PRETTY_NAMEs carry no
+     'Linux' -- "openSUSE Tumbleweed", "Slackware 15.0 x86_64" -- so each fell
      through to the question mark. */
-  if (s.indexOf('linux') > -1 || s.indexOf('alpine') > -1 || s.indexOf('suse') > -1) return 'linux';
+  if (s.indexOf('linux') > -1 || s.indexOf('alpine') > -1 || s.indexOf('suse') > -1 ||
+      s.indexOf('slackware') > -1) return 'linux';
   return 'unknown';
 }
 

@@ -1,6 +1,6 @@
 #!/bin/sh
 # netdash collector -- Linux (Debian, Ubuntu, Raspbian, Fedora, Arch, openSUSE,
-# Alpine, ...). Native tools only: /proc, df, and curl or wget.
+# Alpine, Slackware, ...). Native tools only: /proc, df, and curl or wget.
 # Usage: netdash-collector.sh [--print]   (--print dumps JSON, posts nothing)
 set -eu
 
@@ -227,6 +227,9 @@ if [ "$CTR" = 1 ] && ! awk '$2=="/proc/uptime"{f=1} END{exit !f}' /proc/mounts 2
 fi
 OS=$( . /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-${NAME:-Linux}}" )
 ARCH=$(uname -m)
+# Slackware's PRETTY_NAME already ends in the architecture ("Slackware 15.0
+# x86_64"), which the " (arch)" this script appends to it then repeated.
+case "$OS" in *" $ARCH") OS=${OS%" $ARCH"} ;; esac
 
 # Raspberry Pi OS reports PRETTY_NAME="Debian GNU/Linux 13 (trixie)", so a Pi is
 # indistinguishable from any other Debian box by os-release alone. The board

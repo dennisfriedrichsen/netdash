@@ -6,7 +6,7 @@
 #
 # Re-running is the upgrade path: it overwrites the script and leaves config alone.
 #
-# Linux:   Debian/Ubuntu/Raspbian, Fedora, Arch, openSUSE, Alpine
+# Linux:   Debian/Ubuntu/Raspbian, Fedora, Arch, openSUSE, Alpine, Slackware
 # BSD:     FreeBSD, OpenBSD, NetBSD
 set -eu
 

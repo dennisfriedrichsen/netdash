@@ -41,6 +41,7 @@ _RULES = [
     (re.compile(r"^NetBSD\s+(\d[\d.]*)", re.I), "netbsd"),
     (re.compile(r"^macOS\s+(\d[\d.]*)", re.I), "macos"),
     (re.compile(r"^openSUSE\s+Leap\s+(\d[\d.]*)", re.I), "opensuse"),
+    (re.compile(r"^Slackware\s+(\d[\d.]*)", re.I), "slackware"),
 ]
 
 # Rolling releases have no cycle to go end-of-life. Saying "unknown" for them

@@ -15,7 +15,7 @@ answer the same question:
 
 | question | platforms that answer it |
 |---|---|
-| pending updates, classified as security | Debian, Ubuntu, Raspbian, Fedora, openSUSE Leap, macOS |
+| pending updates, classified as security | Debian, Ubuntu, Raspbian, Fedora, openSUSE Leap, Slackware, macOS |
 | installed packages with known CVEs | FreeBSD, NetBSD, Arch (with `arch-audit`) |
 | base-system patches pending, separate from packages | FreeBSD, OpenBSD |
 | "N packages behind", no security classification at all | Alpine, Arch (base), openSUSE Tumbleweed, OpenBSD packages |
@@ -129,6 +129,7 @@ nothing.
 | Arch | — | `checkupdates`, `arch-audit` | no |
 | openSUSE Tumbleweed | `zypper --no-refresh list-updates` **(verified)** | `zypper refresh` | no |
 | Alpine | `apk list --upgradable` | `apk update` | no |
+| Slackware | `slackpkg upgrade-all`, declined **(verified)** | `slackpkg update` | no |
 | FreeBSD | `pkg audit -q`, `freebsd-update updatesready` | none needed | **yes, both** |
 | OpenBSD | — | `syspatch -c` | no |
 | NetBSD | `pkg_admin audit` | `pkg_admin fetch-pkg-vulnerabilities` | yes, if enabled |
@@ -243,6 +244,49 @@ network.
 `apk list --upgradable` after `apk update`. Alpine publishes secdb JSON at
 `secdb.alpinelinux.org`, but nothing in base consumes it, so there is no
 security classification available on the host. Count only.
+
+### Slackware — **verified** on 15.0
+
+slackpkg has no query verb. The list is `upgrade-all` with the upgrade
+declined:
+
+```
+slackpkg -dialog=off -batch=on -default_answer=n upgrade-all </dev/null
+```
+
+Batch mode answers each prompt with `default_answer` instead of reading one,
+so the closing `Do you wish to upgrade selected packages (Y/n)?` gets `n` and
+nothing is installed. On a never-patched 15.0 host this listed 157 packages,
+ended with `Total package(s): 157` and exited 0. The parsed list is checked
+against that total; a mismatch keeps the previous result rather than reporting
+a wrong count. Exit 20 is slackpkg's "no package found", a real zero.
+
+Using upgrade-all, rather than diffing `pkglist` against `/var/log/packages`
+by hand, means the blacklist and repository priority apply exactly as they
+would to a real upgrade.
+
+**Security comes from the ChangeLog**, the only place Slackware marks it:
+`(* Security fix *)` closes an entry's description. One description can sit
+under several package lines (a kernel update is five lines and one
+description), so the mark covers the whole group. A pending package counts as
+security if any entry for it *newer than the installed build* carries the mark.
+The log is newest first, so each name is read until its installed build turns
+up. A package from the release media never turns up, and reading stops at
+`stable is released!`. `testing/` and `pasture/` entries are ignored.
+
+A package line with no description of its own is grouped with the one below
+it. That is right for the kernel. It is occasionally wrong for a bare
+`extra/` rebuild listed directly above a security fix, which then counts as
+security too. That error goes the safe way.
+
+`slackpkg update` refreshes. With no mirror uncommented in
+`/etc/slackpkg/mirrors` it fails, and the host reads as not checked. Without a
+downloaded ChangeLog the count is still reported, but security is `null`.
+
+Reboot: Slackware names kernels `vmlinuz-generic-5.15.19`, so the apt branch's
+`/boot` comparison would call every host stale. The installed
+`kernel-generic`/`kernel-huge` package version is compared with `uname -r`
+instead. That can only prove a reboot is needed, so a match stays `null`.
 
 ### FreeBSD — **verified** on FreeBSD 15.1 (pkgbase)
 
@@ -661,6 +705,7 @@ state that ranks below `security` (where there is still work to do) and above
 | Debian / Ubuntu / Raspbian | `/run/reboot-required` exists | gated, see below |
 | openSUSE | `needs-restarting -r`, exit 1 | **verified present** |
 | FreeBSD | `freebsd-version -k` ≠ `uname -r` | unverified |
+| Slackware | newest `kernel-generic`/`kernel-huge` package ≠ `uname -r` | true only, never false |
 | Arch, Alpine, OpenBSD, NetBSD, macOS | none | always `null` |
 
 `null` means *"this host has no way to answer"* and never *"no reboot needed"*.

@@ -136,6 +136,19 @@ if command -v apk >/dev/null 2>&1; then
   try apk version -l '<'
 fi
 
+# --- Slackware: upgrade-all, declined, is the only list; the ChangeLog classifies ---
+if command -v slackpkg >/dev/null 2>&1; then
+  printf '\n--- slackpkg mirror (none uncommented => update fails)\n'
+  grep -v '^#' /etc/slackpkg/mirrors 2>/dev/null | grep . || echo "  (none)"
+  printf '\n--- $ slackpkg upgrade-all, declined (exit 20 means nothing pending)\n'
+  rc=0; O=$(slackpkg -dialog=off -batch=on -default_answer=n upgrade-all </dev/null 2>&1) || rc=$?
+  printf '%s\n' "$O" | head -40; printf '  (exit %s)\n' "$rc"
+  printf '\n--- ChangeLog security marks, and installed kernels vs running\n'
+  printf '  %s\n' "$(grep -c 'Security fix' /var/lib/slackpkg/ChangeLog.txt 2>/dev/null || echo 'no ChangeLog')"
+  ls /var/log/packages 2>/dev/null | grep '^kernel-\(generic\|huge\)' | sed 's/^/  /'
+  printf '  running %s\n' "$(uname -r)"
+fi
+
 # --- FreeBSD: both reads are local; -F is NOT run here ---
 if command -v pkg >/dev/null 2>&1; then
   try pkg audit

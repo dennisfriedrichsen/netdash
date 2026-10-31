@@ -1,5 +1,5 @@
 #!/bin/sh
-# netdash patch check -- Linux (apt, dnf, pacman, zypper, apk).
+# netdash patch check -- Linux (apt, dnf, pacman, zypper, apk, slackpkg).
 #
 # Runs DAILY and once at every boot, not at collector cadence: every backend
 # below either hits the network or parses the whole package database, which is
@@ -238,6 +238,104 @@ elif command -v apk >/dev/null 2>&1; then
   fi
   META=$(mtime /var/cache/apk)
   DET="no security classification available on Alpine"
+
+# ----------------------------------------------------------- slackpkg ----
+elif command -v slackpkg >/dev/null 2>&1; then
+  SRC=slackpkg
+  SPDIR=/var/lib/slackpkg
+  # Every slackpkg call runs with -batch=on -default_answer=n and stdin closed.
+  # Batch mode answers each prompt with default_answer instead of reading one,
+  # so the "Do you wish to upgrade selected packages (Y/n)?" at the end of
+  # upgrade-all is declined, never accepted. For update the only prompt is
+  # "No changes in ChangeLog.txt ... download all other files (y/N)?", where
+  # n skips a redundant download and the metadata is current either way.
+  if [ "$REFRESH" = yes ]; then
+    if slackpkg -batch=on -default_answer=n update </dev/null >/dev/null 2>&1
+      then REFRESHED=1; else REFRESH_FAILED=1; fi
+  fi
+  META=$(mtime "$SPDIR/ChangeLog.txt")
+
+  # There is no query verb: upgrade-all, declined, is the list. It applies the
+  # blacklist and repository priority exactly as a real upgrade would, which a
+  # hand-rolled pkglist diff would have to reimplement. Exit 20 is slackpkg's
+  # "no package found", which here means nothing is pending; 0 is what a
+  # declined upgrade with 157 pending returned on the 15.0 host.
+  rc=0
+  UPG=$(slackpkg -dialog=off -batch=on -default_answer=n upgrade-all </dev/null 2>/dev/null) || rc=$?
+  case "$rc" in
+    0|20)
+        PEND=$(printf '%s\n' "$UPG" | grep -E '^[^ ]+-[^-]+-[^-]+-[^-]+\.t[gxlb]z$' || true)
+        TOTAL=$(printf '%s\n' "$UPG" | sed -n 's/^Total package(s): *\([0-9][0-9]*\).*/\1/p')
+        # Nothing pending prints "No packages match the pattern for upgrade"
+        # and no total at all.
+        [ -z "$PEND$TOTAL" ] && printf '%s\n' "$UPG" | grep -q 'No packages match' && TOTAL=0
+        # A list that disagrees with slackpkg's own total was misparsed, and a
+        # wrong count is worse than the previous one ageing out.
+        if [ "$(printf '%s' "$PEND" | grep -c . || true)" != "${TOTAL:-x}" ]; then
+          echo "netdash-patchcheck: slackpkg listed ${TOTAL:-no} total, parsed a different count" >&2
+          exit 1
+        fi ;;
+    *)  echo "netdash-patchcheck: slackpkg upgrade-all exited $rc; keeping the previous result" >&2
+        exit 1 ;;
+  esac
+
+  # Slackware's only security classification is "(* Security fix *)" in the
+  # ChangeLog, under a group of package lines (the kernel's five share one
+  # description). A pending package is security if any entry for it NEWER than
+  # the installed build carries the mark: the log is newest first, so each
+  # name is read until its installed build turns up. One installed from the
+  # release media never turns up, and the walk stops at the release line --
+  # everything above that is a patch it has not had.
+  #
+  # testing/ and pasture/ are ignored: upgrade-all never takes from them, and
+  # a fix to a same-named testing package says nothing about the stable one.
+  # Each read is guarded: under set -e a failing one ends the group, awk sees
+  # nothing, and every pending package silently vanishes from the count.
+  CLASS=$( { ls /var/log/packages 2>/dev/null || true; echo @@PEND@@
+             printf '%s\n' "$PEND"; echo @@LOG@@
+             cat "$SPDIR/ChangeLog.txt" 2>/dev/null || true; } | awk '
+    function pname(f,   n, a, s, i) {
+      sub(/^.*\//, "", f); sub(/\.t[gxlb]z$/, "", f)
+      n = split(f, a, "-"); s = a[1]
+      for (i = 2; i <= n - 3; i++) s = s "-" a[i]
+      return s
+    }
+    function close_group(   i, f, b, k) {
+      for (i = 1; i <= ng; i++) {
+        f = grp[i]; b = f; sub(/^.*\//, "", b); sub(/\.t[gxlb]z$/, "", b)
+        k = pname(f)
+        if (!(k in pend) || (k in done)) continue
+        if (b == inst[k]) done[k] = 1
+        else if (gsec) sec[k] = 1
+      }
+      ng = 0; gsec = 0; indesc = 0
+    }
+    /^@@PEND@@$/ { part = 1; next }
+    /^@@LOG@@$/  { part = 2; next }
+    part == 0 && NF { inst[pname($0)] = $0; next }
+    part == 1 && NF { k = pname($0); pend[k] = 1; order[++np] = k; next }
+    part == 2 && stop { next }
+    part == 2 && /stable is released!/ { close_group(); stop = 1; next }
+    part == 2 && /^[^ ]+\.t[gxlb]z:/ {
+      if (indesc) close_group()
+      if ($0 ~ /^(patches|extra)\//) { f = $0; sub(/:.*/, "", f); grp[++ng] = f }
+      next
+    }
+    part == 2 && /^[^ ]/ { close_group(); next }
+    part == 2 { indesc = 1; if (index($0, "(* Security fix *)")) gsec = 1 }
+    END {
+      close_group()
+      for (i = 1; i <= np; i++) print ((order[i] in sec) ? "S " : "O ") order[i]
+    }' )
+  SEC=$(printf '%s\n' "$CLASS" | grep -c '^S ' || true)
+  OTH=$(printf '%s\n' "$CLASS" | grep -c '^O ' || true)
+  SECPKGS=$(printf '%s\n' "$CLASS" | sed -n 's/^S //p' | join_names)
+  # No ChangeLog means nothing was classified, so every package landed in
+  # "other". That is a count, not a finding of zero security fixes.
+  if [ ! -s "$SPDIR/ChangeLog.txt" ]; then
+    SEC=null; SECPKGS=""
+    DET="no slackpkg ChangeLog to classify from; run slackpkg update"
+  fi
 fi
 
 if [ "$SRC" = unknown ]; then
@@ -306,6 +404,20 @@ zypper-*)
   if command -v needs-restarting >/dev/null 2>&1; then
     rc=0; needs-restarting -r >/dev/null 2>&1 || rc=$?
     case "$rc" in 0) REBOOT=false ;; 1) REBOOT=true ;; esac
+  fi
+  ;;
+slackpkg)
+  # /boot/vmlinuz-* is no use here: Slackware names them vmlinuz-generic-5.15.19
+  # and vmlinuz-huge-5.15.19, so the comparison the apt branch makes would call
+  # every host stale. The installed kernel package carries the version cleanly
+  # (kernel-generic-5.15.223-x86_64-1; -smp on 32-bit, which uname -r repeats).
+  # As there, this can only prove a reboot IS needed, so a match stays null.
+  KRUN=$(uname -r | sed 's/-smp$//')
+  KNEW=$(ls /var/log/packages 2>/dev/null | awk -F- '
+    /^kernel-(generic|huge)(-smp)?-[0-9]/ { print $(NF-2) }' | sort -V | tail -1)
+  if [ -n "$KNEW" ] && [ "$KNEW" != "$KRUN" ]; then
+    REBOOT=true
+    DET="${DET:+$DET; }running kernel $KRUN, newest installed $KNEW"
   fi
   ;;
 esac

@@ -453,6 +453,100 @@ PY
         "assert d['patch_total']=='0' and d['patch_sec']=='0', d" "$J"
 fi
 
+if want patches-slackware; then
+  echo "patches-slackware (the ChangeLog is the only security classification)"
+  # The shipped awk, driven with the real upgrade-all list and a real ChangeLog
+  # excerpt. The installed list is what a never-patched 15.0 host has: release
+  # builds, which never appear under patches/.
+  snippet() { python3 - "$@" <<'PY'
+import re,subprocess,sys,json
+root=sys.argv[1]
+src=open(f"{root}/collectors/linux/netdash-patchcheck.sh").read()
+awkprog=re.search(r"cat \"\$SPDIR/ChangeLog.txt\" 2>/dev/null \|\| true; \} \| awk '(.*?)' \)", src, re.S).group(1)
+pendre=re.search(r"grep -E '([^']*)' \|\| true\)", src).group(1)
+fx=f"{root}/tests/fixtures/slackware"
+upg=open(f"{fx}/slackpkg-upgrade-all.txt").read()
+log=open(f"{fx}/ChangeLog-excerpt.txt").read()
+pend=subprocess.run(["grep","-E",pendre],input=upg,capture_output=True,text=True).stdout.split()
+
+def classify(inst,pend,log):
+    inp="\n".join(inst)+"\n@@PEND@@\n"+"\n".join(pend)+"\n@@LOG@@\n"+log
+    out=subprocess.run(["awk",awkprog],input=inp,capture_output=True,text=True).stdout
+    return {l[2:]:l[0] for l in out.splitlines()}
+
+release=[re.sub(r"-[^-]+-[^-]+-[^-]+\.t.z$","-0release-x86_64-1",p) for p in pend]
+c=classify(release,pend,log)
+# A bugfix entry above the installed build's security entry: the walk must stop
+# at the installed build rather than reaching the older mark. Synthetic, since
+# it is the order of entries under test, not their wording.
+stop="""patches/packages/foo-2-x86_64-1_slack15.0.txz:  Upgraded.
+  This is a bugfix release.
++--------------------------+
+patches/packages/foo-1-x86_64-1_slack15.0.txz:  Upgraded.
+  (* Security fix *)
++--------------------------+
+"""
+print(json.dumps({
+  "pending": len(pend),
+  "classified": len(c),
+  "kernel": [c.get(k) for k in ("kernel-generic","kernel-huge","kernel-modules","kernel-headers")],
+  "curl": c.get("curl"), "proftpd": c.get("proftpd"), "libsodium": c.get("libsodium"),
+  "brotli": c.get("brotli"), "patch": c.get("patch"),
+  "zoneinfo": c.get("glibc-zoneinfo"), "tcpdump": c.get("tcpdump"), "nettle": c.get("nettle"),
+  "stopped": classify(["foo-1-x86_64-1_slack15.0"],["foo-2-x86_64-1_slack15.0.txz"],stop).get("foo"),
+  "unpatched": classify(["foo-0-x86_64-1"],["foo-2-x86_64-1_slack15.0.txz"],stop).get("foo"),
+}))
+PY
+  }
+  J=$(snippet "$ROOT") || J=''
+  check "all 157 pending packages parse, matching slackpkg's own total" \
+        "assert d['pending']==157 and d['classified']==157, d" "$J"
+  # The kernel's five package lines share one description, and only the last
+  # line is directly above it.
+  check "a security mark covers every package line in its group" \
+        "assert d['kernel']==['S','S','S','S'], d" "$J"
+  check "single-entry security fixes are security" \
+        "assert d['curl']=='S' and d['proftpd']=='S' and d['libsodium']=='S', d" "$J"
+  check "packages sharing a dated block keep their own marks" \
+        "assert d['brotli']=='S' and d['patch']=='S', d" "$J"
+  # tcpdump's bugfix entry sits directly above seamonkey's security one.
+  check "a bugfix entry does not borrow the next entry's mark" \
+        "assert d['tcpdump']=='O' and d['nettle']=='O' and d['zoneinfo']=='O', d" "$J"
+  check "an older fix the host already has does not count" \
+        "assert d['stopped']=='O', d" "$J"
+  check "but one it is missing does, under newer non-security builds" \
+        "assert d['unpatched']=='S', d" "$J"
+
+  # The whole script against a stand-in slackpkg. There is no ChangeLog under
+  # /var/lib/slackpkg here, which is itself a case: the count must survive and
+  # the security figure must be unknown, not zero.
+  SB=$(mktemp -d)
+  cat > "$SB/slackpkg" <<EOF
+#!/bin/sh
+case "\$*" in
+  *upgrade-all*)
+    [ -n "\${FAKE_NONE:-}" ] && { echo "No packages match the pattern for upgrade. Try:"; exit 20; }
+    cat "$ROOT/tests/fixtures/slackware/slackpkg-upgrade-all.txt"; exit \${FAKE_RC:-0} ;;
+esac
+exit 0
+EOF
+  chmod +x "$SB/slackpkg"
+  sp_run() { env PATH="$SB:$PATH" NETDASH_CONF=/nonexistent "$@" \
+               sh "$ROOT/collectors/linux/netdash-patchcheck.sh" --print 2>/dev/null; }
+  J=$(sp_run)
+  check "slackpkg's pending list reaches the report" \
+        "assert d['source']=='slackpkg' and d['other']==157, d" "$J"
+  check "without a ChangeLog, security is unknown rather than zero" \
+        "assert d['security'] is None and 'ChangeLog' in d['detail'], d" "$J"
+  J=$(sp_run FAKE_NONE=1)
+  check "nothing to upgrade (exit 20) is a real zero" \
+        "assert d['other']==0, d" "$J"
+  rc=0; sp_run FAKE_RC=1 >/dev/null || rc=$?
+  check "a failed upgrade-all keeps the previous result" \
+        "assert d['rc']==1, d" "{\"rc\": $rc}"
+  rm -rf "$SB"
+fi
+
 if want patches-netbsd; then
   echo "patches-netbsd (a missing vulnerability database must not read as clean)"
   snippet() { python3 - "$@" <<'PY'
@@ -987,6 +1081,9 @@ eol._CACHE.update({
  "freebsd": {"ts":9e9,"releases":[{"name":"15.1","isEol":False,"eolFrom":"2027-03-31"},
                                   {"name":"15","isEol":False,"eolFrom":"2028-12-31"}]},
  "fedora":  {"ts":9e9,"releases":[{"name":"43","isEol":False,"eolFrom":"2026-12-09"}]},
+ # Slackware announces no end dates; 14.2 was simply marked done at 2024-01-01.
+ "slackware": {"ts":9e9,"releases":[{"name":"15.0","isEol":False,"eolFrom":None},
+                                    {"name":"14.2","isEol":True,"eolFrom":"2024-01-01"}]},
 })
 cfg={"warn_days":30,"overrides":{"TrueNAS CORE":"2025-03-31"}}
 T=date(2026,9,2)
@@ -1003,6 +1100,9 @@ print(json.dumps({
  "raspbian":      q("Raspbian GNU/Linux 13 (trixie) - Raspberry Pi 3 Model B Plus (armv7l)")["cycle"],
  "arch":          q("Arch Linux (x86_64)")["status"],
  "tumbleweed":    q("openSUSE Tumbleweed (x86_64)")["status"],
+ "slackware":     q("Slackware 15.0 x86_64 (x86_64)")["status"],
+ "slackware_cyc": q("Slackware 15.0 x86_64 (x86_64)")["cycle"],
+ "old_slackware": q("Slackware 14.2 x86_64 (x86_64)")["status"],
  "truenas":       q("TrueNAS CORE 13.0 U6.8")["status"],
  "truenas_src":   q("TrueNAS CORE 13.0 U6.8")["source"],
  "old_debian":    q("Debian GNU/Linux 11 (bullseye) (x86_64)")["status"],
@@ -1040,6 +1140,10 @@ PY
   # The config override is the only way to answer for it.
   check "a config override answers where endoflife.date has no product" \
         "assert d['truenas']=='eol' and d['truenas_src']=='config', d" "$J"
+  # Slackware's PRETTY_NAME has the arch baked in ("15.0 x86_64"), and its
+  # cycles are full two-part versions, unlike NetBSD's.
+  check "slackware maps to its cycle" \
+        "assert d['slackware']=='supported' and d['slackware_cyc']=='15.0' and d['old_slackware']=='eol', d" "$J"
   check "a past-EOL release reads eol" \
         "assert d['old_debian']=='eol', d" "$J"
   # Debian's LTS Team takes over for free the moment the Security Team steps

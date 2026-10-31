@@ -45,6 +45,8 @@ numbers are untouched.
 | `services/transmission-rpc-409.*` | Transmission, RPC 6.0.1 | the CSRF 409 and its `X-Transmission-Session-Id` (id replaced) |
 | `services/transmission-session-stats.json` | Transmission, RPC 6.0.1 | `session-stats` from an idle daemon: zero torrents is a real answer |
 | `ipmi/channel-auth-reply.hex` | Supermicro BMC (mercury's) | the pre-session Get Channel Authentication Capabilities reply: completion 00, IPMI 2.0 |
+| `slackware/slackpkg-upgrade-all.txt` | Slackware 15.0 | `upgrade-all` declined in batch mode: 157 pending, and the `Total package(s)` line the count is checked against |
+| `slackware/ChangeLog-excerpt.txt` | Slackware 15.0 mirror | `(* Security fix *)` under a *group* of package lines (the kernel's five), a bugfix entry directly above a security one, and the release line |
 
 `apt-dist-upgrade.txt` is real `apt-get --just-print` output, captured with
 `-o Dir::State::status=/dev/null` because the host had nothing pending — that
@@ -65,6 +67,11 @@ branch would report that host as up to date.
 one chromium entry alone listed over 300 of them, and nothing in the parse reads
 them. Every remaining line is verbatim, including all nine `is vulnerable`
 headers and the summary line the parse actually depends on.
+
+`slackware/ChangeLog-excerpt.txt` is six verbatim runs of the real 2.4MB
+`slackware64-15.0/ChangeLog.txt`, cut at entry boundaries, newest first as
+upstream writes it. The upgrade-all capture is from a 15.0 host that had never
+been patched, which is why it pends nearly every package in `patches/`.
 
 `cp_time.txt` holds two lines: two successive reads, so the mock can return a
 delta rather than a single sample.
