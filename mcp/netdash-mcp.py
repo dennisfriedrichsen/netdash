@@ -24,7 +24,7 @@ import sys
 import time
 from datetime import datetime
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 NETDASH_VERSION="0.5.1"
@@ -58,6 +58,10 @@ class NotFound(ToolError):
     """The API answered 404."""
 
 
+class UnknownTool(Exception):
+    """tools/call named a tool we do not have."""
+
+
 # ---------- the netdash API ----------
 
 class Api:
@@ -72,7 +76,7 @@ class Api:
                                     "User-Agent": "netdash-mcp/" + NETDASH_VERSION})
         try:
             with urlopen(req, timeout=self.timeout) as r:
-                return json.loads(r.read())
+                body = r.read()
         except HTTPError as e:
             try:
                 msg = json.loads(e.read()).get("error") or e.reason
@@ -83,6 +87,8 @@ class Api:
         except (URLError, OSError) as e:
             raise ToolError("cannot reach netdash at %s: %s"
                             % (self.url, getattr(e, "reason", e)))
+        try:
+            return json.loads(body)
         except ValueError as e:
             raise ToolError("netdash sent something that is not JSON for %s: %s"
                             % (path, e))
@@ -220,15 +226,25 @@ def needs_attention(h):
     return False
 
 
-def series_stats(points, key):
-    vals = [(p["ts"], p[key]) for p in points if p.get(key) is not None]
+def series_stats(points, key, lo_key=None, hi_key=None):
+    """min/avg/max over a window. In hourly rollups `key` is the hour's
+    average, so the extremes come from lo_key and hi_key where a point has
+    them: a ten-minute spike to 100% is an hour averaging 25%, and the max of
+    the averages would report the spike as 25%."""
+    vals = []
+    for p in points:
+        v = p.get(key)
+        if v is None:
+            continue
+        lo, hi = p.get(lo_key) if lo_key else None, p.get(hi_key) if hi_key else None
+        vals.append((p["ts"], v, v if lo is None else lo, v if hi is None else hi))
     if not vals:
         return None
-    peak = max(vals, key=lambda v: v[1])
+    peak = max(vals, key=lambda v: v[3])
     return {
-        "min": round(min(v for _, v in vals), 1),
-        "avg": round(sum(v for _, v in vals) / len(vals), 1),
-        "max": round(peak[1], 1),
+        "min": round(min(v[2] for v in vals), 1),
+        "avg": round(sum(v[1] for v in vals) / len(vals), 1),
+        "max": round(peak[3], 1),
         "max_at": iso(peak[0]),
         "last": round(vals[-1][1], 1),
         "points": len(vals),
@@ -329,8 +345,8 @@ def tool_host_detail(api, args):
     out["services"] = [service_brief(s) for s in cur.get("services") or []]
     out["window"] = {"minutes": d.get("minutes"), "resolution": d.get("resolution"),
                      "disk_resolution": d.get("disk_resolution")}
-    out["cpu_history"] = series_stats(hist, "cpu_pct")
-    out["mem_history"] = series_stats(hist, "mem_pct")
+    out["cpu_history"] = series_stats(hist, "cpu_pct", "cpu_min", "cpu_max")
+    out["mem_history"] = series_stats(hist, "mem_pct", "mem_min", "mem_max")
     if args.get("include_series"):
         out["series"] = [[iso(p["ts"]),
                           None if p.get("cpu_pct") is None else round(p["cpu_pct"], 1),
@@ -467,7 +483,7 @@ def tool_list():
 
 def call_tool(api, name, args):
     if name not in TOOLS:
-        raise KeyError(name)
+        raise UnknownTool(name)
     try:
         result = TOOLS[name][0](api, args or {})
         return {"content": [{"type": "text", "text": json.dumps(result, indent=1)}],
@@ -502,7 +518,7 @@ def handle(api, msg):
             try:
                 return _result(mid, call_tool(api, params.get("name"),
                                               params.get("arguments")))
-            except KeyError:
+            except UnknownTool:
                 return _error(mid, -32602, "unknown tool: %s" % params.get("name"))
         return _error(mid, -32601, "method not found: %s" % method)
     except Exception as e:
@@ -530,7 +546,9 @@ def serve(api, inp, out):
         except ValueError:
             reply = _error(None, -32700, "parse error")
         else:
-            if isinstance(msg, list):          # a batch, from a 2025-03-26 client
+            if msg == []:                      # JSON-RPC 2.0: one error, not silence
+                reply = _error(None, -32600, "invalid request: empty batch")
+            elif isinstance(msg, list):        # a batch, from a 2025-03-26 client
                 reply = [r for r in (handle(api, m) for m in msg) if r is not None] or None
             else:
                 reply = handle(api, msg)
@@ -550,6 +568,10 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if not a.url:
         ap.error("--url (or NETDASH_URL) is required")
+    # Without a scheme urllib refuses every request, and each tool would then
+    # blame netdash for a typo in the client's own config.
+    if urlsplit(a.url).scheme not in ("http", "https"):
+        ap.error("--url must start with http:// or https://, got %r" % a.url)
     try:
         serve(Api(a.url, a.timeout), sys.stdin, sys.stdout)
     except KeyboardInterrupt:

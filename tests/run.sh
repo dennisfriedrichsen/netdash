@@ -3100,6 +3100,15 @@ if want mcp; then
         "assert d['unknown_tool']['error']['code']==-32602 and d['unknown_method']['error']['code']==-32601 and d['parse_error']['error']['code']==-32700, d" "$J"
   check "a batch is answered for its requests only" \
         "assert d['batch']==[{'jsonrpc':'2.0','id':900,'result':{}}], d['batch']" "$J"
+  check "an empty batch is one Invalid Request, not silence" \
+        "assert d['empty_batch']['error']['code']==-32600 and d['empty_batch']['id'] is None, d['empty_batch']" "$J"
+  check "a URL with no scheme is refused at startup, saying what it wants" \
+        "assert d['no_scheme'][0]==2 and d['no_scheme'][1] and d['no_scheme'][2]=='', d['no_scheme']" "$J"
+  # A ten-minute spike is an hour averaging 25%; the max of the averages hid it.
+  check "over hourly rollups the peak is the hour's max, not its average" \
+        "assert d['hourly_stats']==[2.0,12.0,100.0,True] and d['raw_stats']==[10.0,20.0,30.0], d" "$J"
+  check "a KeyError inside a tool is an internal error, logged, not 'unknown tool'" \
+        "assert d['inner_keyerror']==[-32603,True], d['inner_keyerror']" "$J"
   check "netdash unreachable is a tool error that says so, and the session lives" \
         "assert d['down_err'][0] and 'cannot reach netdash' in d['down_err'][1] and d['down_still_alive'], d" "$J"
   # 'servicex' is not a service check; a LIKE 'service%' would have said it was.

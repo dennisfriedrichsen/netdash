@@ -174,6 +174,8 @@ out["parse_error"] = s.read()
 s.send(json.dumps([{"jsonrpc": "2.0", "id": 900, "method": "ping"},
                    {"jsonrpc": "2.0", "method": "notifications/cancelled"}]))
 out["batch"] = s.read()
+s.send("[]")
+out["empty_batch"] = s.read()
 
 rest = s.close()
 out["trailing_stdout"] = rest
@@ -209,6 +211,43 @@ try:
     out["api_bad_since"] = 200
 except HTTPError as e:
     out["api_bad_since"] = e.code
+
+# A URL with no scheme is the user's typo, said at startup -- not every tool
+# blaming netdash for sending something that is not JSON.
+r = subprocess.run([sys.executable, MCP, "--url", "netdash.lan:8080"],
+                   input="", capture_output=True, text=True, timeout=10)
+out["no_scheme"] = [r.returncode, "http://" in r.stderr, r.stdout]
+
+# In-process, against a stub API, for what a real server will not produce.
+import importlib.util
+spec = importlib.util.spec_from_file_location("netdash_mcp", MCP)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+# Hourly rollups: cpu_pct is the hour's average. A ten-minute spike to 100% is
+# an hour averaging 25%; the peak is the spike, and when it was.
+hourly = [{"ts": NOW - 7200, "cpu_pct": 5.0, "cpu_min": 2.0, "cpu_max": 9.0},
+          {"ts": NOW - 3600, "cpu_pct": 25.0, "cpu_min": 4.0, "cpu_max": 100.0},
+          {"ts": NOW, "cpu_pct": 6.0, "cpu_min": 3.0, "cpu_max": 8.0}]
+st = m.series_stats(hourly, "cpu_pct", "cpu_min", "cpu_max")
+out["hourly_stats"] = [st["min"], st["avg"], st["max"], st["max_at"] == m.iso(NOW - 3600)]
+raw = [{"ts": NOW - 60, "cpu_pct": 10.0}, {"ts": NOW, "cpu_pct": 30.0}]
+st = m.series_stats(raw, "cpu_pct", "cpu_min", "cpu_max")
+out["raw_stats"] = [st["min"], st["avg"], st["max"]]
+
+
+class Stub:
+    def get(self, path, **q):
+        return {"hosts": [{"os": "no name"}]}   # a host row with no "host"
+
+
+# A KeyError inside a tool is a bug to log, not "unknown tool" for a tool the
+# agent was just shown.
+err = io.StringIO()
+with contextlib.redirect_stderr(err):
+    r = m.handle(Stub(), {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                          "params": {"name": "patches", "arguments": {"host": "x"}}})
+out["inner_keyerror"] = [r["error"]["code"], "KeyError" in err.getvalue()]
 
 srv.shutdown()
 print(json.dumps(out))
