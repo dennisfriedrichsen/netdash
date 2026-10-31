@@ -645,6 +645,7 @@ check('appliances_get_their_own_icons', function () {
               ['Debian GNU/Linux 13', 'debian'],
               ['Slackware 15.0 x86_64 (x86_64)', 'linux'],
               ['FreeBSD 15.1', 'bsd'], ['DragonFly 6.4-RELEASE (x86_64)', 'dragonfly'],
+              ['MidnightBSD 4.0 (amd64)', 'midnightbsd'],
               ['', 'unknown']];
   want.forEach(function (c) {
     var got = ctx.osFamily(c[0]);
@@ -659,7 +660,8 @@ check('an_appliance_icon_actually_draws_shapes', function () {
   /* Linux is 9: the feet, front and pear bottom are what stop Tux reading as
      a snowman, and dropping any of them is a silent regression. */
   [['UniFi OS 5.1.31', 4], ['Hubitat C-8 Pro 2.5.1.174', 3],
-   ['Alpine Linux 3.24', 9], ['DragonFly 6.4-RELEASE (x86_64)', 6]].forEach(function (c) {
+   ['Alpine Linux 3.24', 9], ['DragonFly 6.4-RELEASE (x86_64)', 6],
+   ['MidnightBSD 4.0 (amd64)', 2]].forEach(function (c) {
     var svg = ctx.osIcon(c[0]);
     var shapes = (svg.children || []).filter(function (x) {
       return x.tagName !== '#comment';

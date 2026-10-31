@@ -26,6 +26,9 @@ numbers are untouched.
 | `linux/proc-mounts-opensuse.txt` | openSUSE layout | eight btrfs subvolumes on one device, plus ZFS and NFS |
 | `linux/df-P-k-opensuse.txt` | openSUSE layout | the same filesystem repeated once per subvolume |
 | `freebsd/df-k-T-l.txt` | FreeBSD 15.1 | `-T` is accepted here and on DragonFly, nowhere else |
+| `midnightbsd/df-k-T-l.txt` | MidnightBSD 4.0 (bhyve guest) | `df -T` works as on FreeBSD; the header says `1024-blocks` |
+| `midnightbsd/mport-list-updates.txt` | MidnightBSD 4.0 | `mport list updates`: `name  version  <  newversion`, 17 rows and a blank line |
+| `midnightbsd/sec-feed-502.html` | sec.midnightbsd.org, 2026-10-31 | the 502 the CVE feed gave every request while `mport audit` printed nothing and exited 0 |
 | `dragonfly/df-k-T-l.txt` | DragonFly 6.4 (bhyve guest) | root is `serno/<disk>.s1d`, no `/dev/`; six `null` mounts repeat `/build`'s numbers |
 | `dragonfly/pkg-audit.txt` | DragonFly 6.4 | FreeBSD's `pkg audit` wording exactly: 17 problems in 6 packages |
 | `dragonfly/pkg-version-refresh.txt`, `freebsd/pkg-version-refresh.txt` | DragonFly 6.4; FreeBSD 15.1 pkgbase (rubidium) | `pkg version -vRL=` with nothing pending: only the catalogue refresh lines, two per repository and one more |

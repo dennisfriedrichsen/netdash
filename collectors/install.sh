@@ -7,7 +7,7 @@
 # Re-running is the upgrade path: it overwrites the script and leaves config alone.
 #
 # Linux:   Debian/Ubuntu/Raspbian, Fedora, Arch, openSUSE, Alpine, Slackware
-# BSD:     FreeBSD, DragonFly, OpenBSD, NetBSD
+# BSD:     FreeBSD, MidnightBSD, DragonFly, OpenBSD, NetBSD
 set -eu
 
 URL=""; TOKEN=""; INTERVAL=""
@@ -29,7 +29,7 @@ OS=$(uname -s)
 case "$OS" in
   Linux)   SRC="$SRC_DIR/linux/netdash-collector.sh"; CONF_DIR=/etc/netdash
            PSRC="$SRC_DIR/linux/netdash-patchcheck.sh" ;;
-  FreeBSD|DragonFly)
+  FreeBSD|MidnightBSD|DragonFly)
            SRC="$SRC_DIR/bsd/netdash-collector.sh";   CONF_DIR=/usr/local/etc/netdash
            PSRC="$SRC_DIR/bsd/netdash-patchcheck.sh" ;;
   OpenBSD|NetBSD)
@@ -51,6 +51,7 @@ if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1 \
   elif command -v apt-get >/dev/null 2>&1; then HINT="apt-get install curl"
   elif command -v pkg_add >/dev/null 2>&1; then HINT="pkg_add curl"
   elif command -v pkgin   >/dev/null 2>&1; then HINT="pkgin install curl"
+  elif command -v mport   >/dev/null 2>&1; then HINT="mport install curl"
   elif command -v pkg     >/dev/null 2>&1; then HINT="pkg install curl"
   else HINT="install curl"
   fi

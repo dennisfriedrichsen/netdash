@@ -288,6 +288,7 @@ work.
 | Linux (musl) | Alpine 3.24 | OpenRC + BusyBox crond, 60s |
 | Linux (no systemd) | Slackware 15.0 | dcron, 60s |
 | FreeBSD | 15.1 | cron, 60s |
+| MidnightBSD | 4.0 | cron, 60s; tested against captured output, not yet run there |
 | DragonFly | 6.4 | cron, 60s; tested against captured output, not yet run there |
 | OpenBSD | 7.9 | cron, 60s |
 | NetBSD | 11.0 | cron, 60s |
@@ -331,6 +332,10 @@ Its `df -l` does **not** exclude tmpfs/kernfs/ptyfs/procfs — the output is
 identical to plain `df` — so the `/dev/` device test is what filters them. NetBSD
 does ship ZFS, and its pools are reported.
 
+**MidnightBSD** forked from FreeBSD in 2006 and has kept up with it: every
+sysctl and `df -T` column the collector reads is FreeBSD's, so it takes the
+FreeBSD path unchanged, minus jail listing.
+
 **DragonFly** is FreeBSD's sysctls of 2003: the same `kern.cp_time`, `hw.physmem`
 and `vm.stats.vm.*` counters, `kern.boottime` with `nsec` where FreeBSD has
 `usec`, and `df -T`. It still has the cache queue FreeBSD 12 removed, whose
@@ -362,7 +367,7 @@ it schedules anything, so a broken host fails immediately rather than silently.
 - **Alpine / OpenRC** → root crontab every 60s, and `crond` is enabled and
   started, since it does not run by default on a minimal install and scheduling
   would otherwise silently do nothing
-- **FreeBSD / DragonFly / OpenBSD / NetBSD** → root crontab, every 60s
+- **FreeBSD / MidnightBSD / DragonFly / OpenBSD / NetBSD** → root crontab, every 60s
 
 It also installs `netdash-patchcheck` on a **daily schedule and at every boot**
 (`netdash-patchcheck.timer`, or root crontab entries at 03:xx and `@reboot`),
@@ -384,7 +389,7 @@ Updating later: `git pull && sudo ./install.sh` — it overwrites the script and
 keeps the existing config. `sudo ./uninstall.sh` removes it.
 
 Config lives at `/etc/netdash/collector.conf` (Linux, OpenBSD, NetBSD) or
-`/usr/local/etc/netdash/collector.conf` (FreeBSD, DragonFly), mode 600. The collector
+`/usr/local/etc/netdash/collector.conf` (FreeBSD, MidnightBSD, DragonFly), mode 600. The collector
 searches all of those plus `/usr/pkg/etc`, so it finds its config either way.
 
 ### What counts as a disk
@@ -518,7 +523,7 @@ fleet on it.
 |---|---|
 | Linux (systemd) | `systemd-detect-virt` — prints `none` and exits **1** on bare metal, so the word is the signal, not the status |
 | Linux (no systemd) | the CPUID hypervisor flag, then DMI `sys_vendor`/`product_name` for the name |
-| FreeBSD / TrueNAS | `sysctl -n kern.vm_guest`; inside a jail, `security.jail.jailed` answers `jail` first |
+| FreeBSD / MidnightBSD / TrueNAS | `sysctl -n kern.vm_guest`; inside a jail, `security.jail.jailed` answers `jail` first |
 | Linux containers, no systemd | `/run/.containerenv` (podman), `/.dockerenv` (docker), `container=` in pid 1's environment (LXC, nspawn) |
 | DragonFly | `sysctl -n kern.vmm_guest`; `unknown` reads as null |
 | OpenBSD / NetBSD | DMI strings via sysctl, matched against known hypervisor vendors |
@@ -690,6 +695,7 @@ which commands are wrong in ways that fail silently — is in
 | Slackware | `slackpkg upgrade-all`, declined; ChangeLog `(* Security fix *)` | yes, from the ChangeLog |
 | FreeBSD | `pkg audit`; `freebsd-update updatesready` unless pkgbase | yes, and base separately |
 | DragonFly | `pkg audit` | yes for packages; **base has no patch mechanism** |
+| MidnightBSD | `mport audit` (online CVE feed) + `mport list updates` | yes for packages, **unknown while the feed is down**; base not checked |
 | OpenBSD | `syspatch -c` (base) + `pkg_add -u -n` (packages) | yes, for base |
 | NetBSD | `pkg_admin audit` | yes for packages; **base has no patch mechanism** |
 | macOS | `softwareupdate --list --no-scan`, plus `brew outdated` where Homebrew is installed | `Recommended: YES`; Homebrew is unclassified |

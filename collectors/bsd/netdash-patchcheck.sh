@@ -1,5 +1,5 @@
 #!/bin/sh
-# netdash patch check -- FreeBSD, DragonFly, OpenBSD and NetBSD.
+# netdash patch check -- FreeBSD, MidnightBSD, DragonFly, OpenBSD and NetBSD.
 #
 # Runs DAILY and once at every boot, not at collector cadence. Writes a small
 # JSON file that netdash-collector reads back and inlines. The boot run matters
@@ -14,6 +14,7 @@
 # for part of the system:
 #   FreeBSD  packages (pkg audit, CVE-based) AND base (freebsd-update)
 #   DragonFly packages only (the same pkg audit); base is rebuilt from source
+#   MidnightBSD packages only (mport audit, asking an online CVE feed)
 #   OpenBSD  base only (syspatch); packages carry no security classification
 #   NetBSD   packages only (pkg_admin audit); base has no patch mechanism
 set -eu
@@ -364,6 +365,51 @@ NetBSD)
         ;;
     esac
   fi
+  ;;
+MidnightBSD)
+  SRC=mport-audit
+  # mport, not pkg. `mport index` fetches the package index and exits non-zero
+  # when it cannot; that is the refresh, and the index file dates it otherwise.
+  FETCHED=0
+  if [ "$REFRESH" = yes ] && mport index >/dev/null 2>&1; then FETCHED=1; fi
+  if [ "$FETCHED" -eq 1 ]; then
+    CHECKED=$NOW
+  else
+    CHECKED=$(mtime /var/db/mport/index.db)
+  fi
+
+  # One row per package behind the index (verified on MidnightBSD 4.0):
+  #   curl                              8.17.0  <  8.19.0_3
+  OTH=$(run mport list updates | awk 'NF >= 4 && $3 == "<" { n++ } END { print n + 0 }')
+
+  # mport audit has no local database: it asks sec.midnightbsd.org about each
+  # package's CPE, and when that request fails it skips the package without a
+  # word and still exits 0 (libmport/audit.c, mport/mport.c). Empty output is
+  # therefore a clean host and an unreachable feed alike -- and the feed was
+  # answering 502 to everything on 2026-10-31, the day the test host's audit
+  # came back empty. So the feed is asked directly first, with the same query
+  # mport makes, and only an answer that looks like JSON lets the audit count.
+  # Otherwise security stays null, never 0. A lookup that fails partway
+  # through an audit still goes unseen; this catches the feed being down.
+  FEED="https://sec.midnightbsd.org/api/cpe/partial-match?includeVersion=true&cpe=cpe%3A2.3%3Aa%3Ahaxx%3Acurl&startDate=2006-02-28"
+  if command -v curl >/dev/null 2>&1; then
+    PROBE=$(curl -fsS --max-time 30 "$FEED" 2>/dev/null | head -c 1 || true)
+  else
+    PROBE=$(fetch -q -T 30 -o - "$FEED" 2>/dev/null | head -c 1 || true)
+  fi
+  case "$PROBE" in
+    '['|'{')
+      # A package with findings opens with "<name>-<version> is vulnerable:",
+      # pkg's wording. Counted once per package, as on FreeBSD.
+      AUDITED=$(run mport audit | awk '/ is vulnerable:$/ { print $1 }' | sort -u)
+      SEC=$(printf '%s' "$AUDITED" | grep -c . || true)
+      SECPKGS=$(printf '%s\n' "$AUDITED" | join_names)
+      DET="base system not checked"
+      ;;
+    *)
+      DET="packages not audited: the MidnightBSD security feed (sec.midnightbsd.org) did not answer; base system not checked"
+      ;;
+  esac
   ;;
 esac
 

@@ -1,0 +1,4 @@
+Filesystem    Type    1024-blocks    Used   Avail Capacity  Mounted on
+/dev/vtbd0p2  ufs         9372540 1878768 6743972    22%    /
+devfs         devfs             1       0       1     0%    /dev
+/dev/vtbd0p1  msdosfs      262128    1685  260443     1%    /boot/efi

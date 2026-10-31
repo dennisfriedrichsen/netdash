@@ -16,7 +16,7 @@ answer the same question:
 | question | platforms that answer it |
 |---|---|
 | pending updates, classified as security | Debian, Ubuntu, Raspbian, Fedora, openSUSE Leap, Slackware, macOS |
-| installed packages with known CVEs | FreeBSD, DragonFly, NetBSD, Arch (with `arch-audit`) |
+| installed packages with known CVEs | FreeBSD, MidnightBSD, DragonFly, NetBSD, Arch (with `arch-audit`) |
 | base-system patches pending, separate from packages | FreeBSD, OpenBSD |
 | "N packages behind", no security classification at all | Alpine, Arch (base), openSUSE Tumbleweed, OpenBSD packages |
 
@@ -31,6 +31,11 @@ Two of these are worth stating plainly because they are gaps, not oversights:
   or installing new sets. netdash reports NetBSD *packages* and says nothing
   about base, rather than implying base is clean. DragonFly is the same: base
   is rebuilt from source, and only its `pkg` packages are audited.
+- **MidnightBSD's audit needs the network, and fails silently.** `mport audit`
+  asks sec.midnightbsd.org about each package and, when that request fails,
+  skips the package and still exits 0, so a down feed prints exactly what a
+  clean host does. The check asks the feed directly first and reports
+  security as unknown when it does not answer. Base is not checked.
 - **openSUSE Tumbleweed ships no patch metadata.** Patches are a Leap/SLE
   concept, so `zypper list-patches` is empty there by design — not because the
   host is current. Tumbleweed can only ever report a count.
@@ -132,6 +137,7 @@ nothing.
 | Alpine | `apk list --upgradable` | `apk update` | no |
 | Slackware | `slackpkg upgrade-all`, declined **(verified)** | `slackpkg update` | no |
 | FreeBSD | `pkg audit -q`, `freebsd-update updatesready` | none needed | **yes, both** |
+| MidnightBSD | `mport list updates`; `mport audit` asks sec.midnightbsd.org per package | `mport index` | no |
 | DragonFly | `pkg audit -q` | `pkg audit -F` | unverified (pkg's periodic script, if enabled) |
 | OpenBSD | — | `syspatch -c` | no |
 | NetBSD | `pkg_admin audit` | `pkg_admin fetch-pkg-vulnerabilities` | yes, if enabled |
@@ -708,7 +714,7 @@ state that ranks below `security` (where there is still work to do) and above
 | openSUSE | `needs-restarting -r`, exit 1 | **verified present** |
 | FreeBSD | `freebsd-version -k` ≠ `uname -r` | unverified |
 | Slackware | newest `kernel-generic`/`kernel-huge` package ≠ `uname -r` | true only, never false |
-| Arch, Alpine, DragonFly, OpenBSD, NetBSD, macOS | none | always `null` |
+| Arch, Alpine, MidnightBSD, DragonFly, OpenBSD, NetBSD, macOS | none | always `null` |
 
 `null` means *"this host has no way to answer"* and never *"no reboot needed"*.
 Two gates matter:

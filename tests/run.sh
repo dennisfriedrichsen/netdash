@@ -193,6 +193,28 @@ if want freebsd-jailhost; then
   rm -rf "$B"
 fi
 
+# ------------------------------------------------------------ MidnightBSD ----
+if want midnightbsd; then
+  echo "midnightbsd (FreeBSD's sysctls and df -T under another uname)"
+  # The sysctl values are the capture from midnightbsd4dot0.
+  B=$(mkbin x uname sysctl df hostname)
+  J=$(run_collector "$B" bsd \
+      MOCK_PHYSMEM=1032986624 MOCK_PAGESIZE=4096 MOCK_FREE=216706 MOCK_INACT=4100 \
+      MOCK_LAUNDRY=0 MOCK_ARC=960 MOCK_VM_GUEST=bhyve MOCK_JAILED=0 \
+      MOCK_BOOTTIME="{ sec = 1793461390, usec = 225520 } Sat Oct 31 10:43:10 2026" \
+      NETDASH_MOCK_OS=MidnightBSD NETDASH_MOCK_REL=4.0)
+  check "reports as MidnightBSD" \
+        "assert d['os']=='MidnightBSD 4.0 (amd64)', d['os']" "$J"
+  # 1032986624 - (216706 free + 4100 inactive) * 4096 - 960 ARC
+  check "memory as on FreeBSD" \
+        "assert (d['mem_total_bytes'],d['mem_used_bytes'])==(1032986624,128564288), d" "$J"
+  check "disks from df -T, devfs dropped" \
+        "assert [x['mount'] for x in d['disks']]==['/','/boot/efi'] and d['disks'][0]['total_bytes']==9372540*1024, d['disks']" "$J"
+  check "virt from kern.vm_guest" \
+        "assert d['virt']=='bhyve', d['virt']" "$J"
+  rm -rf "$B"
+fi
+
 # -------------------------------------------------------------- DragonFly ----
 if want dragonfly; then
   echo "dragonfly (FreeBSD's sysctls plus a cache queue; a root with no /dev/)"
@@ -780,6 +802,43 @@ EOF
       sh "$ROOT/collectors/bsd/netdash-patchcheck.sh" --print 2>/dev/null) || J=''
   check "nor on FreeBSD, whose three repositories read as 7 behind" \
         "assert (d['security'],d['other'])==(9,0), d" "$J"
+  rm -rf "$B"
+fi
+
+if want patches-midnightbsd; then
+  echo "patches-midnightbsd (an unreachable CVE feed is unknown, never clean)"
+  # mport audit prints nothing and exits 0 when sec.midnightbsd.org is down,
+  # exactly as it does for a clean host -- the test host did that on
+  # 2026-10-31 while the feed answered every request with the captured 502.
+  B=$(mkbin x uname sysctl)
+  cat > "$B/mport" <<EOF
+#!/bin/sh
+case "\$*" in
+  index) exit 0 ;;
+  "list updates") cat "$FIX/midnightbsd/mport-list-updates.txt" ;;
+  audit) ;;
+  *) exit 1 ;;
+esac
+EOF
+  cat > "$B/curl" <<EOF
+#!/bin/sh
+if [ -n "\$FEED_UP" ]; then echo '[]'; exit 0; fi
+cat "$FIX/midnightbsd/sec-feed-502.html" >/dev/null
+echo "curl: (22) The requested URL returned error: 502" >&2; exit 22
+EOF
+  chmod +x "$B/mport" "$B/curl"
+  J=$(env "PATH=$B:/usr/bin:/bin" NETDASH_CONF=/dev/null NETDASH_FIXTURES="$FIX" \
+      NETDASH_MOCK_OS=MidnightBSD NETDASH_MOCK_REL=4.0 \
+      sh "$ROOT/collectors/bsd/netdash-patchcheck.sh" --print 2>/dev/null) || J=''
+  check "the 17 packages behind the index are counted" \
+        "assert (d['other'],d['source'])==(17,'mport-audit'), d" "$J"
+  check "with the feed down, security is unknown, not 0, and says why" \
+        "assert d['security'] is None and 'sec.midnightbsd.org' in d['detail'], d" "$J"
+  J=$(env "PATH=$B:/usr/bin:/bin" NETDASH_CONF=/dev/null NETDASH_FIXTURES="$FIX" \
+      NETDASH_MOCK_OS=MidnightBSD NETDASH_MOCK_REL=4.0 FEED_UP=1 \
+      sh "$ROOT/collectors/bsd/netdash-patchcheck.sh" --print 2>/dev/null) || J=''
+  check "with the feed answering, an empty audit is a real 0" \
+        "assert d['security']==0 and d['other']==17 and d['detail']=='base system not checked', d" "$J"
   rm -rf "$B"
 fi
 

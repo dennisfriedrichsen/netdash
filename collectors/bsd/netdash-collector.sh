@@ -1,5 +1,5 @@
 #!/bin/sh
-# netdash collector -- FreeBSD, DragonFly, OpenBSD and NetBSD.
+# netdash collector -- FreeBSD, MidnightBSD, DragonFly, OpenBSD and NetBSD.
 # Native tools only: sysctl, df, and curl / fetch / ftp.
 # Usage: netdash-collector.sh [--print]
 set -eu
@@ -45,7 +45,7 @@ JAILED=$(sysctl -n security.jail.jailed 2>/dev/null || true)
 #   FreeBSD  1000 50 500 20 8430                     (5, space-separated)
 #   OpenBSD  7413,20,29570,0,20845,90572418          (6, comma-separated)
 #   NetBSD   user = 16238, nice = 3814, ... idle = N (5, "key = value" pairs)
-# DragonFly prints FreeBSD's form.
+# DragonFly and MidnightBSD print FreeBSD's form.
 # Strip everything that is not a digit or separator, so all three reduce to bare
 # numbers. Without this, NetBSD only worked by accident: awk coerced the "user"
 # and "=" tokens to zero, which happened to leave the arithmetic right while
@@ -94,7 +94,9 @@ MEM_USED=null
 sysctl_n() { sysctl -n "$1" 2>/dev/null || true; }
 
 case "$OSNAME" in
-FreeBSD)
+# MidnightBSD keeps up with FreeBSD closely enough to share every sysctl read
+# here, laundry queue and ARC included. Verified on MidnightBSD 4.0.
+FreeBSD|MidnightBSD)
   MEM_TOTAL=$(sysctl_n hw.physmem)
   if [ "$JAILED" = 1 ]; then
     # The page queues are the host's. The jail's footprint is its processes'
@@ -177,7 +179,7 @@ esac
 # using used+available, the usable view, rather than zpool's raw size which
 # counts raidz parity. Plus real non-ZFS mounts filtered on df -T's type column,
 # because `df -t no<type>` does not exclude on FreeBSD.
-# DragonFly takes the FreeBSD path: it has df -T, and needs it, because its
+# MidnightBSD takes the FreeBSD path as it is. DragonFly takes it too: it has df -T, and needs it, because its
 # root is mounted as "serno/<disk>.s1d" with no /dev/ in front. Its nullfs
 # type is spelled "null", and the default install null-mounts six of /build's
 # directories, each repeating /build's numbers.
@@ -194,7 +196,7 @@ if command -v zfs >/dev/null 2>&1; then
       if (total > 0) printf "%s{\"mount\":\"%s\",\"used_bytes\":%.0f,\"total_bytes\":%.0f}", (n++?",":""), $1, $2, total }')
 fi
 
-if [ "$OSNAME" = "FreeBSD" ] || [ "$OSNAME" = "DragonFly" ]; then
+if [ "$OSNAME" = "FreeBSD" ] || [ "$OSNAME" = "MidnightBSD" ] || [ "$OSNAME" = "DragonFly" ]; then
   # In a jail, / is reported on its own below, whatever its filesystem.
   OTHER=$(df -k -T -l 2>/dev/null | awk -v jailed="$JAILED" '
     NR>1 && $3+0 > 0 && $2 !~ /^(zfs|devfs|procfs|fdescfs|tmpfs|linprocfs|linsysfs|nullfs|null|cd9660|fusefs|nfs|nfs4|smbfs|cifs)$/ {
@@ -246,7 +248,9 @@ if [ "$JAILED" = 1 ]; then
   UPTIME=${JUP:-null}
   # uname -r is the host's kernel; the jail's own release is its userland,
   # which is what its packages and patches are built against.
-  JREL=$(freebsd-version -u 2>/dev/null || true)
+  # FreeBSD only: freebsd-version names a FreeBSD release, whatever ran it.
+  JREL=""
+  [ "$OSNAME" = FreeBSD ] && JREL=$(freebsd-version -u 2>/dev/null || true)
   [ -n "$JREL" ] && OS="FreeBSD $JREL"
 fi
 
@@ -270,7 +274,7 @@ virt_name() {
   esac
 }
 case "$OSNAME" in
-FreeBSD)
+FreeBSD|MidnightBSD)
   # kern.vm_guest inside a jail answers for the host, so a jail on a physical
   # box would read as bare metal.
   if [ "$JAILED" = 1 ]; then V=jail; else V=$(sysctl_n kern.vm_guest); fi

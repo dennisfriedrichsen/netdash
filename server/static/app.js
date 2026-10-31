@@ -627,6 +627,11 @@ var OS_ICONS = {
      rectangle at icon size. */
   netbsd: [['path', { d: 'M6.2 3.4v17.2', fill: 'none', 'stroke-width': 1.8 }],
            ['path', { d: 'M7.3 4.7h12.4l-3.1 3.5 3.1 3.5H7.3z' }]],
+  /* MidnightBSD: a crescent moon and a star. The star is not decoration --
+     Debian's glyph is also crescent-shaped, and the star is what keeps the
+     two apart at 19px. */
+  midnightbsd: [['path', { d: 'M13.6 3.4A8.6 8.6 0 1 0 20.6 15.9 7 7 0 0 1 13.6 3.4z' }],
+                ['path', { d: 'M18.2 4.2l.75 1.85 1.85.75-1.85.75-.75 1.85-.75-1.85-1.85-.75 1.85-.75z' }]],
   /* DragonFly's dragonfly, seen from above: head, a long abdomen, and two
      pairs of wings swept the way a resting one holds them. The forewings
      sweep forward and the hindwings back, which is what keeps it from reading
@@ -696,10 +701,11 @@ function osFamily(os) {
   if (s.indexOf('raspbian') > -1 || s.indexOf('raspberry') > -1) return 'raspberry';
   if (s.indexOf('ubuntu') > -1) return 'ubuntu';
   if (s.indexOf('debian') > -1) return 'debian';
-  /* Both must precede the generic 'bsd' test below, which would otherwise claim
+  /* These must precede the generic 'bsd' test below, which would otherwise claim
      them and render every BSD as the FreeBSD daemon. */
   if (s.indexOf('openbsd') > -1) return 'openbsd';
   if (s.indexOf('netbsd') > -1) return 'netbsd';
+  if (s.indexOf('midnightbsd') > -1) return 'midnightbsd';
   /* uname -s says "DragonFly", with no "BSD" in it, so it has to be named. */
   if (s.indexOf('dragonfly') > -1) return 'dragonfly';
   if (s.indexOf('bsd') > -1) return 'bsd';
@@ -879,7 +885,7 @@ function compactRow(h) {
 var OS_GROUPS = {
   apple: 'macOS', nas: 'TrueNAS', debian: 'Debian', ubuntu: 'Ubuntu',
   raspberry: 'Raspberry Pi OS', openbsd: 'OpenBSD', netbsd: 'NetBSD',
-  dragonfly: 'DragonFly BSD',
+  dragonfly: 'DragonFly BSD', midnightbsd: 'MidnightBSD',
   gateway: 'UniFi', hub: 'Hubitat', unknown: 'Unknown OS'
 };
 
