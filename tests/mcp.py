@@ -39,6 +39,17 @@ app.CONN = db.connect(app.CFG["db_path"])
 db.insert_sample(app.CONN, {"host": "sleepy-laptop", "ts": NOW - 7200, "os": "macOS 15.6",
                             "cpu_pct": 3.0, "mem_used_bytes": 1, "mem_total_bytes": 4,
                             "uptime_seconds": 9, "disks": []})
+# bsd-server's pool down a disk, as its collector's zpool status would report
+# it. Written straight to its storage row, at its latest sample's time, so the
+# seeded readings and the fleet's counts stay as the other checks expect.
+_bsd_ts = app.CONN.execute("SELECT MAX(ts) FROM samples WHERE host='bsd-server'").fetchone()[0]
+app.CONN.execute("INSERT INTO storage (host, ts, pools, smart) VALUES (?,?,?,NULL)",
+                 ("bsd-server", _bsd_ts, json.dumps([{
+                     "name": "tank", "state": "DEGRADED", "boot": False,
+                     "read_errors": 0, "write_errors": 0, "checksum_errors": 0,
+                     "data_errors": 0, "bad_devices": [{"name": "ada3p1", "state": "UNAVAIL"}],
+                     "scan": None, "detail": None}])))
+app.CONN.commit()
 db.record_event(app.CONN, "pi-armv7", "status", "ok", "warning", "disk / at 93%",
                 ts=NOW - 600)
 db.record_event(app.CONN, "linux-server", "service:plex-linux-server", "ok", "fail",
@@ -132,6 +143,10 @@ out["no_thresholds_per_host"] = not any("thresholds" in h for h in fleet["hosts"
 
 err, probs = s.tool("fleet_status", problems_only=True)
 out["problems"] = sorted(h["host"] for h in probs["hosts"])
+out["zfs_brief"] = byname["bsd-server"].get("storage")
+out["healthy_no_storage"] = all("storage" not in h for h in fleet["hosts"] if h["host"] != "bsd-server")
+err, zd = s.tool("host_detail", host="bsd-server")
+out["zfs_detail"] = zd.get("storage")
 
 err, pi = s.tool("host_detail", host="pi-armv7", minutes=60)
 out["pi_err"] = err

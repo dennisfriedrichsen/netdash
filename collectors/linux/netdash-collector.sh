@@ -264,8 +264,30 @@ for f in $PATCH_FILES; do
   case "$P" in '{'*'}') PATCHES="$P"; break ;; esac
 done
 
-JSON=$(printf '{"host":"%s","os":"%s (%s)","cpu_pct":%s,"mem_used_bytes":%s,"mem_total_bytes":%s,"uptime_seconds":%d,"disks":[%s],"patches":%s,"virt":%s,"collector_version":"%s"}' \
-  "$HOST" "$OS" "$ARCH" "$CPU" "$MEM_USED" "$MEM_TOTAL" "$UPTIME" "$DISKS" "$PATCHES" "$VIRT" "$NETDASH_VERSION")
+# ---- ZFS pool health ----
+# `zpool status -p` as text, parsed by the server (server/zfs.py): a parser
+# fix then ships with the server rather than to every ZFS host. -p gives exact
+# error counts; an OpenZFS too old for it falls back to the plain form, whose
+# "1.2K" the server also reads. LC_ALL=C pins the scrub dates to the English
+# ctime form, and the zone goes with them because zpool prints local time
+# without one. Nothing is sent without pools, or when zpool fails: silence
+# lets the last report age out, where an empty one would say "no pools".
+# Capped at 64 KB, a quarter of what the server accepts in one payload.
+ZFS_JSON=""
+if command -v zpool >/dev/null 2>&1; then
+  ZST=$(LC_ALL=C zpool status -p 2>/dev/null || LC_ALL=C zpool status 2>/dev/null || true)
+  case "$ZST" in
+    *"pool:"*)
+      ZST=$(printf '%s\n' "$ZST" | head -c 65536 | tr -d '\r' | awk '
+        { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t")
+          printf "%s%s", (NR > 1 ? "\\n" : ""), $0 }')
+      ZFS_JSON=",\"zpool_status\":\"$ZST\",\"tz\":\"$(date +%z)\""
+      ;;
+  esac
+fi
+
+JSON=$(printf '{"host":"%s","os":"%s (%s)","cpu_pct":%s,"mem_used_bytes":%s,"mem_total_bytes":%s,"uptime_seconds":%d,"disks":[%s],"patches":%s,"virt":%s,"collector_version":"%s"%s}' \
+  "$HOST" "$OS" "$ARCH" "$CPU" "$MEM_USED" "$MEM_TOTAL" "$UPTIME" "$DISKS" "$PATCHES" "$VIRT" "$NETDASH_VERSION" "$ZFS_JSON")
 
 if [ "$MODE" = "--print" ]; then printf '%s\n' "$JSON"; exit 0; fi
 

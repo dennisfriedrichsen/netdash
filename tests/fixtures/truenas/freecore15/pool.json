@@ -1,0 +1,96 @@
+[
+ {
+  "autotrim": {
+   "parsed": "off",
+   "rawvalue": "off",
+   "source": "DEFAULT",
+   "value": "off"
+  },
+  "encrypt": 0,
+  "encryptkey": "",
+  "encryptkey_path": null,
+  "expand": {
+   "bytes_reflowed": null,
+   "bytes_to_reflow": null,
+   "end_time": null,
+   "expanding_vdev": null,
+   "percentage": null,
+   "start_time": null,
+   "state": null,
+   "total_secs_left": null,
+   "waiting_for_resilver": null
+  },
+  "guid": "11033843729108611325",
+  "healthy": true,
+  "id": 1,
+  "is_decrypted": true,
+  "name": "tank",
+  "path": "/mnt/tank",
+  "scan": {
+   "bytes_issued": null,
+   "bytes_processed": null,
+   "bytes_to_process": null,
+   "end_time": null,
+   "errors": null,
+   "function": null,
+   "pause": null,
+   "percentage": null,
+   "start_time": null,
+   "state": null,
+   "total_secs_left": null
+  },
+  "status": "ONLINE",
+  "status_detail": null,
+  "topology": {
+   "cache": [],
+   "data": [
+    {
+     "children": [],
+     "device": "ada0p2",
+     "disk": "ada0",
+     "guid": "3897266345922698673",
+     "name": "gptid/dd3abc07-c951-11f1-a137-00a0985387fd",
+     "path": "/dev/gptid/dd3abc07-c951-11f1-a137-00a0985387fd",
+     "stats": {
+      "allocated": 1686548480,
+      "bytes": [
+       0,
+       229818368,
+       26043781120,
+       0,
+       0,
+       0,
+       0
+      ],
+      "checksum_errors": 0,
+      "configured_ashift": 12,
+      "fragmentation": 10,
+      "logical_ashift": 9,
+      "ops": [
+       0,
+       8835,
+       906109,
+       0,
+       0,
+       0,
+       0
+      ],
+      "physical_ashift": 15,
+      "read_errors": 0,
+      "self_healed": 0,
+      "size": 51002736640,
+      "timestamp": 319946079382443,
+      "write_errors": 0
+     },
+     "status": "ONLINE",
+     "type": "DISK",
+     "unavail_disk": null
+    }
+   ],
+   "dedup": [],
+   "log": [],
+   "spare": [],
+   "special": []
+  }
+ }
+]

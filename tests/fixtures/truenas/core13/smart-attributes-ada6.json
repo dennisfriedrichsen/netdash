@@ -1,0 +1,504 @@
+[
+ {
+  "flags": {
+   "auto_keep": true,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": false,
+   "string": "-O--CK ",
+   "updated_online": true,
+   "value": 50
+  },
+  "id": 5,
+  "name": "Reallocated_Sector_Ct",
+  "raw": {
+   "string": "0",
+   "value": 0
+  },
+  "value": 100,
+  "worst": 100
+ },
+ {
+  "flags": {
+   "auto_keep": true,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": false,
+   "string": "-O--CK ",
+   "updated_online": true,
+   "value": 50
+  },
+  "id": 9,
+  "name": "Power_On_Hours",
+  "raw": {
+   "string": "25142",
+   "value": 25142
+  },
+  "value": 100,
+  "worst": 100
+ },
+ {
+  "flags": {
+   "auto_keep": true,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": false,
+   "string": "-O--CK ",
+   "updated_online": true,
+   "value": 50
+  },
+  "id": 12,
+  "name": "Power_Cycle_Count",
+  "raw": {
+   "string": "13",
+   "value": 13
+  },
+  "value": 100,
+  "worst": 100
+ },
+ {
+  "flags": {
+   "auto_keep": true,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": false,
+   "string": "-O--CK ",
+   "updated_online": true,
+   "value": 50
+  },
+  "id": 165,
+  "name": "Block_Erase_Count",
+  "raw": {
+   "string": "17367199",
+   "value": 17367199
+  },
+  "value": 100,
+  "worst": 100
+ },
+ {
+  "flags": {
+   "auto_keep": true,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": false,
+   "string": "-O--CK ",
+   "updated_online": true,
+   "value": 50
+  },
+  "id": 166,
+  "name": "Minimum_PE_Cycles_TLC",
+  "raw": {
+   "string": "1",
+   "value": 1
+  },
+  "value": 100,
+  "worst": 100
+ },
+ {
+  "flags": {
+   "auto_keep": true,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": false,
+   "string": "-O--CK ",
+   "updated_online": true,
+   "value": 50
+  },
+  "id": 167,
+  "name": "Max_Bad_Blocks_per_Die",
+  "raw": {
+   "string": "61",
+   "value": 61
+  },
+  "value": 100,
+  "worst": 100
+ },
+ {
+  "flags": {
+   "auto_keep": true,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": false,
+   "string": "-O--CK ",
+   "updated_online": true,
+   "value": 50
+  },
+  "id": 168,
+  "name": "Maximum_PE_Cycles_TLC",
+  "raw": {
+   "string": "4",
+   "value": 4
+  },
+  "value": 100,
+  "worst": 100
+ },
+ {
+  "flags": {
+   "auto_keep": true,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": false,
+   "string": "-O--CK ",
+   "updated_online": true,
+   "value": 50
+  },
+  "id": 169,
+  "name": "Total_Bad_Blocks",
+  "raw": {
+   "string": "422",
+   "value": 422
+  },
+  "value": 100,
+  "worst": 100
+ },
+ {
+  "flags": {
+   "auto_keep": true,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": false,
+   "string": "-O--CK ",
+   "updated_online": true,
+   "value": 50
+  },
+  "id": 170,
+  "name": "Grown_Bad_Blocks",
+  "raw": {
+   "string": "0",
+   "value": 0
+  },
+  "value": 100,
+  "worst": 100
+ },
+ {
+  "flags": {
+   "auto_keep": true,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": false,
+   "string": "-O--CK ",
+   "updated_online": true,
+   "value": 50
+  },
+  "id": 171,
+  "name": "Program_Fail_Count",
+  "raw": {
+   "string": "0",
+   "value": 0
+  },
+  "value": 100,
+  "worst": 100
+ },
+ {
+  "flags": {
+   "auto_keep": true,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": false,
+   "string": "-O--CK ",
+   "updated_online": true,
+   "value": 50
+  },
+  "id": 172,
+  "name": "Erase_Fail_Count",
+  "raw": {
+   "string": "0",
+   "value": 0
+  },
+  "value": 100,
+  "worst": 100
+ },
+ {
+  "flags": {
+   "auto_keep": true,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": false,
+   "string": "-O--CK ",
+   "updated_online": true,
+   "value": 50
+  },
+  "id": 173,
+  "name": "Average_PE_Cycles_TLC",
+  "raw": {
+   "string": "2",
+   "value": 2
+  },
+  "value": 100,
+  "worst": 100
+ },
+ {
+  "flags": {
+   "auto_keep": true,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": false,
+   "string": "-O--CK ",
+   "updated_online": true,
+   "value": 50
+  },
+  "id": 174,
+  "name": "Unexpected_Power_Loss",
+  "raw": {
+   "string": "6",
+   "value": 6
+  },
+  "value": 100,
+  "worst": 100
+ },
+ {
+  "flags": {
+   "auto_keep": true,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": false,
+   "string": "-O--CK ",
+   "updated_online": true,
+   "value": 50
+  },
+  "id": 184,
+  "name": "End-to-End_Error",
+  "raw": {
+   "string": "0",
+   "value": 0
+  },
+  "value": 100,
+  "worst": 100
+ },
+ {
+  "flags": {
+   "auto_keep": true,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": false,
+   "string": "-O--CK ",
+   "updated_online": true,
+   "value": 50
+  },
+  "id": 187,
+  "name": "Reported_Uncorrect",
+  "raw": {
+   "string": "0",
+   "value": 0
+  },
+  "value": 100,
+  "worst": 100
+ },
+ {
+  "flags": {
+   "auto_keep": true,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": false,
+   "string": "-O--CK ",
+   "updated_online": true,
+   "value": 50
+  },
+  "id": 188,
+  "name": "Command_Timeout",
+  "raw": {
+   "string": "1",
+   "value": 1
+  },
+  "value": 100,
+  "worst": 100
+ },
+ {
+  "flags": {
+   "auto_keep": true,
+   "error_rate": false,
+   "event_count": false,
+   "performance": false,
+   "prefailure": false,
+   "string": "-O---K ",
+   "updated_online": true,
+   "value": 34
+  },
+  "id": 194,
+  "name": "Temperature_Celsius",
+  "raw": {
+   "string": "33 (Min/Max 22/40)",
+   "value": 171800133665
+  },
+  "value": 67,
+  "worst": 40
+ },
+ {
+  "flags": {
+   "auto_keep": true,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": false,
+   "string": "-O--CK ",
+   "updated_online": true,
+   "value": 50
+  },
+  "id": 199,
+  "name": "UDMA_CRC_Error_Count",
+  "raw": {
+   "string": "0",
+   "value": 0
+  },
+  "value": 100,
+  "worst": 100
+ },
+ {
+  "flags": {
+   "auto_keep": true,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": false,
+   "string": "-O--CK ",
+   "updated_online": true,
+   "value": 50
+  },
+  "id": 230,
+  "name": "Media_Wearout_Indicator",
+  "raw": {
+   "string": "0x001800140018",
+   "value": 103080525848
+  },
+  "value": 1,
+  "worst": 1
+ },
+ {
+  "flags": {
+   "auto_keep": true,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": true,
+   "string": "PO--CK ",
+   "updated_online": true,
+   "value": 51
+  },
+  "id": 232,
+  "name": "Available_Reservd_Space",
+  "raw": {
+   "string": "100",
+   "value": 100
+  },
+  "thresh": 4,
+  "value": 100,
+  "when_failed": "",
+  "worst": 100
+ },
+ {
+  "flags": {
+   "auto_keep": true,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": false,
+   "string": "-O--CK ",
+   "updated_online": true,
+   "value": 50
+  },
+  "id": 233,
+  "name": "NAND_GB_Written_TLC",
+  "raw": {
+   "string": "2427",
+   "value": 2427
+  },
+  "value": 100,
+  "worst": 100
+ },
+ {
+  "flags": {
+   "auto_keep": true,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": false,
+   "string": "-O--CK ",
+   "updated_online": true,
+   "value": 50
+  },
+  "id": 234,
+  "name": "NAND_GB_Written_SLC",
+  "raw": {
+   "string": "2498",
+   "value": 2498
+  },
+  "value": 100,
+  "worst": 100
+ },
+ {
+  "flags": {
+   "auto_keep": true,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": false,
+   "string": "----CK ",
+   "updated_online": false,
+   "value": 48
+  },
+  "id": 241,
+  "name": "Host_Writes_GiB",
+  "raw": {
+   "string": "2209",
+   "value": 2209
+  },
+  "value": 253,
+  "worst": 253
+ },
+ {
+  "flags": {
+   "auto_keep": true,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": false,
+   "string": "----CK ",
+   "updated_online": false,
+   "value": 48
+  },
+  "id": 242,
+  "name": "Host_Reads_GiB",
+  "raw": {
+   "string": "1995",
+   "value": 1995
+  },
+  "value": 253,
+  "worst": 253
+ },
+ {
+  "flags": {
+   "auto_keep": true,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": false,
+   "string": "-O--CK ",
+   "updated_online": true,
+   "value": 50
+  },
+  "id": 244,
+  "name": "Temp_Throttle_Status",
+  "raw": {
+   "string": "0",
+   "value": 0
+  },
+  "value": 0,
+  "worst": 100
+ }
+]

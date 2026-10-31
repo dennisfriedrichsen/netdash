@@ -240,6 +240,123 @@ function fleetRow(f) {
   return row;
 }
 
+/* ---------- ZFS pool health ----------
+
+   Pool state, scrubs and SMART, for any host that reports them: a TrueNAS
+   box over its API, a ZFS host through its collector. Unlike Fleet, this
+   counts toward the card's dot (see storage_summary on the server) -- a pool
+   that has lost redundancy is the machine failing -- so the row is here to
+   say which pool or disk turned it, not to carry a second verdict. */
+function storageText(sg) {
+  if (!sg) return '–';
+  var bad = sg.pools.filter(function (p) { return p.severity !== 'ok'; });
+  if (bad.length) return bad.map(function (p) { return p.name + ' ' + p.state; }).join(', ');
+  if (sg.failing.length) {
+    return sg.failing.length <= 2 ? sg.failing.join(', ') + ' SMART failed'
+                                  : sg.failing.length + ' disks failed SMART';
+  }
+  var old = sg.pools.filter(function (p) { return p.scrub.severity === 'warning'; });
+  if (old.length) return old.map(function (p) { return p.name; }).join(', ') + ': ' + old[0].scrub.reason;
+  var n = sg.pools.length;
+  return n + ' pool' + (n === 1 ? '' : 's') + ' healthy';
+}
+
+function storageRow(sg) {
+  var s = st(sg.status);
+  var row = el('div', 'patch');
+  row.style.setProperty('--st', s.css);
+  row.appendChild(el('span', 'pdot'));
+  row.appendChild(el('span', null, 'Pools'));
+  row.appendChild(el('span', 'pglyph', s.glyph));
+  row.appendChild(el('span', 'pval', storageText(sg)));
+  row.title = sg.pools.map(function (p) {
+    return p.name + ' ' + p.state + (p.reason && p.severity !== 'ok' ? ' (' + p.reason + ')' : '');
+  }).join(' · ');
+  return row;
+}
+
+function scrubText(p) {
+  var sc = p.scan;
+  if (!sc) return 'never scrubbed';
+  var verb = sc.function === 'RESILVER' ? 'resilver' : 'scrub';
+  if (sc.state === 'SCANNING') return verb + ' in progress';
+  if (sc.state === 'PAUSED') return verb + ' paused';
+  var now = Math.floor(Date.now() / 1000);
+  var when = sc.end ? fmtAge(Math.max(0, now - sc.end)) + ' ago' : 'at an unknown time';
+  return (sc.state === 'CANCELED' ? verb + ' canceled ' : 'last ' + verb + ' ') + when +
+    (sc.errors !== null && sc.errors !== undefined
+      ? ' · ' + sc.errors + ' error' + (sc.errors === 1 ? '' : 's') : '');
+}
+
+function storagePanel(c) {
+  var sg = c.storage;
+  var p = el('div', 'panel');
+  p.appendChild(el('h2', null, 'Pool health'));
+  var b = el('div', 'big', storageText(sg));
+  b.style.color = st(sg.status).css;
+  p.appendChild(b);
+
+  /* Data pools first, the boot pool last, each in the order reported. */
+  sg.pools.slice().sort(function (x, y) { return (x.boot ? 1 : 0) - (y.boot ? 1 : 0); })
+    .forEach(function (pl) {
+      var worst = _sevRank(pl.scrub.severity) > _sevRank(pl.severity) ? pl.scrub.severity : pl.severity;
+      var head = el('div', 'proj svchead');
+      head.style.setProperty('--st', st(worst).css);
+      head.appendChild(el('span', 'pdot'));
+      head.appendChild(el('span', 'fname', pl.name + (pl.boot ? ' (boot)' : '')));
+      head.appendChild(el('span', 'pval', st(pl.severity).glyph + ' ' + pl.state));
+      if (pl.detail) head.title = pl.detail;
+      p.appendChild(head);
+      var line = [scrubText(pl)];
+      if (pl.scrub.severity === 'warning' && pl.scrub.reason) line.push(pl.scrub.reason);
+      line.push('errors ' + [pl.read_errors, pl.write_errors, pl.checksum_errors]
+        .map(function (n) { return n === null || n === undefined ? '?' : n; }).join('/') +
+        ' read/write/cksum');
+      if (pl.data_errors) line.push(pl.data_errors + ' permanent data error' + (pl.data_errors === 1 ? '' : 's'));
+      p.appendChild(el('div', 'sub', line.join(' · ')));
+      (pl.bad_devices || []).forEach(function (d) {
+        var r = el('div', 'proj');
+        r.style.setProperty('--st', d.state === 'DEGRADED' || d.state === 'OFFLINE'
+          ? 'var(--st-warn)' : 'var(--st-crit)');
+        r.appendChild(el('span', 'pdot'));
+        r.appendChild(el('span', 'fname', d.name + (d.serial ? ' · ' + d.serial : '')));
+        r.appendChild(el('span', 'pval', d.state));
+        p.appendChild(r);
+      });
+    });
+
+  /* SMART only where something reports it -- TrueNAS, for now. Failing
+     disks are named by serial, which is what is printed on the drive you
+     are about to pull. */
+  if (sg.smart) {
+    var failed = sg.smart.filter(function (d) { return d.severity === 'critical'; });
+    var noted = sg.smart.filter(function (d) { return d.severity !== 'critical' && d.note; });
+    var ages = sg.smart.map(function (d) { return d.age_hours; })
+      .filter(function (h) { return h !== null && h !== undefined; });
+    var sum = 'SMART: ' + sg.smart.length + ' disk' + (sg.smart.length === 1 ? '' : 's') +
+      (failed.length ? ' · ' + failed.length + ' failed' : ' · no failed tests');
+    if (ages.length) sum += ' · newest test ' + fmtAge(Math.min.apply(null, ages) * 3600) + ' ago';
+    p.appendChild(el('div', 'sub', sum));
+    failed.concat(noted).forEach(function (d) {
+      var r = el('div', 'proj');
+      r.style.setProperty('--st', d.severity === 'critical' ? 'var(--st-crit)' : 'var(--st-none)');
+      r.appendChild(el('span', 'pdot'));
+      r.appendChild(el('span', 'fname', (d.serial || d.disk) + ' (' + d.disk +
+        (d.pool ? ', ' + d.pool : '') + ')'));
+      r.appendChild(el('span', 'pval', d.severity === 'critical'
+        ? (d.status_verbose || 'failed') : d.note));
+      r.title = [d.model, d.test, d.status_verbose].filter(Boolean).join(' · ');
+      p.appendChild(r);
+    });
+  }
+  p.appendChild(el('div', 'sub', 'Scrubs warn after ' + sg.limits.scrub_max_age_days +
+    ' days' + (sg.smart ? '; a disk untested for ' + sg.limits.smart_max_age_days +
+    ' days is noted.' : '.')));
+  return p;
+}
+
+function _sevRank(s) { return { ok: 1, warning: 2, critical: 3 }[s] || 0; }
+
 /* ---------- service checks ----------
 
    What runs on a host, checked by the server: an application answering, a
@@ -922,6 +1039,7 @@ function renderOverview(data, tab) {
 
     a.appendChild(patchRow(h.patches));
     if (h.fleet) a.appendChild(fleetRow(h.fleet));
+    if (h.storage) a.appendChild(storageRow(h.storage));
     liveServices(h).forEach(function (sv) { a.appendChild(serviceRow(sv)); });
 
     var why = reachText(h);
@@ -1661,6 +1779,7 @@ function renderDetail(host, data, range) {
      asked how" lives -- because a web page that loads is not automations
      running, and the panel should never let one be read as the other. */
   if (c.services && c.services.length) panels.appendChild(servicesPanel(c));
+  if (c.storage) panels.appendChild(storagePanel(c));
 
   /* Support status. Shown only when it is bad news and therefore only when
      there is something to acknowledge -- a panel reading "supported" on every

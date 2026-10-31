@@ -297,11 +297,34 @@ case "${NETDASH_PATCHES_JSON:-}" in
   '{'*'}'|null) PATCHES="$NETDASH_PATCHES_JSON" ;;
 esac
 
+# ---- ZFS pool health ----
+# `zpool status -p` as text, parsed by the server (server/zfs.py): a parser
+# fix then ships with the server rather than to every ZFS host. -p gives exact
+# error counts; an OpenZFS too old for it falls back to the plain form, whose
+# "1.2K" the server also reads. LC_ALL=C pins the scrub dates to the English
+# ctime form, and the zone goes with them because zpool prints local time
+# without one. Nothing is sent without pools, or when zpool fails: silence
+# lets the last report age out, where an empty one would say "no pools".
+# Not in a jail: it cannot see the pools, and its host reports them.
+# Capped at 64 KB, a quarter of what the server accepts in one payload.
+ZFS_JSON=""
+if [ "$JAILED" != 1 ] && command -v zpool >/dev/null 2>&1; then
+  ZST=$(LC_ALL=C zpool status -p 2>/dev/null || LC_ALL=C zpool status 2>/dev/null || true)
+  case "$ZST" in
+    *"pool:"*)
+      ZST=$(printf '%s\n' "$ZST" | head -c 65536 | tr -d '\r' | awk '
+        { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t")
+          printf "%s%s", (NR > 1 ? "\\n" : ""), $0 }')
+      ZFS_JSON=",\"zpool_status\":\"$ZST\",\"tz\":\"$(date +%z)\""
+      ;;
+  esac
+fi
+
 # ---- Address, inside a jail ----
 # The jail's host reports where the jail can be probed, and with vnet -- every
 # iocage jail on a TrueNAS box -- jls on the host knows no address at all. From
 # inside, ifconfig lists only the jail's own interfaces.
-EXTRA=""
+EXTRA="$ZFS_JSON"
 if [ "$JAILED" = 1 ]; then
   JADDR=$(ifconfig -a inet 2>/dev/null | awk '$1=="inet" && $2 !~ /^127\./ { print $2; exit }')
   case "$JADDR" in

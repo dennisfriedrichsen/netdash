@@ -1095,4 +1095,42 @@ check('the_services_route_is_recognised', function () {
   if (r.view !== 'overview' || r.tab !== 'services') throw new Error(JSON.stringify(r));
 });
 
+// -- ZFS pool health: mercury's live answers with tank DEGRADED (ada4 FAULTED)
+// and ada3's SMART test failed, as storage_summary() renders them --
+var STORAGE = {"status": "critical","pools": [{"name": "tank","state": "DEGRADED","boot": false,"severity": "warning","reason": "pool DEGRADED","read_errors": 0,"write_errors": 0,"checksum_errors": 0,"data_errors": null,"bad_devices": [{"name": "ada4","state": "FAULTED","serial": "SERIAL-ADA4"}],"scan": {"function": "SCRUB","state": "FINISHED","start": 1793000000,"end": 1793000000,"errors": 0},"scrub": {"severity": "ok","reason": null,"age_days": 20.0},"detail": null,"disks": ["ada0","ada2","ada4","ada1","ada3"]},{"name": "tank001","state": "ONLINE","boot": false,"severity": "ok","reason": null,"read_errors": 0,"write_errors": 0,"checksum_errors": 0,"data_errors": null,"bad_devices": [],"scan": {"function": "SCRUB","state": "FINISHED","start": 1793000000,"end": 1793000000,"errors": 0},"scrub": {"severity": "ok","reason": null,"age_days": 34.5},"detail": null,"disks": ["ada6","ada5"]},{"name": "freenas-boot","state": "ONLINE","boot": true,"severity": "ok","reason": null,"read_errors": 0,"write_errors": 0,"checksum_errors": 0,"data_errors": null,"bad_devices": [],"scan": {"function": "SCRUB","state": "FINISHED","start": 1793000000,"end": 1793000000,"errors": 0},"scrub": {"severity": "ok","reason": null,"age_days": 5.3},"detail": "Some supported features are not enabled on the pool. The pool can still be used, but some features are unavailable.","disks": ["ada7"]}],"smart": [{"disk": "ada0","serial": "SERIAL-ADA0","model": "WDC WD40EFRX-68N32N0","status": "SUCCESS","status_verbose": "Completed without error","test": "Short offline","age_hours": 11,"severity": "ok","note": null,"pool": "tank"},{"disk": "ada1","serial": "SERIAL-ADA1","model": "WDC WD40EFRX-68N32N0","status": "SUCCESS","status_verbose": "Completed without error","test": "Short offline","age_hours": null,"severity": "ok","note": null,"pool": "tank"},{"disk": "ada2","serial": "SERIAL-ADA2","model": "WDC WD40EFRX-68N32N0","status": "SUCCESS","status_verbose": "Completed without error","test": "Short offline","age_hours": null,"severity": "ok","note": null,"pool": "tank"},{"disk": "ada3","serial": "SERIAL-ADA3","model": "ST4000VN006-3CW104","status": "FAILED","status_verbose": "Completed: read failure","test": "Short offline","age_hours": null,"severity": "critical","note": null,"pool": "tank"},{"disk": "ada4","serial": "SERIAL-ADA4","model": "WDC WD40EFRX-68N32N0","status": "SUCCESS","status_verbose": "Completed without error","test": "Short offline","age_hours": null,"severity": "ok","note": null,"pool": "tank"},{"disk": "ada5","serial": "SERIAL-ADA5","model": "WDC WDS100T1R0A-68A4W0","status": "SUCCESS","status_verbose": "Completed without error","test": "Short offline","age_hours": null,"severity": "ok","note": null,"pool": "tank001"},{"disk": "ada6","serial": "SERIAL-ADA6","model": "WDC WDS100T1R0A-68A4W0","status": "SUCCESS","status_verbose": "Completed without error","test": "Short offline","age_hours": 12,"severity": "ok","note": null,"pool": "tank001"},{"disk": "ada7","serial": "SERIAL-ADA7","model": "16GB SATA Flash Drive","status": "SUCCESS","status_verbose": "Completed without error","test": "Short offline","age_hours": 11,"severity": "ok","note": null,"pool": "freenas-boot"}],"failing": ["SERIAL-ADA3"],"limits": {"scrub_max_age_days": 42,"smart_max_age_days": 35},"ts": 1788436201};
+var NAS = { host: 'mercury', os: 'TrueNAS CORE 13.0 U6.8', source: 'truenas', virt: 'none',
+  virt_source: 'config', is_vm: false, status: 'critical', storage: STORAGE };
+check('detail_storage', function () { ctx.renderDetail('mercury', detail(host(NAS))); });
+check('the_storage_panel_names_the_pool_and_the_disks_to_pull', function () {
+  ctx.renderDetail('mercury', detail(host(NAS)));
+  var t = textOf(ctx.root);
+  ['Pool health', 'tank', 'DEGRADED', 'ada4 · SERIAL-ADA4', 'FAULTED', 'freenas-boot (boot)',
+   'SERIAL-ADA3 (ada3, tank)', 'Completed: read failure', '8 disks · 1 failed',
+   'Scrubs warn after 42 days']
+    .forEach(function (w) { if (t.indexOf(w) < 0) throw new Error('missing ' + w + ': ' + t); });
+});
+check('the_card_says_which_pool_turned_the_dot', function () {
+  overview([host(NAS)], 'bare');
+  var t = textOf(ctx.root);
+  if (t.indexOf('Pools') < 0 || t.indexOf('tank DEGRADED') < 0) throw new Error(t);
+});
+check('a_healthy_pool_set_reads_healthy_and_a_plain_host_has_no_row', function () {
+  var ok = JSON.parse(JSON.stringify(STORAGE));
+  ok.status = 'ok'; ok.failing = [];
+  ok.pools.forEach(function (p) { p.severity = 'ok'; p.state = 'ONLINE'; p.bad_devices = []; });
+  ok.smart = null;
+  overview([host(merge(NAS, { status: 'ok', storage: ok }))], 'bare');
+  if (textOf(ctx.root).indexOf('3 pools healthy') < 0) throw new Error(textOf(ctx.root));
+  ctx.renderDetail('mercury', detail(host(merge(NAS, { storage: ok }))));
+  if (textOf(ctx.root).indexOf('SMART') >= 0) throw new Error('SMART line with no SMART source');
+  overview([host()], 'vms');
+  if (textOf(ctx.root).indexOf('Pools') >= 0) throw new Error('a host without ZFS grew a Pools row');
+});
+check('a_storage_event_takes_the_status_palette', function () {
+  ctx.renderDetail('mercury', detail(host(NAS), { events: [
+    { ts: 1788436000, kind: 'storage:pool:tank', from_state: 'ok', to_state: 'warning',
+      detail: 'tank DEGRADED · ada4 FAULTED (SERIAL-ADA4)' }] }));
+  if (textOf(ctx.root).indexOf('ada4 FAULTED (SERIAL-ADA4)') < 0) throw new Error(textOf(ctx.root));
+});
+
 console.log(JSON.stringify(out));

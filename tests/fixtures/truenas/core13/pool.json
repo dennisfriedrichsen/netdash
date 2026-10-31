@@ -1,0 +1,459 @@
+[
+ {
+  "autotrim": {
+   "parsed": "off",
+   "rawvalue": "off",
+   "source": "DEFAULT",
+   "value": "off"
+  },
+  "encrypt": 0,
+  "encryptkey": "",
+  "encryptkey_path": null,
+  "guid": "6044286220632304261",
+  "healthy": true,
+  "id": 1,
+  "is_decrypted": true,
+  "name": "tank",
+  "path": "/mnt/tank",
+  "scan": {
+   "bytes_issued": 733160308736,
+   "bytes_processed": 12096280641536,
+   "bytes_to_process": 12096039256064,
+   "end_time": {
+    "$date": 1791735740000
+   },
+   "errors": 0,
+   "function": "SCRUB",
+   "pause": null,
+   "percentage": 6.061039119958878,
+   "start_time": {
+    "$date": 1791694812000
+   },
+   "state": "FINISHED",
+   "total_secs_left": null
+  },
+  "status": "ONLINE",
+  "status_detail": null,
+  "topology": {
+   "cache": [],
+   "data": [
+    {
+     "children": [
+      {
+       "children": [],
+       "device": "ada0p2",
+       "disk": "ada0",
+       "guid": "813556951079531933",
+       "path": "/dev/gptid/b4b8d099-40d2-11eb-b72c-3cecef0d5e78",
+       "stats": {
+        "allocated": 0,
+        "bytes": [
+         0,
+         7837129850880,
+         4797572886528,
+         0,
+         0,
+         0,
+         0
+        ],
+        "checksum_errors": 0,
+        "configured_ashift": 12,
+        "fragmentation": 0,
+        "logical_ashift": 9,
+        "ops": [
+         0,
+         44652179,
+         325875832,
+         0,
+         0,
+         0,
+         0
+        ],
+        "physical_ashift": 12,
+        "read_errors": 0,
+        "self_healed": 0,
+        "size": 0,
+        "timestamp": 9358938512413388,
+        "write_errors": 0
+       },
+       "status": "ONLINE",
+       "type": "DISK",
+       "unavail_disk": null
+      },
+      {
+       "children": [],
+       "device": "ada2p2",
+       "disk": "ada2",
+       "guid": "6596657723567148687",
+       "path": "/dev/gptid/b4de95fb-40d2-11eb-b72c-3cecef0d5e78",
+       "stats": {
+        "allocated": 0,
+        "bytes": [
+         0,
+         7839867727872,
+         4796979576832,
+         0,
+         0,
+         0,
+         0
+        ],
+        "checksum_errors": 0,
+        "configured_ashift": 12,
+        "fragmentation": 0,
+        "logical_ashift": 9,
+        "ops": [
+         0,
+         41380716,
+         325912458,
+         0,
+         0,
+         0,
+         0
+        ],
+        "physical_ashift": 12,
+        "read_errors": 0,
+        "self_healed": 0,
+        "size": 0,
+        "timestamp": 9358938512475410,
+        "write_errors": 0
+       },
+       "status": "ONLINE",
+       "type": "DISK",
+       "unavail_disk": null
+      },
+      {
+       "children": [],
+       "device": "ada4p2",
+       "disk": "ada4",
+       "guid": "6760142145245580183",
+       "path": "/dev/gptid/b5074428-40d2-11eb-b72c-3cecef0d5e78",
+       "stats": {
+        "allocated": 0,
+        "bytes": [
+         0,
+         7838584446976,
+         4796008177664,
+         0,
+         0,
+         0,
+         0
+        ],
+        "checksum_errors": 0,
+        "configured_ashift": 12,
+        "fragmentation": 0,
+        "logical_ashift": 9,
+        "ops": [
+         0,
+         42628396,
+         329279308,
+         0,
+         0,
+         0,
+         0
+        ],
+        "physical_ashift": 12,
+        "read_errors": 0,
+        "self_healed": 0,
+        "size": 0,
+        "timestamp": 9358938512538100,
+        "write_errors": 0
+       },
+       "status": "ONLINE",
+       "type": "DISK",
+       "unavail_disk": null
+      },
+      {
+       "children": [],
+       "device": "ada1p2",
+       "disk": "ada1",
+       "guid": "5750091788965948979",
+       "path": "/dev/gptid/b53b7495-40d2-11eb-b72c-3cecef0d5e78",
+       "stats": {
+        "allocated": 0,
+        "bytes": [
+         0,
+         7838275710976,
+         4796934365184,
+         0,
+         0,
+         0,
+         0
+        ],
+        "checksum_errors": 0,
+        "configured_ashift": 12,
+        "fragmentation": 0,
+        "logical_ashift": 9,
+        "ops": [
+         0,
+         42519767,
+         325399317,
+         0,
+         0,
+         0,
+         0
+        ],
+        "physical_ashift": 12,
+        "read_errors": 0,
+        "self_healed": 0,
+        "size": 0,
+        "timestamp": 9358938512601303,
+        "write_errors": 0
+       },
+       "status": "ONLINE",
+       "type": "DISK",
+       "unavail_disk": null
+      },
+      {
+       "children": [],
+       "device": "ada3p2",
+       "disk": "ada3",
+       "guid": "593222410997273907",
+       "path": "/dev/gptid/4cf571f3-dada-11ef-a43f-3cecef0d5e78",
+       "stats": {
+        "allocated": 0,
+        "bytes": [
+         0,
+         7820145270784,
+         4807311007744,
+         0,
+         0,
+         0,
+         0
+        ],
+        "checksum_errors": 0,
+        "configured_ashift": 12,
+        "fragmentation": 0,
+        "logical_ashift": 9,
+        "ops": [
+         0,
+         56277738,
+         283663741,
+         0,
+         0,
+         0,
+         0
+        ],
+        "physical_ashift": 12,
+        "read_errors": 0,
+        "self_healed": 0,
+        "size": 0,
+        "timestamp": 9358938512664905,
+        "write_errors": 0
+       },
+       "status": "ONLINE",
+       "type": "DISK",
+       "unavail_disk": null
+      }
+     ],
+     "guid": "2034528094307531683",
+     "path": null,
+     "stats": {
+      "allocated": 12926829912064,
+      "bytes": [
+       0,
+       39174003007488,
+       23994806013952,
+       0,
+       0,
+       0,
+       0
+      ],
+      "checksum_errors": 0,
+      "configured_ashift": 12,
+      "fragmentation": 43,
+      "logical_ashift": 9,
+      "ops": [
+       0,
+       227458796,
+       1590130656,
+       0,
+       0,
+       0,
+       0
+      ],
+      "physical_ashift": 12,
+      "read_errors": 0,
+      "self_healed": 0,
+      "size": 19980187860992,
+      "timestamp": 9358938512290266,
+      "write_errors": 0
+     },
+     "status": "ONLINE",
+     "type": "RAIDZ1",
+     "unavail_disk": null
+    }
+   ],
+   "dedup": [],
+   "log": [],
+   "spare": [],
+   "special": []
+  }
+ },
+ {
+  "autotrim": {
+   "parsed": "off",
+   "rawvalue": "off",
+   "source": "DEFAULT",
+   "value": "off"
+  },
+  "encrypt": 0,
+  "encryptkey": "",
+  "encryptkey_path": null,
+  "guid": "778940882704855730",
+  "healthy": true,
+  "id": 2,
+  "is_decrypted": true,
+  "name": "tank001",
+  "path": "/mnt/tank001",
+  "scan": {
+   "bytes_issued": 141912821760,
+   "bytes_processed": 141913800704,
+   "bytes_to_process": 141913657344,
+   "end_time": {
+    "$date": 1790485479000
+   },
+   "errors": 0,
+   "function": "SCRUB",
+   "pause": null,
+   "percentage": 99.9993085861206,
+   "start_time": {
+    "$date": 1790485200000
+   },
+   "state": "FINISHED",
+   "total_secs_left": null
+  },
+  "status": "ONLINE",
+  "status_detail": null,
+  "topology": {
+   "cache": [],
+   "data": [
+    {
+     "children": [
+      {
+       "children": [],
+       "device": "ada6p2",
+       "disk": "ada6",
+       "guid": "1953012178668721253",
+       "path": "/dev/gptid/4820ed9a-9ddb-11ee-b66a-3cecef0d5e78",
+       "stats": {
+        "allocated": 0,
+        "bytes": [
+         0,
+         394013040640,
+         84361117696,
+         0,
+         0,
+         0,
+         0
+        ],
+        "checksum_errors": 0,
+        "configured_ashift": 12,
+        "fragmentation": 0,
+        "logical_ashift": 9,
+        "ops": [
+         0,
+         3048645,
+         826899,
+         0,
+         0,
+         0,
+         0
+        ],
+        "physical_ashift": 0,
+        "read_errors": 0,
+        "self_healed": 0,
+        "size": 0,
+        "timestamp": 9358915288410648,
+        "write_errors": 0
+       },
+       "status": "ONLINE",
+       "type": "DISK",
+       "unavail_disk": null
+      },
+      {
+       "children": [],
+       "device": "ada5p2",
+       "disk": "ada5",
+       "guid": "6498838225302832626",
+       "path": "/dev/gptid/481b3080-9ddb-11ee-b66a-3cecef0d5e78",
+       "stats": {
+        "allocated": 0,
+        "bytes": [
+         0,
+         394471747584,
+         84361117696,
+         0,
+         0,
+         0,
+         0
+        ],
+        "checksum_errors": 0,
+        "configured_ashift": 12,
+        "fragmentation": 0,
+        "logical_ashift": 9,
+        "ops": [
+         0,
+         3053316,
+         827512,
+         0,
+         0,
+         0,
+         0
+        ],
+        "physical_ashift": 0,
+        "read_errors": 0,
+        "self_healed": 0,
+        "size": 0,
+        "timestamp": 9358915288476993,
+        "write_errors": 0
+       },
+       "status": "ONLINE",
+       "type": "DISK",
+       "unavail_disk": null
+      }
+     ],
+     "guid": "6269543692986399374",
+     "path": null,
+     "stats": {
+      "allocated": 145169281024,
+      "bytes": [
+       0,
+       788484788224,
+       168722235392,
+       0,
+       0,
+       0,
+       0
+      ],
+      "checksum_errors": 0,
+      "configured_ashift": 12,
+      "fragmentation": 8,
+      "logical_ashift": 9,
+      "ops": [
+       0,
+       6101961,
+       1654411,
+       0,
+       0,
+       0,
+       0
+      ],
+      "physical_ashift": 0,
+      "read_errors": 0,
+      "self_healed": 0,
+      "size": 996432412672,
+      "timestamp": 9358915288286349,
+      "write_errors": 0
+     },
+     "status": "ONLINE",
+     "type": "MIRROR",
+     "unavail_disk": null
+    }
+   ],
+   "dedup": [],
+   "log": [],
+   "spare": [],
+   "special": []
+  }
+ }
+]

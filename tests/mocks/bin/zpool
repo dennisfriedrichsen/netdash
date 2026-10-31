@@ -1,0 +1,15 @@
+#!/bin/sh
+# Mock zpool. Only `status` is used by the collector. MOCK_ZPOOL_FILE names
+# the fixture (default: the OS's zpool-status-p.txt); MOCK_ZPOOL_NOP=1 plays
+# an OpenZFS too old for `status -p`, so the plain fallback is exercised.
+F="$NETDASH_FIXTURES/${NETDASH_MOCK_FIXDIR:-$(echo "$NETDASH_MOCK_OS" | tr 'A-Z' 'a-z')}"
+case "$*" in
+  *status*)
+    case " $* " in *" -p "*)
+      [ "${MOCK_ZPOOL_NOP:-}" = 1 ] && { echo "invalid option 'p'" >&2; exit 2; } ;;
+    esac
+    f="${MOCK_ZPOOL_FILE:-$F/zpool-status-p.txt}"
+    [ -f "$f" ] && exec cat "$f"
+    echo "no pools available"; exit 0 ;;
+esac
+exit 1

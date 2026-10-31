@@ -1,0 +1,26 @@
+  pool: ssdpool
+ state: ONLINE
+status: Some supported and requested features are not enabled on the pool.
+    The pool can still be used, but some features are unavailable.
+action: Enable all features using 'zpool upgrade'. Once this is done,
+    the pool may no longer be accessible by software that does not support
+    the features. See zpool-features(7) for details.
+  scan: scrub repaired 0B in 00:00:40 with 0 errors on Fri Oct 16 03:02:17 2026
+config:
+
+    NAME        STATE     READ WRITE CKSUM
+    ssdpool     ONLINE       0     0     0
+      ada0p1    ONLINE       0     0     0
+
+errors: No known data errors
+
+  pool: zroot
+ state: ONLINE
+  scan: scrub repaired 0B in 00:00:52 with 0 errors on Fri Oct 16 03:02:30 2026
+config:
+
+    NAME        STATE     READ WRITE CKSUM
+    zroot       ONLINE       0     0     0
+      nda0p4    ONLINE       0     0     0
+
+errors: No known data errors

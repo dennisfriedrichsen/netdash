@@ -1,0 +1,1265 @@
+{
+ "error_count": 0,
+ "expand": {
+  "bytes_reflowed": null,
+  "bytes_to_reflow": null,
+  "end_time": null,
+  "expanding_vdev": null,
+  "percentage": null,
+  "start_time": null,
+  "state": null,
+  "total_secs_left": null,
+  "waiting_for_resilver": null
+ },
+ "features": [
+  {
+   "description": "Destroy filesystems asynchronously.",
+   "guid": "com.delphix:async_destroy",
+   "name": "async_destroy",
+   "state": "ENABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Snapshots use less space.",
+   "guid": "com.delphix:empty_bpobj",
+   "name": "empty_bpobj",
+   "state": "ACTIVE",
+   "supports_upgrade": true
+  },
+  {
+   "description": "LZ4 compression algorithm support.",
+   "guid": "org.illumos:lz4_compress",
+   "name": "lz4_compress",
+   "state": "ACTIVE",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Crash dumps to multiple vdev pools.",
+   "guid": "com.joyent:multi_vdev_crash_dump",
+   "name": "multi_vdev_crash_dump",
+   "state": "DISABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Spacemaps maintain space histograms.",
+   "guid": "com.delphix:spacemap_histogram",
+   "name": "spacemap_histogram",
+   "state": "ACTIVE",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Record txg at which a feature is enabled",
+   "guid": "com.delphix:enabled_txg",
+   "name": "enabled_txg",
+   "state": "ACTIVE",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Retain hole birth txg for more precise zfs send",
+   "guid": "com.delphix:hole_birth",
+   "name": "hole_birth",
+   "state": "ACTIVE",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Enhanced dataset functionality, used by other features.",
+   "guid": "com.delphix:extensible_dataset",
+   "name": "extensible_dataset",
+   "state": "ACTIVE",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Blocks which compress very well use even less space.",
+   "guid": "com.delphix:embedded_data",
+   "name": "embedded_data",
+   "state": "ACTIVE",
+   "supports_upgrade": true
+  },
+  {
+   "description": "\"zfs bookmark\" command",
+   "guid": "com.delphix:bookmarks",
+   "name": "bookmarks",
+   "state": "ENABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Filesystem and snapshot limits.",
+   "guid": "com.joyent:filesystem_limits",
+   "name": "filesystem_limits",
+   "state": "ENABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Support for blocks larger than 128KB.",
+   "guid": "org.open-zfs:large_blocks",
+   "name": "large_blocks",
+   "state": "ENABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Variable on-disk size of dnodes.",
+   "guid": "org.zfsonlinux:large_dnode",
+   "name": "large_dnode",
+   "state": "DISABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "SHA-512/256 hash algorithm.",
+   "guid": "org.illumos:sha512",
+   "name": "sha512",
+   "state": "DISABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Skein hash algorithm.",
+   "guid": "org.illumos:skein",
+   "name": "skein",
+   "state": "DISABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Edon-R hash algorithm.",
+   "guid": "org.illumos:edonr",
+   "name": "edonr",
+   "state": "DISABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "User/Group object accounting.",
+   "guid": "org.zfsonlinux:userobj_accounting",
+   "name": "userobj_accounting",
+   "state": "ACTIVE",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Support for dataset level encryption",
+   "guid": "com.datto:encryption",
+   "name": "encryption",
+   "state": "DISABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "space/object accounting based on project ID.",
+   "guid": "org.zfsonlinux:project_quota",
+   "name": "project_quota",
+   "state": "ACTIVE",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Top-level vdevs can be removed, reducing logical pool size.",
+   "guid": "com.delphix:device_removal",
+   "name": "device_removal",
+   "state": "DISABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Reduce memory used by removed devices when their blocks are freed or remapped.",
+   "guid": "com.delphix:obsolete_counts",
+   "name": "obsolete_counts",
+   "state": "DISABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Pool state can be checkpointed, allowing rewind later.",
+   "guid": "com.delphix:zpool_checkpoint",
+   "name": "zpool_checkpoint",
+   "state": "ENABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Space maps representing large segments are more efficient.",
+   "guid": "com.delphix:spacemap_v2",
+   "name": "spacemap_v2",
+   "state": "ACTIVE",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Support for separate allocation classes.",
+   "guid": "org.zfsonlinux:allocation_classes",
+   "name": "allocation_classes",
+   "state": "ENABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Support for deferring new resilvers when one is already running.",
+   "guid": "com.datto:resilver_defer",
+   "name": "resilver_defer",
+   "state": "ENABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Support for larger bookmarks",
+   "guid": "com.datto:bookmark_v2",
+   "name": "bookmark_v2",
+   "state": "DISABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Support for bookmarks which store redaction lists for zfs redacted send/recv.",
+   "guid": "com.delphix:redaction_bookmarks",
+   "name": "redaction_bookmarks",
+   "state": "DISABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Support for redacted datasets, produced by receiving a redacted zfs send stream.",
+   "guid": "com.delphix:redacted_datasets",
+   "name": "redacted_datasets",
+   "state": "DISABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Additional accounting, enabling the written#<bookmark> property (space written since a bookmark), and estimates of send stream sizes for incrementals from bookmarks.",
+   "guid": "com.delphix:bookmark_written",
+   "name": "bookmark_written",
+   "state": "DISABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Log metaslab changes on a single spacemap and flush them periodically.",
+   "guid": "com.delphix:log_spacemap",
+   "name": "log_spacemap",
+   "state": "ACTIVE",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Improved clone deletion performance.",
+   "guid": "com.delphix:livelist",
+   "name": "livelist",
+   "state": "ACTIVE",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Support for sequential mirror/dRAID device rebuilds",
+   "guid": "org.openzfs:device_rebuild",
+   "name": "device_rebuild",
+   "state": "ENABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "zstd compression algorithm support.",
+   "guid": "org.freebsd:zstd_compress",
+   "name": "zstd_compress",
+   "state": "DISABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Support for distributed spare RAID",
+   "guid": "org.openzfs:draid",
+   "name": "draid",
+   "state": "DISABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Support for xattr=sa extended attribute logging in ZIL.",
+   "guid": "org.openzfs:zilsaxattr",
+   "name": "zilsaxattr",
+   "state": "ACTIVE",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Support for per-dataset on-disk error logs.",
+   "guid": "com.delphix:head_errlog",
+   "name": "head_errlog",
+   "state": "DISABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "BLAKE3 hash algorithm.",
+   "guid": "org.openzfs:blake3",
+   "name": "blake3",
+   "state": "DISABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Support for block cloning via Block Reference Table.",
+   "guid": "com.fudosecurity:block_cloning",
+   "name": "block_cloning",
+   "state": "ENABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Support for root vdev ZAP.",
+   "guid": "com.klarasystems:vdev_zaps_v2",
+   "name": "vdev_zaps_v2",
+   "state": "DISABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Support for increased number of redaction_snapshot arguments in zfs redact.",
+   "guid": "com.delphix:redaction_list_spill",
+   "name": "redaction_list_spill",
+   "state": "DISABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Support for raidz expansion",
+   "guid": "org.openzfs:raidz_expansion",
+   "name": "raidz_expansion",
+   "state": "DISABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Support for advanced deduplication",
+   "guid": "com.klarasystems:fast_dedup",
+   "name": "fast_dedup",
+   "state": "DISABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "support filename up to 1024 bytes",
+   "guid": "org.zfsonlinux:longname",
+   "name": "longname",
+   "state": "DISABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Support for microzaps larger than 128KB.",
+   "guid": "com.klarasystems:large_microzap",
+   "name": "large_microzap",
+   "state": "DISABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Support for dynamically sized gang headers",
+   "guid": "com.klarasystems:dynamic_gang_header",
+   "name": "dynamic_gang_header",
+   "state": "DISABLED",
+   "supports_upgrade": false
+  },
+  {
+   "description": "Fixes BRT ZAP endianness on new pools.",
+   "guid": "com.truenas:block_cloning_endian",
+   "name": "block_cloning_endian",
+   "state": "DISABLED",
+   "supports_upgrade": true
+  },
+  {
+   "description": "Support for preserving logical birth time during rewrite.",
+   "guid": "com.truenas:physical_rewrite",
+   "name": "physical_rewrite",
+   "state": "DISABLED",
+   "supports_upgrade": true
+  }
+ ],
+ "groups": {
+  "cache": [],
+  "data": [
+   {
+    "children": [],
+    "guid": "6519136045093774911",
+    "name": "vtbd0p2",
+    "path": "/dev/vtbd0p2",
+    "stats": {
+     "allocated": 9820061696,
+     "bytes": [
+      0,
+      10309992448,
+      81428480,
+      0,
+      0,
+      0,
+      0
+     ],
+     "checksum_errors": 0,
+     "configured_ashift": 12,
+     "fragmentation": 7,
+     "logical_ashift": 9,
+     "ops": [
+      0,
+      29575,
+      6705,
+      0,
+      0,
+      0,
+      0
+     ],
+     "physical_ashift": 15,
+     "read_errors": 0,
+     "self_healed": 0,
+     "size": 20937965568,
+     "timestamp": 319984369332798,
+     "write_errors": 0
+    },
+    "status": "ONLINE",
+    "type": "disk"
+   }
+  ],
+  "dedup": [],
+  "log": [],
+  "spare": [],
+  "special": []
+ },
+ "guid": "1965462920106484450",
+ "healthy": true,
+ "hostname": "nas.home.arpa",
+ "id": "boot-pool",
+ "name": "boot-pool",
+ "properties": {
+  "allocated": {
+   "parsed": 9820061696,
+   "rawvalue": "9820061696",
+   "source": "NONE",
+   "value": "9.15G"
+  },
+  "altroot": {
+   "parsed": null,
+   "rawvalue": "-",
+   "source": "DEFAULT",
+   "value": "-"
+  },
+  "ashift": {
+   "parsed": 12,
+   "rawvalue": "12",
+   "source": "LOCAL",
+   "value": "12"
+  },
+  "autoexpand": {
+   "parsed": false,
+   "rawvalue": "off",
+   "source": "DEFAULT",
+   "value": "off"
+  },
+  "autoreplace": {
+   "parsed": false,
+   "rawvalue": "off",
+   "source": "DEFAULT",
+   "value": "off"
+  },
+  "autotrim": {
+   "parsed": "off",
+   "rawvalue": "off",
+   "source": "DEFAULT",
+   "value": "off"
+  },
+  "bcloneratio": {
+   "parsed": "1.00",
+   "rawvalue": "1.00",
+   "source": "NONE",
+   "value": "1.00x"
+  },
+  "bclonesaved": {
+   "parsed": "0",
+   "rawvalue": "0",
+   "source": "NONE",
+   "value": "0"
+  },
+  "bcloneused": {
+   "parsed": "0",
+   "rawvalue": "0",
+   "source": "NONE",
+   "value": "0"
+  },
+  "bootfs": {
+   "parsed": "boot-pool/ROOT/15.1-U1.4",
+   "rawvalue": "boot-pool/ROOT/15.1-U1.4",
+   "source": "LOCAL",
+   "value": "boot-pool/ROOT/15.1-U1.4"
+  },
+  "cachefile": {
+   "parsed": "-",
+   "rawvalue": "-",
+   "source": "DEFAULT",
+   "value": "-"
+  },
+  "capacity": {
+   "parsed": "46",
+   "rawvalue": "46",
+   "source": "NONE",
+   "value": "46%"
+  },
+  "checkpoint": {
+   "parsed": "-",
+   "rawvalue": "-",
+   "source": "NONE",
+   "value": "-"
+  },
+  "comment": {
+   "parsed": null,
+   "rawvalue": "-",
+   "source": "DEFAULT",
+   "value": "-"
+  },
+  "compatibility": {
+   "parsed": "grub2",
+   "rawvalue": "grub2",
+   "source": "LOCAL",
+   "value": "grub2"
+  },
+  "dedup_table_quota": {
+   "parsed": "auto",
+   "rawvalue": "auto",
+   "source": "DEFAULT",
+   "value": "auto"
+  },
+  "dedup_table_size": {
+   "parsed": 0,
+   "rawvalue": "0",
+   "source": "NONE",
+   "value": "0"
+  },
+  "dedupratio": {
+   "parsed": "1.00",
+   "rawvalue": "1.00",
+   "source": "NONE",
+   "value": "1.00x"
+  },
+  "delegation": {
+   "parsed": true,
+   "rawvalue": "on",
+   "source": "DEFAULT",
+   "value": "on"
+  },
+  "expandsize": {
+   "parsed": null,
+   "rawvalue": "-",
+   "source": "NONE",
+   "value": "-"
+  },
+  "failmode": {
+   "parsed": "wait",
+   "rawvalue": "wait",
+   "source": "DEFAULT",
+   "value": "wait"
+  },
+  "fragmentation": {
+   "parsed": "7",
+   "rawvalue": "7",
+   "source": "NONE",
+   "value": "7%"
+  },
+  "free": {
+   "parsed": 11117903872,
+   "rawvalue": "11117903872",
+   "source": "NONE",
+   "value": "10.4G"
+  },
+  "freeing": {
+   "parsed": 0,
+   "rawvalue": "0",
+   "source": "NONE",
+   "value": "0"
+  },
+  "guid": {
+   "parsed": 1965462920106484450,
+   "rawvalue": "1965462920106484450",
+   "source": "NONE",
+   "value": "1965462920106484450"
+  },
+  "health": {
+   "parsed": "ONLINE",
+   "rawvalue": "ONLINE",
+   "source": "NONE",
+   "value": "ONLINE"
+  },
+  "last_scrubbed_txg": {
+   "parsed": "222381",
+   "rawvalue": "222381",
+   "source": "NONE",
+   "value": "222381"
+  },
+  "leaked": {
+   "parsed": 0,
+   "rawvalue": "0",
+   "source": "NONE",
+   "value": "0"
+  },
+  "listsnapshots": {
+   "parsed": false,
+   "rawvalue": "off",
+   "source": "DEFAULT",
+   "value": "off"
+  },
+  "load_guid": {
+   "parsed": "11912393398964507231",
+   "rawvalue": "11912393398964507231",
+   "source": "NONE",
+   "value": "11912393398964507231"
+  },
+  "multihost": {
+   "parsed": "off",
+   "rawvalue": "off",
+   "source": "DEFAULT",
+   "value": "off"
+  },
+  "readonly": {
+   "parsed": false,
+   "rawvalue": "off",
+   "source": "NONE",
+   "value": "off"
+  },
+  "size": {
+   "parsed": 20937965568,
+   "rawvalue": "20937965568",
+   "source": "NONE",
+   "value": "19.5G"
+  },
+  "version": {
+   "parsed": null,
+   "rawvalue": "-",
+   "source": "DEFAULT",
+   "value": "-"
+  }
+ },
+ "root_dataset": {
+  "encrypted": false,
+  "encryption_root": null,
+  "id": "boot-pool",
+  "key_loaded": false,
+  "mountpoint": null,
+  "name": "boot-pool",
+  "pool": "boot-pool",
+  "properties": {
+   "aclinherit": {
+    "parsed": "restricted",
+    "rawvalue": "restricted",
+    "source": "DEFAULT",
+    "value": "restricted"
+   },
+   "aclmode": {
+    "parsed": "discard",
+    "rawvalue": "discard",
+    "source": "DEFAULT",
+    "value": "discard"
+   },
+   "acltype": {
+    "parsed": "nfsv4",
+    "rawvalue": "nfsv4",
+    "source": "DEFAULT",
+    "value": "nfsv4"
+   },
+   "atime": {
+    "parsed": false,
+    "rawvalue": "off",
+    "source": "LOCAL",
+    "value": "off"
+   },
+   "available": {
+    "parsed": 10463641600,
+    "rawvalue": "10463641600",
+    "source": "NONE",
+    "value": "9.75G"
+   },
+   "canmount": {
+    "parsed": false,
+    "rawvalue": "off",
+    "source": "LOCAL",
+    "value": "off"
+   },
+   "casesensitivity": {
+    "parsed": "sensitive",
+    "rawvalue": "sensitive",
+    "source": "NONE",
+    "value": "sensitive"
+   },
+   "checksum": {
+    "parsed": true,
+    "rawvalue": "on",
+    "source": "DEFAULT",
+    "value": "on"
+   },
+   "compression": {
+    "parsed": "on",
+    "rawvalue": "on",
+    "source": "LOCAL",
+    "value": "on"
+   },
+   "compressratio": {
+    "parsed": "1.80",
+    "rawvalue": "1.80",
+    "source": "NONE",
+    "value": "1.80x"
+   },
+   "context": {
+    "parsed": "none",
+    "rawvalue": "none",
+    "source": "DEFAULT",
+    "value": "none"
+   },
+   "copies": {
+    "parsed": 1,
+    "rawvalue": "1",
+    "source": "DEFAULT",
+    "value": "1"
+   },
+   "createtxg": {
+    "parsed": "1",
+    "rawvalue": "1",
+    "source": "NONE",
+    "value": "1"
+   },
+   "creation": {
+    "parsed": {
+     "$date": 1792117580000
+    },
+    "rawvalue": "1792117580",
+    "source": "NONE",
+    "value": "Thu Oct 15 21:26 2026"
+   },
+   "dedup": {
+    "parsed": "off",
+    "rawvalue": "off",
+    "source": "DEFAULT",
+    "value": "off"
+   },
+   "defaultgroupobjquota": {
+    "parsed": "0",
+    "rawvalue": "0",
+    "source": "NONE",
+    "value": "0"
+   },
+   "defaultgroupquota": {
+    "parsed": "0",
+    "rawvalue": "0",
+    "source": "NONE",
+    "value": "0"
+   },
+   "defaultprojectobjquota": {
+    "parsed": "0",
+    "rawvalue": "0",
+    "source": "NONE",
+    "value": "0"
+   },
+   "defaultprojectquota": {
+    "parsed": "0",
+    "rawvalue": "0",
+    "source": "NONE",
+    "value": "0"
+   },
+   "defaultuserobjquota": {
+    "parsed": "0",
+    "rawvalue": "0",
+    "source": "NONE",
+    "value": "0"
+   },
+   "defaultuserquota": {
+    "parsed": "0",
+    "rawvalue": "0",
+    "source": "NONE",
+    "value": "0"
+   },
+   "defcontext": {
+    "parsed": "none",
+    "rawvalue": "none",
+    "source": "DEFAULT",
+    "value": "none"
+   },
+   "devices": {
+    "parsed": true,
+    "rawvalue": "on",
+    "source": "DEFAULT",
+    "value": "on"
+   },
+   "direct": {
+    "parsed": "standard",
+    "rawvalue": "standard",
+    "source": "DEFAULT",
+    "value": "standard"
+   },
+   "dnodesize": {
+    "parsed": "legacy",
+    "rawvalue": "legacy",
+    "source": "DEFAULT",
+    "value": "legacy"
+   },
+   "encryption": {
+    "parsed": "off",
+    "rawvalue": "off",
+    "source": "DEFAULT",
+    "value": "off"
+   },
+   "encryptionroot": {
+    "parsed": "",
+    "rawvalue": "",
+    "source": "NONE",
+    "value": ""
+   },
+   "exec": {
+    "parsed": true,
+    "rawvalue": "on",
+    "source": "DEFAULT",
+    "value": "on"
+   },
+   "filesystem_count": {
+    "parsed": null,
+    "rawvalue": "none",
+    "source": "DEFAULT",
+    "value": "none"
+   },
+   "filesystem_limit": {
+    "parsed": null,
+    "rawvalue": "none",
+    "source": "DEFAULT",
+    "value": "none"
+   },
+   "fscontext": {
+    "parsed": "none",
+    "rawvalue": "none",
+    "source": "DEFAULT",
+    "value": "none"
+   },
+   "guid": {
+    "parsed": "1045374725926204762",
+    "rawvalue": "1045374725926204762",
+    "source": "NONE",
+    "value": "1045374725926204762"
+   },
+   "inconsistent": {
+    "parsed": "0",
+    "rawvalue": "0",
+    "source": "NONE",
+    "value": "0"
+   },
+   "ivsetguid": {
+    "parsed": "",
+    "rawvalue": "",
+    "source": "NONE",
+    "value": ""
+   },
+   "jailed": {
+    "parsed": false,
+    "rawvalue": "off",
+    "source": "DEFAULT",
+    "value": "off"
+   },
+   "keyformat": {
+    "parsed": "none",
+    "rawvalue": "none",
+    "source": "DEFAULT",
+    "value": "none"
+   },
+   "keyguid": {
+    "parsed": "",
+    "rawvalue": "",
+    "source": "NONE",
+    "value": ""
+   },
+   "keylocation": {
+    "parsed": "none",
+    "rawvalue": "none",
+    "source": "DEFAULT",
+    "value": "none"
+   },
+   "keystatus": {
+    "parsed": "",
+    "rawvalue": "",
+    "source": "NONE",
+    "value": ""
+   },
+   "logbias": {
+    "parsed": "latency",
+    "rawvalue": "latency",
+    "source": "DEFAULT",
+    "value": "latency"
+   },
+   "logicalreferenced": {
+    "parsed": 43520,
+    "rawvalue": "43520",
+    "source": "NONE",
+    "value": "42.5K"
+   },
+   "logicalused": {
+    "parsed": 16682262528,
+    "rawvalue": "16682262528",
+    "source": "NONE",
+    "value": "15.5G"
+   },
+   "longname": {
+    "parsed": "off",
+    "rawvalue": "off",
+    "source": "DEFAULT",
+    "value": "off"
+   },
+   "mlslabel": {
+    "parsed": "none",
+    "rawvalue": "none",
+    "source": "DEFAULT",
+    "value": "none"
+   },
+   "mounted": {
+    "parsed": false,
+    "rawvalue": "no",
+    "source": "NONE",
+    "value": "no"
+   },
+   "mountpoint": {
+    "parsed": "none",
+    "rawvalue": "none",
+    "source": "LOCAL",
+    "value": "none"
+   },
+   "name": {
+    "parsed": "boot-pool",
+    "rawvalue": "boot-pool",
+    "source": "NONE",
+    "value": "boot-pool"
+   },
+   "nbmand": {
+    "parsed": false,
+    "rawvalue": "off",
+    "source": "DEFAULT",
+    "value": "off"
+   },
+   "normalization": {
+    "parsed": "none",
+    "rawvalue": "none",
+    "source": "NONE",
+    "value": "none"
+   },
+   "objsetid": {
+    "parsed": "54",
+    "rawvalue": "54",
+    "source": "NONE",
+    "value": "54"
+   },
+   "org.freebsd.ioc:active": {
+    "parsed": "no",
+    "rawvalue": "no",
+    "source": "LOCAL",
+    "value": "no"
+   },
+   "origin": {
+    "parsed": "",
+    "rawvalue": "",
+    "source": "NONE",
+    "value": ""
+   },
+   "overlay": {
+    "parsed": "on",
+    "rawvalue": "on",
+    "source": "DEFAULT",
+    "value": "on"
+   },
+   "pbkdf2iters": {
+    "parsed": "0",
+    "rawvalue": "0",
+    "source": "DEFAULT",
+    "value": "0"
+   },
+   "pbkdf2salt": {
+    "parsed": "0",
+    "rawvalue": "0",
+    "source": "DEFAULT",
+    "value": "0"
+   },
+   "prefetch": {
+    "parsed": "all",
+    "rawvalue": "all",
+    "source": "DEFAULT",
+    "value": "all"
+   },
+   "prevsnap": {
+    "parsed": "",
+    "rawvalue": "",
+    "source": "NONE",
+    "value": ""
+   },
+   "primarycache": {
+    "parsed": "all",
+    "rawvalue": "all",
+    "source": "DEFAULT",
+    "value": "all"
+   },
+   "quota": {
+    "parsed": null,
+    "rawvalue": "0",
+    "source": "DEFAULT",
+    "value": "none"
+   },
+   "readonly": {
+    "parsed": false,
+    "rawvalue": "off",
+    "source": "DEFAULT",
+    "value": "off"
+   },
+   "receive_resume_token": {
+    "parsed": "",
+    "rawvalue": "",
+    "source": "NONE",
+    "value": ""
+   },
+   "recordsize": {
+    "parsed": 131072,
+    "rawvalue": "131072",
+    "source": "DEFAULT",
+    "value": "128K"
+   },
+   "redact_snaps": {
+    "parsed": "",
+    "rawvalue": "",
+    "source": "NONE",
+    "value": ""
+   },
+   "redacted": {
+    "parsed": "0",
+    "rawvalue": "0",
+    "source": "NONE",
+    "value": "0"
+   },
+   "redundant_metadata": {
+    "parsed": "all",
+    "rawvalue": "all",
+    "source": "DEFAULT",
+    "value": "all"
+   },
+   "refcompressratio": {
+    "parsed": "1.00",
+    "rawvalue": "1.00",
+    "source": "NONE",
+    "value": "1.00x"
+   },
+   "referenced": {
+    "parsed": 98304,
+    "rawvalue": "98304",
+    "source": "NONE",
+    "value": "96K"
+   },
+   "refquota": {
+    "parsed": null,
+    "rawvalue": "0",
+    "source": "DEFAULT",
+    "value": "none"
+   },
+   "refreservation": {
+    "parsed": null,
+    "rawvalue": "0",
+    "source": "DEFAULT",
+    "value": "none"
+   },
+   "relatime": {
+    "parsed": "on",
+    "rawvalue": "on",
+    "source": "DEFAULT",
+    "value": "on"
+   },
+   "remaptxg": {
+    "parsed": "",
+    "rawvalue": "",
+    "source": "NONE",
+    "value": ""
+   },
+   "reservation": {
+    "parsed": null,
+    "rawvalue": "0",
+    "source": "DEFAULT",
+    "value": "none"
+   },
+   "rootcontext": {
+    "parsed": "none",
+    "rawvalue": "none",
+    "source": "DEFAULT",
+    "value": "none"
+   },
+   "secondarycache": {
+    "parsed": "all",
+    "rawvalue": "all",
+    "source": "DEFAULT",
+    "value": "all"
+   },
+   "setuid": {
+    "parsed": true,
+    "rawvalue": "on",
+    "source": "DEFAULT",
+    "value": "on"
+   },
+   "sharenfs": {
+    "parsed": null,
+    "rawvalue": "off",
+    "source": "DEFAULT",
+    "value": "off"
+   },
+   "sharesmb": {
+    "parsed": null,
+    "rawvalue": "off",
+    "source": "DEFAULT",
+    "value": "off"
+   },
+   "snapdev": {
+    "parsed": "hidden",
+    "rawvalue": "hidden",
+    "source": "DEFAULT",
+    "value": "hidden"
+   },
+   "snapdir": {
+    "parsed": "hidden",
+    "rawvalue": "hidden",
+    "source": "DEFAULT",
+    "value": "hidden"
+   },
+   "snapshot_count": {
+    "parsed": null,
+    "rawvalue": "none",
+    "source": "DEFAULT",
+    "value": "none"
+   },
+   "snapshot_limit": {
+    "parsed": null,
+    "rawvalue": "none",
+    "source": "DEFAULT",
+    "value": "none"
+   },
+   "snapshots_changed": {
+    "parsed": "",
+    "rawvalue": "",
+    "source": "NONE",
+    "value": ""
+   },
+   "special_small_blocks": {
+    "parsed": "0",
+    "rawvalue": "0",
+    "source": "DEFAULT",
+    "value": "0"
+   },
+   "sync": {
+    "parsed": "standard",
+    "rawvalue": "standard",
+    "source": "DEFAULT",
+    "value": "standard"
+   },
+   "type": {
+    "parsed": "filesystem",
+    "rawvalue": "filesystem",
+    "source": "NONE",
+    "value": "filesystem"
+   },
+   "unique": {
+    "parsed": "98304",
+    "rawvalue": "98304",
+    "source": "NONE",
+    "value": "96K"
+   },
+   "used": {
+    "parsed": 9820012544,
+    "rawvalue": "9820012544",
+    "source": "NONE",
+    "value": "9.15G"
+   },
+   "usedbychildren": {
+    "parsed": 9819914240,
+    "rawvalue": "9819914240",
+    "source": "NONE",
+    "value": "9.15G"
+   },
+   "usedbydataset": {
+    "parsed": 98304,
+    "rawvalue": "98304",
+    "source": "NONE",
+    "value": "96K"
+   },
+   "usedbyrefreservation": {
+    "parsed": 0,
+    "rawvalue": "0",
+    "source": "NONE",
+    "value": "0B"
+   },
+   "usedbysnapshots": {
+    "parsed": 0,
+    "rawvalue": "0",
+    "source": "NONE",
+    "value": "0B"
+   },
+   "useraccounting": {
+    "parsed": "1",
+    "rawvalue": "1",
+    "source": "NONE",
+    "value": "1"
+   },
+   "utf8only": {
+    "parsed": false,
+    "rawvalue": "off",
+    "source": "NONE",
+    "value": "off"
+   },
+   "version": {
+    "parsed": 5,
+    "rawvalue": "5",
+    "source": "NONE",
+    "value": "5"
+   },
+   "volmode": {
+    "parsed": "default",
+    "rawvalue": "default",
+    "source": "DEFAULT",
+    "value": "default"
+   },
+   "vscan": {
+    "parsed": false,
+    "rawvalue": "off",
+    "source": "DEFAULT",
+    "value": "off"
+   },
+   "written": {
+    "parsed": 98304,
+    "rawvalue": "98304",
+    "source": "NONE",
+    "value": "96K"
+   },
+   "xattr": {
+    "parsed": null,
+    "rawvalue": "sa",
+    "source": "DEFAULT",
+    "value": "sa"
+   }
+  },
+  "type": "FILESYSTEM"
+ },
+ "root_vdev": {
+  "guid": "1965462920106484450",
+  "name": "boot-pool",
+  "path": null,
+  "stats": {
+   "allocated": 9820061696,
+   "bytes": [
+    0,
+    10309992448,
+    81428480,
+    0,
+    0,
+    0,
+    0
+   ],
+   "checksum_errors": 0,
+   "configured_ashift": 0,
+   "fragmentation": 0,
+   "logical_ashift": 0,
+   "ops": [
+    0,
+    29575,
+    6705,
+    0,
+    0,
+    0,
+    0
+   ],
+   "physical_ashift": 0,
+   "read_errors": 0,
+   "self_healed": 0,
+   "size": 20937965568,
+   "timestamp": 319984369235137,
+   "write_errors": 0
+  },
+  "status": "ONLINE",
+  "type": "root"
+ },
+ "scan": {
+  "bytes_issued": 9819570176,
+  "bytes_processed": 9819570176,
+  "bytes_to_process": 9820037120,
+  "end_time": {
+   "$date": 1793263739000
+  },
+  "errors": 0,
+  "function": "SCRUB",
+  "pause": null,
+  "percentage": 100.0,
+  "start_time": {
+   "$date": 1793263500000
+  },
+  "state": "FINISHED",
+  "total_secs_left": null
+ },
+ "status": "ONLINE",
+ "status_code": "OK",
+ "status_detail": null,
+ "warning": false
+}

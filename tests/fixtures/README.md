@@ -27,6 +27,9 @@ numbers are untouched.
 | `linux/df-P-k-opensuse.txt` | openSUSE layout | the same filesystem repeated once per subvolume |
 | `freebsd/df-k-T-l.txt` | FreeBSD 15.1 | `-T` is accepted here and nowhere else |
 | `freebsd/zfs-list.txt`, `netbsd/zfs-list.txt` | — | `zfs list -Hp -d 0` pool roots |
+| `freebsd/zpool-status-p.txt` | FreeBSD 15.1, OpenZFS 2.4.2 (cerium, at -0500) | `zpool status -p`: two pools, a multi-line `status:`, the scrub line's local-time date, and `repaired 0B` even under `-p` |
+| `truenas/core13/*.json` | TrueNAS CORE 13.0-U6.8 (mercury) | `/pool`, `/boot/get_state`, `/disk`, `/smart/test/results`, `/disk/smart_attributes`: the boot pool's tree is `groups`, not `topology`; tests are dated in power-on hours |
+| `truenas/freecore15/*.json` | FreeCORE 15.1-U1.4 | the same endpoints: a pool never scrubbed (every scan field null), a disk with no tests, and the 422 a non-ATA disk gives for attributes |
 | `freebsd/cp_time.txt` | FreeBSD 15.1 | five fields, space-separated |
 | `freebsd/df-k-root.txt` | FreeBSD 15.1 | `df -k /`, which is all a jail reports of disk; captured on a host, since a jail's columns are the same |
 | `linux/apt-dist-upgrade.txt` | Debian 13 | the security origin sits *inside* the parentheses |
@@ -80,3 +83,17 @@ Not here, on purpose: `ipmitool sdr elist` and `chassis status` output. No BMC
 credentials were available to capture any, so `tests/ipmi.py` carries
 format-derived samples inline and says so. Replace them with a real capture
 once there is one.
+
+`truenas/*/*.json` are the API's answers verbatim, except that each disk's
+serial and LUN id are replaced with `SERIAL-<DEV>` and `LUNID-<DEV>`, and the
+box's hostname with `nas`. The `smart-attributes-*.json` files for FreeCORE
+hold the HTTP 422 error body the box returned, wrapped as `{"__error__": ...}`
+by the capture script; `tests/storage.py` replays them as the errors they were.
+No box here has a DEGRADED pool, a failed test or a scrub with errors, so
+`tests/storage.py` builds each of those by changing one field of these real
+answers.
+
+`freebsd/zpool-status-p.txt` came through a terminal paste, which turned
+zpool's tab indentation into four spaces; the text is otherwise verbatim.
+`tests/storage.py` parses it again with the tabs put back and requires the
+same result.

@@ -69,7 +69,7 @@ want() { case "$1" in *"$FILTER"*) return 0 ;; esac; [ -z "$FILTER" ]; }
 # ---------------------------------------------------------------- FreeBSD ----
 if want freebsd-zfs; then
   echo "freebsd-zfs (ZFS pools plus an EFI partition)"
-  B=$(mkbin x uname sysctl df zfs hostname)
+  B=$(mkbin x uname sysctl df zfs zpool hostname)
   J=$(run_collector "$B" bsd \
       MOCK_PHYSMEM=32090000000 MOCK_PAGESIZE=4096 MOCK_FREE=3000000 \
       MOCK_INACT=1500000 MOCK_LAUNDRY=50000 MOCK_ARC=8000000000 \
@@ -88,6 +88,21 @@ if want freebsd-zfs; then
         "assert d['mem_used_bytes']==5658000000, d['mem_used_bytes']" "$J"
   check "boottime anchored on the brace, not usec (~20000d bug)" \
         "assert 0 < d['uptime_seconds'] < 86400*400, d['uptime_seconds']" "$J"
+  # The server parses it; the collector only has to carry it intact.
+  check "zpool status travels whole, tabs and newlines escaped, with the zone" \
+        "t=open('$FIX/freebsd/zpool-status-p.txt').read(); assert d['zpool_status']==t.rstrip('\\n') and len(d['tz'])==5, (d.get('tz'), d.get('zpool_status','')[:80])" "$J"
+  J=$(run_collector "$B" bsd \
+      MOCK_PHYSMEM=32090000000 MOCK_PAGESIZE=4096 MOCK_FREE=3000000 \
+      MOCK_INACT=1500000 MOCK_BOOTTIME="{ sec = 1787700000, usec = 0 }" MOCK_ZPOOL_NOP=1 \
+      NETDASH_MOCK_OS=FreeBSD NETDASH_MOCK_REL=15.1-RELEASE-p3)
+  check "an OpenZFS without status -p falls back to the plain form" \
+        "assert 'pool:' in d['zpool_status'], d" "$J"
+  J=$(run_collector "$B" bsd \
+      MOCK_PHYSMEM=32090000000 MOCK_PAGESIZE=4096 MOCK_FREE=3000000 \
+      MOCK_INACT=1500000 MOCK_BOOTTIME="{ sec = 1787700000, usec = 0 }" MOCK_ZPOOL_FILE=/nonexistent \
+      NETDASH_MOCK_OS=FreeBSD NETDASH_MOCK_REL=15.1-RELEASE-p3)
+  check "zpool with no pools sends nothing, rather than an empty report" \
+        "assert 'zpool_status' not in d and 'tz' not in d, d" "$J"
   rm -rf "$B"
 fi
 
@@ -110,7 +125,7 @@ if want freebsd-jail; then
   echo "freebsd-jail (every kernel counter in a jail is the host's)"
   # zfs is on the PATH and cp_time, the page queues and boottime all answer --
   # as they do in a real jail, for the host. None of it may reach the output.
-  B=$(mkbin x uname sysctl df zfs hostname ps freebsd-version ifconfig)
+  B=$(mkbin x uname sysctl df zfs zpool hostname ps freebsd-version ifconfig)
   J=$(run_collector "$B" bsd \
       MOCK_JAILED=1 MOCK_NCPU=4 MOCK_PHYSMEM=68625498112 MOCK_PAGESIZE=4096 \
       MOCK_FREE=3000000 MOCK_INACT=1500000 MOCK_ARC=8000000000 \
@@ -132,6 +147,8 @@ if want freebsd-jail; then
         "assert d['os'].startswith('FreeBSD 13.2-RELEASE-p11'), d['os']" "$J"
   check "disk is the jail's root, and the host's pools are not claimed" \
         "assert [x['mount'] for x in d['disks']][0]=='/' and not any(x['mount'] in ('zroot','ssdpool') for x in d['disks']), d['disks']" "$J"
+  check "and no pool health: the jail cannot see the pools, its host reports them" \
+        "assert 'zpool_status' not in d, d" "$J"
   check "the root's size is used + available from df -k /" \
         "r=d['disks'][0]; assert (r['used_bytes'],r['total_bytes'])==(6166252*1024,(6166252+43795868)*1024), r" "$J"
   rm -rf "$B"
@@ -142,7 +159,7 @@ if want freebsd-jailhost; then
   # Constructed: one jail running (jid 3), one only in jail.conf, plus a
   # running jail whose name the dashboard could not route to. The jexec mock
   # runs the same script "inside", where the sysctl mock reports jailed.
-  B=$(mkbin x uname sysctl df zfs hostname ps freebsd-version jls jexec ifconfig sysrc)
+  B=$(mkbin x uname sysctl df zfs zpool hostname ps freebsd-version jls jexec ifconfig sysrc)
   JC=$(mktemp)
   printf 'exec.start = "/bin/sh /etc/rc";\ntransmission {\n  host.hostname = transmission;\n}\nbackup { path = /jails/backup; }\n' > "$JC"
   J=$(run_collector "$B" bsd \
@@ -171,6 +188,8 @@ if want freebsd-jailhost; then
         "assert sorted(x['host'] for x in d['jails'])==['backup','transmission'], d['jails']" "$J"
   check "a jail does not list jails of its own" \
         "j=[x for x in d['jails'] if x['host']=='transmission'][0]; assert 'jails' not in j, j" "$J"
+  check "the host sends its pool health once, and its jails send none" \
+        "assert 'pool:' in d['zpool_status'] and all('zpool_status' not in j for j in d['jails']), d" "$J"
   rm -rf "$B"
 fi
 
@@ -2618,6 +2637,16 @@ if want render; then
           "assert d['every_listed_package_is_named_and_separately_ackable'] is None, d['every_listed_package_is_named_and_separately_ackable']" "$J"
     check "pending packages are listed alphabetically, rows and summary alike" \
           "assert d['pending_packages_are_listed_alphabetically'] is None, d['pending_packages_are_listed_alphabetically']" "$J"
+    check "the detail view renders a pool-health panel" \
+          "assert d['detail_storage'] is None, d['detail_storage']" "$J"
+    check "which names the degraded pool, the faulted disk and the failed SMART test by serial" \
+          "assert d['the_storage_panel_names_the_pool_and_the_disks_to_pull'] is None, d['the_storage_panel_names_the_pool_and_the_disks_to_pull']" "$J"
+    check "the card says which pool turned its dot" \
+          "assert d['the_card_says_which_pool_turned_the_dot'] is None, d['the_card_says_which_pool_turned_the_dot']" "$J"
+    check "healthy pools read healthy, and a host without ZFS has no Pools row" \
+          "assert d['a_healthy_pool_set_reads_healthy_and_a_plain_host_has_no_row'] is None, d['a_healthy_pool_set_reads_healthy_and_a_plain_host_has_no_row']" "$J"
+    check "a storage event renders in the event log" \
+          "assert d['a_storage_event_takes_the_status_palette'] is None, d['a_storage_event_takes_the_status_palette']" "$J"
     check "and for a host that is down" \
           "assert d['detail_down'] is None, d['detail_down']" "$J"
     check "and for one that is away" \
@@ -3051,6 +3080,99 @@ PYEOF
         "assert d['capped']==8560028 and d['nozone'] is None, d" "$J"
 fi
 
+if want zpool-block; then
+  echo "zpool-block (every collector sends pool health the same way)"
+  # Only the BSD collector runs end to end here; Linux and macOS read /proc and
+  # sysctl in ways the mocks do not cover. So their copies are held to the BSD
+  # one, which the freebsd cases do run, differing only in its jail guard.
+  snippet() { python3 - "$@" <<'PY'
+import re, sys, json
+root = sys.argv[1]
+def block(os_):
+    src = open(f"{root}/collectors/{os_}/netdash-collector.sh").read()
+    b = re.search(r"(?ms)^# ---- ZFS pool health ----$.*?^fi$", src).group(0)
+    b = b.replace('[ "$JAILED" != 1 ] && ', "")
+    return "\n".join(l for l in b.splitlines() if not l.startswith("# Not in a jail"))
+bsd = block("bsd")
+print(json.dumps({o: block(o) == bsd for o in ("linux", "macos")}))
+PY
+  }
+  J=$(snippet "$ROOT") || J=''
+  check "the Linux and macOS collectors carry the BSD collector's zpool block" \
+        "assert d=={'linux':True,'macos':True}, d" "$J"
+fi
+
+if want storage; then
+  echo "storage (ZFS pool health, scrubs and SMART, from TrueNAS and from a ZFS host)"
+  J=$(python3 "$ROOT/tests/storage.py" "$ROOT" 2>/dev/null) || J=''
+  check "mercury and freecore as they are: every pool ONLINE, the host ok" \
+        "assert d['core13']['status']==d['freecore15']['status']=='ok' and [p[:3] for p in d['core13']['pools']]==[['tank','ONLINE','ok'],['tank001','ONLINE','ok'],['freenas-boot','ONLINE','ok']], d['core13']" "$J"
+  check "the boot pool is health-checked too, from /boot/get_state's groups" \
+        "assert d['core13']['pools'][2][3] is True and d['freecore15']['pools'][1][:2]==['boot-pool','ONLINE'], d" "$J"
+  check "each scrub's age is read from its end time" \
+        "assert all(d['core13_scrub_age'].values()), d['core13_scrub_age']" "$J"
+  check "SMART results are named by serial and filed under their pool, boot disk included" \
+        "s=d['core13_smart']; assert s['ada4'][:2]==['SERIAL-ADA4','SUCCESS'] and s['ada5'][3]=='tank001' and s['ada7'][3]=='freenas-boot', s" "$J"
+  check "a test's age is power-on hours now less the hours it ran at" \
+        "assert d['core13_smart']['ada0'][2]==11 and d['core13_smart']['ada6'][2]==12, d['core13_smart']" "$J"
+  check "an unasked or non-ATA disk has no age, not a wrong one" \
+        "assert d['core13_smart']['ada1'][2] is None, d['core13_smart']" "$J"
+  check "a disk with no tests is noted, not coloured, and not asked its hours" \
+        "assert d['freecore15_smart']==[['ada0',None,'unknown','no self-test on record']] and d['freecore15_attr_calls']==[], d" "$J"
+  check "a pool never scrubbed is noted, not coloured" \
+        "assert d['freecore15_tank_scrub']['severity']=='unknown' and d['freecore15']['status']=='ok', d" "$J"
+  check "DEGRADED warns, and names the failed disk by serial, not its vdev" \
+        "x=d['degraded']; assert x['status']=='warning' and x['pools'][0][:3]==['tank','DEGRADED','warning'] and x['bad']==[{'name':'ada4','state':'FAULTED','serial':'SERIAL-ADA4'}], x" "$J"
+  check "FAULTED is critical" \
+        "assert d['faulted']['status']=='critical' and d['faulted']['pools'][1][2]=='critical', d['faulted']" "$J"
+  check "checksum errors on an ONLINE pool warn, counted on the disk only" \
+        "assert d['cksum']['status']=='warning' and d['cksum_count']==3, d" "$J"
+  check "a degraded boot pool warns like any other" \
+        "assert d['boot_degraded']['status']=='warning' and d['boot_degraded']['bad']==[{'name':'ada7','state':'FAULTED','serial':'SERIAL-ADA7'}], d['boot_degraded']" "$J"
+  check "a failed SMART test is critical and names the disk by serial" \
+        "assert d['smart_failed']['status']=='critical' and d['smart_failed']['failing']==['SERIAL-ADA3'], d['smart_failed']" "$J"
+  check "a disk with a standby timer is not woken to read its hours" \
+        "assert 'ada0' not in d['standby_calls'] and d['standby_age'] is None, d" "$J"
+  check "a disk untested past smart_max_age_days is noted, and the host stays ok" \
+        "assert d['smart_old']==['ok','ok','no test in 40 days'], d['smart_old']" "$J"
+  check "a box whose /pool fails claims no health, and still reports capacity" \
+        "assert d['no_pool_answer']==['ok',True,['freenas-boot','tank']], d['no_pool_answer']" "$J"
+  check "scrubs: 41 days is fine on TrueNAS's 35-day weekly schedule, 43 warns" \
+        "x=d['scrub']; assert x['recent']==x['41d']==x['running']=='ok' and x['43d'][0]=='warning', x" "$J"
+  check "a scrub that found errors warns; never scrubbed or only resilvered is noted" \
+        "x=d['scrub']; assert x['errors'][0]=='warning' and x['never'][0]==x['resilvered']=='unknown', x" "$J"
+  check "scrub_max_age_days can be set per host" \
+        "assert d['scrub_override']==['warning',10,['tank','tank001']], d['scrub_override']" "$J"
+  check "a host that stops sending pool health has its last report age out" \
+        "assert d['storage_ages_out'] is True, d" "$J"
+  check "pool state changes go to the event log, and only changes" \
+        "e=d['events']; assert d['events_first']==[] and [x[1:4] for x in e[:2]]==[['storage:pool:tank','ok','warning'],['storage:pool:tank','warning','ok']], e" "$J"
+  check "the event names the pool and the disk to pull" \
+        "assert d['events'][0][4]=='tank DEGRADED · ada4 FAULTED (SERIAL-ADA4)', d['events'][0]" "$J"
+  check "a pool already bad when first seen is logged; an unknown never is" \
+        "assert d['events'][2][0]=='nas2' and d['events'][2][2:4]==[None,'warning'] and not any(x[0]=='freecore' for x in d['events']), d['events']" "$J"
+  check "the watcher's seed is the latest state per host and storage check" \
+        "assert d['seed']=={'mercury|storage:pool:tank':'ok'}, d['seed']" "$J"
+  check "cerium's zpool status parses: every pool, its state and its last scrub" \
+        "assert d['cerium'] and all(p[1]=='ONLINE' and p[2:6]==[0,0,0,0] and p[6]==[] for p in d['cerium']), d['cerium']" "$J"
+  check "zpool's local-time scrub date is read in the collector's zone" \
+        "assert all(x in (None, 18000) for x in d['tz_shift']) and 18000 in d['tz_shift'], d['tz_shift']" "$J"
+  check "and parses the same with zpool's own tab indentation" \
+        "assert d['tabs_same'] is True, d" "$J"
+  check "an UNAVAIL device makes the pool DEGRADED and is named" \
+        "assert d['cerium_degraded']==['DEGRADED',True,'warning'], d['cerium_degraded']" "$J"
+  check "permanent data errors are critical" \
+        "assert d['cerium_perm'][0]=='critical', d['cerium_perm']" "$J"
+  check "plain zpool status's 1.2K reads as a count" \
+        "assert d['plain_counts']==1200, d" "$J"
+  check "ingest turns the text into pools and keeps no text" \
+        "assert d['ingest'][0] is False and d['ingest'][1]==len(d['cerium']) and d['ingest_absent'] is False, d" "$J"
+  check "a ZFS host's pools reach its summary, with SMART unknown rather than empty" \
+        "assert d['cerium_view'][0]=='ok' and d['cerium_view'][1] is None and d['cerium_view'][2]==len(d['cerium']), d['cerium_view']" "$J"
+  check "output that is not a pool parses to nothing, without raising" \
+        "assert d['garbage'] is True, d" "$J"
+fi
+
 # ------------------------------------------------------- service checks ----
 if want services; then
   echo "services (an answering host is not an answering application)"
@@ -3158,6 +3280,12 @@ fi
 if want mcp; then
   echo "mcp (an agent can ask, and cannot change anything)"
   J=$(python3 "$ROOT/tests/mcp.py" "$ROOT" 2>/dev/null) || J=''
+  check "a degraded pool is in the fleet brief, naming the pool and the device" \
+        "z=d['zfs_brief']; assert z['status']=='warning' and z['pools'][0]['pool']=='tank' and z['pools'][0]['bad_devices']==[{'name':'ada3p1','state':'UNAVAIL'}], z" "$J"
+  check "hosts without pool trouble carry no storage block" \
+        "assert d['healthy_no_storage'] is True and 'bsd-server' in d['problems'], d" "$J"
+  check "host_detail lists every pool, scrub state included" \
+        "z=d['zfs_detail']; assert z['pools'][0]['scrub']=='never scrubbed', z" "$J"
   check "initialize answers the version asked for, with tools and our version" \
         "assert d['init_version']=='2025-06-18' and d['init_tools_cap'] and d['has_instructions'], d" "$J"
   check "and a version it does not know gets the newest, not an error" \

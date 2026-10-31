@@ -1,0 +1,244 @@
+[
+ {
+  "flags": {
+   "auto_keep": false,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": false,
+   "string": "-O--C- ",
+   "updated_online": true,
+   "value": 18
+  },
+  "id": 9,
+  "name": "Power_On_Hours",
+  "raw": {
+   "string": "49820",
+   "value": 49820
+  },
+  "thresh": 0,
+  "value": 100,
+  "when_failed": "",
+  "worst": 100
+ },
+ {
+  "flags": {
+   "auto_keep": false,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": false,
+   "string": "-O--C- ",
+   "updated_online": true,
+   "value": 18
+  },
+  "id": 12,
+  "name": "Power_Cycle_Count",
+  "raw": {
+   "string": "84",
+   "value": 84
+  },
+  "thresh": 0,
+  "value": 100,
+  "when_failed": "",
+  "worst": 100
+ },
+ {
+  "flags": {
+   "auto_keep": false,
+   "error_rate": false,
+   "event_count": false,
+   "performance": false,
+   "prefailure": false,
+   "string": "------ ",
+   "updated_online": false,
+   "value": 0
+  },
+  "id": 163,
+  "name": "Max_Erase_Count",
+  "raw": {
+   "string": "56",
+   "value": 56
+  },
+  "thresh": 1,
+  "value": 100,
+  "when_failed": "",
+  "worst": 100
+ },
+ {
+  "flags": {
+   "auto_keep": false,
+   "error_rate": false,
+   "event_count": false,
+   "performance": false,
+   "prefailure": false,
+   "string": "------ ",
+   "updated_online": false,
+   "value": 0
+  },
+  "id": 164,
+  "name": "Average_Erase_Count",
+  "raw": {
+   "string": "47",
+   "value": 47
+  },
+  "thresh": 1,
+  "value": 100,
+  "when_failed": "",
+  "worst": 100
+ },
+ {
+  "flags": {
+   "auto_keep": false,
+   "error_rate": false,
+   "event_count": false,
+   "performance": false,
+   "prefailure": false,
+   "string": "------ ",
+   "updated_online": false,
+   "value": 0
+  },
+  "id": 166,
+  "name": "Grown_Bad_Block_Count",
+  "raw": {
+   "string": "0",
+   "value": 0
+  },
+  "thresh": 10,
+  "value": 100,
+  "when_failed": "",
+  "worst": 100
+ },
+ {
+  "flags": {
+   "auto_keep": true,
+   "error_rate": false,
+   "event_count": false,
+   "performance": false,
+   "prefailure": false,
+   "string": "-O---K ",
+   "updated_online": true,
+   "value": 34
+  },
+  "id": 167,
+  "name": "SSD_Write_Protect_Mode",
+  "raw": {
+   "string": "0",
+   "value": 0
+  },
+  "thresh": 0,
+  "value": 100,
+  "when_failed": "",
+  "worst": 100
+ },
+ {
+  "flags": {
+   "auto_keep": false,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": false,
+   "string": "-O--C- ",
+   "updated_online": true,
+   "value": 18
+  },
+  "id": 168,
+  "name": "SATA_PHY_Err_Ct",
+  "raw": {
+   "string": "0",
+   "value": 0
+  },
+  "thresh": 0,
+  "value": 100,
+  "when_failed": "",
+  "worst": 100
+ },
+ {
+  "flags": {
+   "auto_keep": false,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": true,
+   "string": "PO--C- ",
+   "updated_online": true,
+   "value": 19
+  },
+  "id": 175,
+  "name": "Bad_Cluster_Table_Count",
+  "raw": {
+   "string": "0",
+   "value": 0
+  },
+  "thresh": 10,
+  "value": 100,
+  "when_failed": "",
+  "worst": 100
+ },
+ {
+  "flags": {
+   "auto_keep": false,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": false,
+   "string": "-O--C- ",
+   "updated_online": true,
+   "value": 18
+  },
+  "id": 192,
+  "name": "Unexpect_Power_Loss_Ct",
+  "raw": {
+   "string": "19",
+   "value": 19
+  },
+  "thresh": 0,
+  "value": 100,
+  "when_failed": "",
+  "worst": 100
+ },
+ {
+  "flags": {
+   "auto_keep": true,
+   "error_rate": false,
+   "event_count": false,
+   "performance": false,
+   "prefailure": false,
+   "string": "-O---K ",
+   "updated_online": true,
+   "value": 34
+  },
+  "id": 194,
+  "name": "Temperature_Celsius",
+  "raw": {
+   "string": "40 (Min/Max 30/60)",
+   "value": 257700003880
+  },
+  "thresh": 30,
+  "value": 60,
+  "when_failed": "",
+  "worst": 60
+ },
+ {
+  "flags": {
+   "auto_keep": true,
+   "error_rate": false,
+   "event_count": true,
+   "performance": false,
+   "prefailure": false,
+   "string": "-O--CK ",
+   "updated_online": true,
+   "value": 50
+  },
+  "id": 241,
+  "name": "Total_LBAs_Written",
+  "raw": {
+   "string": "463751212",
+   "value": 463751212
+  },
+  "thresh": 0,
+  "value": 100,
+  "when_failed": "",
+  "worst": 100
+ }
+]

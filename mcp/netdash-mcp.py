@@ -34,16 +34,17 @@ NETDASH_VERSION="0.5.1"
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 
 INSTRUCTIONS = """\
-netdash monitors a home network: CPU, memory and disk per host, reachability,
-pending security patches, OS end of life, and application checks (Home
+netdash monitors a home network: CPU, memory and disk per host, ZFS pool
+health (state, scrubs, SMART), reachability, pending security patches, OS end of life, and application checks (Home
 Assistant, Plex, a BMC, ...). Start with fleet_status(problems_only=true) to
 see what needs attention, then host_detail or events for the why.
 
 Host status is one of ok, warning, critical, stale (expected to report and has
 not), down (confirmed not answering), away (configured as allowed to go
 quiet -- a laptop asleep; not a problem), stopped (a jail its host says is
-stopped) or unknown. Patches and end of life are
-deliberately not part of status; services are not either. Acknowledged
+stopped) or unknown. A ZFS pool that is degraded, has errors or an overdue
+scrub, or a disk that failed SMART, does count toward status. Patches and end
+of life are deliberately not part of status; services are not either. Acknowledged
 patches and EOL warnings were reviewed by a person and are not news.
 
 Everything here is read-only. To acknowledge or forget anything, tell the
@@ -151,6 +152,35 @@ def service_brief(s):
     })
 
 
+def storage_brief(sg, full=False):
+    """Pool health. In a fleet listing, only what is wrong; in host_detail,
+    every pool, since "is tank scrubbed" is a fair question about a healthy
+    one."""
+    if not sg:
+        return None
+    pools = [_drop_none({
+        "pool": p.get("name"), "state": p.get("state"), "severity": p.get("severity"),
+        "reason": p.get("reason") if p.get("severity") != "ok" else None,
+        "boot": p.get("boot") or None,
+        "bad_devices": [_drop_none(b) for b in p.get("bad_devices") or []],
+        "last_scrub": iso((p.get("scan") or {}).get("end")),
+        "scrub": (p.get("scrub") or {}).get("reason"),
+        "scrub_severity": (p.get("scrub") or {}).get("severity"),
+    }) for p in sg.get("pools") or []
+        if full or p.get("severity") != "ok"
+        or (p.get("scrub") or {}).get("severity") == "warning"]
+    smart = [_drop_none({
+        "disk": d.get("disk"), "serial": d.get("serial"), "pool": d.get("pool"),
+        "status": d.get("status"), "note": d.get("note"),
+        "test_age_hours": d.get("age_hours"),
+    }) for d in sg.get("smart") or []
+        if full or d.get("severity") == "critical"]
+    if not full and sg.get("status") == "ok":
+        return None
+    return _drop_none({"status": sg.get("status"), "pools": pools,
+                       "smart_failed": sg.get("failing"), "smart": smart if full else None})
+
+
 def status_of(h):
     """The status as the dashboard draws it. The API leaves "away" to the UI
     (stale, on a host allowed to go quiet), and an agent that has to rederive
@@ -196,6 +226,7 @@ def host_brief(h):
         "uptime_seconds": h.get("uptime_seconds"),
         "patches": patches_brief(h.get("patches")),
         "eol": eol_brief(h.get("eol")),
+        "storage": storage_brief(h.get("storage")),
         "services": [service_brief(s) for s in h.get("services") or []
                      if s.get("severity") != "ok" and s.get("state") != "disabled"],
         "services_severity": h.get("services_severity"),
@@ -343,6 +374,7 @@ def tool_host_detail(api, args):
             "acknowledged": bool(i.get("acked_at")) or None,
         }) for i in cur["patches"]["entries"]]
     out["services"] = [service_brief(s) for s in cur.get("services") or []]
+    out["storage"] = storage_brief(cur.get("storage"), full=True)
     out["window"] = {"minutes": d.get("minutes"), "resolution": d.get("resolution"),
                      "disk_resolution": d.get("disk_resolution")}
     out["cpu_history"] = series_stats(hist, "cpu_pct", "cpu_min", "cpu_max")
@@ -444,14 +476,16 @@ TOOLS = {
     }),
     "events": (tool_events, {
         "description": "The state-change log: hosts going down, stale, warning or back to "
-                       "ok, and service checks failing or recovering. Newest first.",
+                       "ok, service checks failing or recovering, and ZFS pools, scrubs "
+                       "and SMART tests changing severity. Newest first.",
         "inputSchema": {"type": "object", "properties": {
             "host": {"type": "string", "description": "only this host"},
             "hours": {"type": "integer", "default": 24, "minimum": 1,
                       "description": "how far back"},
             "kind": {"type": "string",
                      "description": "'status' for host status, 'service' for every "
-                                    "service check, 'service:<id>' for one, 'host' "
+                                    "service check, 'service:<id>' for one, 'storage' "
+                                    "for pool, scrub and SMART changes, 'host' "
                                     "for hosts removed from the dashboard"},
             "limit": {"type": "integer", "default": 100, "minimum": 1, "maximum": 500},
         }},

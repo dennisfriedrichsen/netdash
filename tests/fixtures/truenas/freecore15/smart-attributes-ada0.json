@@ -1,0 +1,3 @@
+{
+ "__error__": "POST /disk/smart_attributes -> HTTP 422: {\n \"message\": \"Only ATA device support S.M.A.R.T. attributes\",\n \"errno\": 14\n}"
+}

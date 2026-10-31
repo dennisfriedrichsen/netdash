@@ -1,5 +1,6 @@
 """SQLite storage for netdash. Rolling window only -- no long-term retention."""
 
+import json
 import re
 import sqlite3
 import threading
@@ -324,6 +325,24 @@ CREATE TABLE IF NOT EXISTS guests (
     boot     INTEGER,
     address  TEXT,
     seen_at  INTEGER NOT NULL
+);
+
+-- ZFS pool health and SMART results, the latest report only, one row a host.
+--
+-- Not per sample like disks: a pool's state changes a few times in its life,
+-- and copying the same "ONLINE, scrubbed Sunday" into every sample of the
+-- window would store a million rows to say one thing. Transitions are what
+-- deserve keeping, and the event log keeps them (kind "storage:...").
+--
+-- pools and smart are JSON, in the record shapes zfs.py documents. smart is
+-- NULL for a host that has no source of it -- every host collector, for now
+-- -- which is "unknown", not "no disks". ts is the sample that carried them,
+-- so summarize() can ignore a row the host has stopped refreshing.
+CREATE TABLE IF NOT EXISTS storage (
+    host   TEXT    PRIMARY KEY,
+    ts     INTEGER NOT NULL,
+    pools  TEXT,
+    smart  TEXT
 );
 """
 
@@ -674,6 +693,16 @@ def insert_sample(conn, payload, source="push", peer=None):
             conn.execute(
                 "INSERT INTO disks (sample_id, mount, used_bytes, total_bytes) VALUES (?,?,?,?)",
                 (sid, d.get("mount"), d.get("used_bytes"), d.get("total_bytes")),
+            )
+        # Only a payload that carries pool health may speak for it, the same
+        # rule as the patch list: a host whose zpool call failed, or an older
+        # collector, has said nothing, and its last report ages out instead.
+        if isinstance(payload.get("pools"), list):
+            smart = payload.get("smart")
+            conn.execute(
+                "INSERT OR REPLACE INTO storage (host, ts, pools, smart) VALUES (?,?,?,?)",
+                (payload["host"], ts, json.dumps(payload["pools"]),
+                 json.dumps(smart) if isinstance(smart, list) else None),
             )
         for f in payload.get("fleet") or []:
             conn.execute(
@@ -1219,6 +1248,19 @@ def last_service_states(conn):
         return {r["kind"]: r["to_state"] for r in rows}
 
 
+def last_storage_states(conn):
+    """The most recent to_state per (host, "storage:..." kind), for seeding
+    the watcher: a pool that went DEGRADED before a restart must still have
+    its repair logged after it."""
+    with _DB:
+        rows = conn.execute(
+            """SELECT host, kind, to_state FROM events
+                WHERE id IN (SELECT MAX(id) FROM events
+                              WHERE kind LIKE 'storage:%' GROUP BY host, kind)"""
+        ).fetchall()
+        return {(r["host"], r["kind"]): r["to_state"] for r in rows}
+
+
 # Cached because latest_per_host runs in four background loops and the answer
 # cannot change while the process is up -- the schema is settled by connect().
 _SAMPLE_COLS = None
@@ -1252,6 +1294,19 @@ def _no_sample(conn, h):
         "no_samples": True,
     })
     return d
+
+
+def _storage(conn, host):
+    """The host's last pool and SMART report, or None. Caller holds _DB."""
+    r = conn.execute("SELECT ts, pools, smart FROM storage WHERE host=?",
+                     (host,)).fetchone()
+    if not r:
+        return None
+    try:
+        return {"ts": r["ts"], "pools": json.loads(r["pools"] or "[]"),
+                "smart": json.loads(r["smart"]) if r["smart"] else None}
+    except ValueError:
+        return None
 
 
 def latest_per_host(conn):
@@ -1294,6 +1349,7 @@ def latest_per_host(conn):
                     (r["id"],),
                 ).fetchall()
             ]
+            d["storage"] = _storage(conn, d["host"])
             latest[d["host"]] = d
 
         out = []
@@ -1336,7 +1392,7 @@ def forget_host(conn, host):
                 "DELETE FROM %s WHERE sample_id IN "
                 "(SELECT id FROM samples WHERE host=?)" % t, (host,))
         for t in ("samples", "rollups", "disk_rollups", "patch_acks",
-                  "patch_pending", "eol_acks", "guests", "hosts"):
+                  "patch_pending", "eol_acks", "guests", "storage", "hosts"):
             conn.execute("DELETE FROM %s WHERE host=?" % t, (host,))
         conn.commit()
     return bool(known)

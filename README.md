@@ -79,7 +79,8 @@ nothing you cannot read from the number above it — the useful question is neve
 in. The scale stays fixed at 0–100 for the same reason: fitting it to the data
 would make two points of idle CPU jitter fill the panel and read as an event.
 
-A host's overall status is the worst of its three metrics. CPU is judged on
+A host's overall status is the worst of its three metrics, and of its ZFS pool
+health where it has any (see [ZFS pool health](#zfs-pool-health)). CPU is judged on
 what has **held**, not on the latest reading: it is a warning only when every
 reading over `thresholds.cpu.sustain_seconds` (default 300) was over warn, and
 critical only when every one was over crit. A single spike — a build, a backup
@@ -787,6 +788,72 @@ A FreeCORE box reports itself as `FreeCORE <version>`, not as TrueNAS CORE, so
 it gets the NAS icon but not CORE's end-of-life date. endoflife.date does not
 track it either, so give it its own `eol.overrides` entry if you want one.
 `truenas` is the only block that takes a list.
+
+Pool health, scrubs and SMART come from the same API key; see
+[ZFS pool health](#zfs-pool-health). SMART is read every `smart_poll_seconds`
+(default 3600), on its own clock like the update check.
+
+## ZFS pool health
+
+A pool that has lost redundancy is the worst failure a NAS can have, because
+the next disk to go takes the data with it. A capacity meter can't show it: a
+DEGRADED pool at 40% used still reads green. So every host with ZFS also
+reports each pool's **state**, its **last scrub** and its **error counts**,
+and these count toward the host's status. TrueNAS adds the latest **SMART
+self-test** for each disk.
+
+| source | how | what |
+|---|---|---|
+| TrueNAS CORE / FreeCORE | `GET /pool`, `/boot/get_state` every poll; `GET /disk`, `/smart/test/results` and `POST /disk/smart_attributes` every `smart_poll_seconds` | pools including the boot pool, scrubs, per-disk SMART results named by serial |
+| FreeBSD, Linux, macOS, NetBSD collectors | `zpool status -p` (plain `zpool status` on an OpenZFS without `-p`), sent as text and parsed by the server | pools, scrubs, error counts. **No SMART** yet (see issue #30) |
+
+The collector sends the text and the server parses it (`server/zfs.py`), so
+fixing a parser bug needs a server update only, not a redeploy to every ZFS
+host. A jail sends no pool health, because its host reports the pools. A host
+whose `zpool` fails, or has no pools, sends nothing. Its last report then
+ages out with staleness, rather than being replaced by a report of "no
+pools".
+
+What colours the host:
+
+| finding | severity |
+|---|---|
+| pool FAULTED, UNAVAIL, SUSPENDED or REMOVED | critical |
+| permanent data errors (`errors: N data errors`) | critical |
+| a SMART self-test that FAILED | critical |
+| pool DEGRADED or OFFLINE | warning |
+| read, write or checksum errors on a device of an ONLINE pool | warning |
+| last scrub found errors | warning |
+| last scrub older than `scrub_max_age_days` (default 42) | warning |
+
+What is noted on the detail page but does not colour the host: a pool that has
+never been scrubbed (netdash can't tell a new pool from a neglected one), a
+disk with no self-test in `smart_max_age_days` (default 35), and a disk with no
+self-tests at all.
+
+The scrub default is 42 days, not 35. TrueNAS's stock scrub task has a 35-day
+threshold and is checked weekly on Sunday, so a pool on that schedule is
+routinely 36–41 days past its last scrub. Both limits live under
+`thresholds.zfs` and can be overridden per host:
+
+```json
+"thresholds": { "zfs": { "scrub_max_age_days": 42, "smart_max_age_days": 35 } },
+"hosts": { "cerium": { "thresholds": { "zfs": { "scrub_max_age_days": 60 } } } }
+```
+
+A SMART test's age is the disk's power-on hours now minus the hours logged
+with the test. The test log records power-on hours, not dates. Reading power-on
+hours runs `smartctl` on the NAS, which wakes a sleeping disk. So a disk with
+an HDD standby timer is not asked, and its test age shows as unknown. Only ATA
+disks report the attribute, so NVMe and virtual disks have no age either.
+
+The card shows a **Pools** row naming whichever pool or disk is at fault. The
+detail page has one row per pool, giving its state, its last scrub and its
+read/write/checksum counts. Failing devices are named, with the serial
+printed on the drive where it is known. Each change of severity goes into the
+event log as `storage:pool:<name>`, `storage:scrub:<name>` or
+`storage:smart:<serial>`. A pool that is already bad when netdash first sees
+it is logged too.
 
 ## Hubitat
 

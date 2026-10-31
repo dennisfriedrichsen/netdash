@@ -28,6 +28,7 @@ import reach  # noqa: E402
 import services  # noqa: E402
 import truenas  # noqa: E402
 import unifi  # noqa: E402
+import zfs  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(HERE, "static")
@@ -396,6 +397,21 @@ def ingest_jails(payload, now=None):
     db.record_guests(CONN, parent, keep, ts)
 
 
+def ingest_zpool(payload):
+    """A collector's `zpool status -p` text -> payload["pools"], in place.
+
+    Parsed here rather than on the host, so a parser fix ships with the
+    server instead of to every ZFS host. The text itself is not stored. A
+    collector that sent none leaves the payload alone, and a ZFS host whose
+    zpool call failed sends none, so its last report ages out rather than
+    being replaced by a report of no pools.
+    """
+    text = payload.pop("zpool_status", None)
+    if isinstance(text, str) and text.strip():
+        payload["pools"] = zfs.parse_zpool_status(text, payload.get("tz"))
+    return payload
+
+
 def address_for(host, sample):
     """Where to probe, and how we decided -- ("10.0.0.4", "config").
 
@@ -716,6 +732,122 @@ def fleet_summary(sample, th):
     }
 
 
+def zfs_limits(host):
+    """scrub_max_age_days and smart_max_age_days, from thresholds.zfs with a
+    per-host override over it. Defaults in code, like CPU_SUSTAIN_SECONDS:
+    thresholds is a block every config already has, so a default put in
+    DEFAULTS would never reach inside it. thresholds_for merges only the
+    metrics the global block names, so this reads the override itself."""
+    out = {"scrub_max_age_days": zfs.SCRUB_MAX_AGE_DAYS,
+           "smart_max_age_days": zfs.SMART_MAX_AGE_DAYS}
+    out.update((CFG.get("thresholds") or {}).get("zfs") or {})
+    out.update((host_cfg(host).get("thresholds") or {}).get("zfs") or {})
+    return out
+
+
+def storage_summary(sample, now):
+    """Pool health, scrubs and SMART, judged. None for a host with none.
+
+    Unlike patches and an appliance's fleet, this counts toward the host's
+    status. A pool that has lost redundancy is the machine itself failing,
+    and the next disk to go takes the data with it: a NAS at 40% used with a
+    DEGRADED pool must not read green.
+
+    What colours the dot: a pool's state and error counts, a scrub that found
+    errors or is older than scrub_max_age_days, and a failed SMART test. What
+    is only noted: a pool never scrubbed (nothing here knows how old it is),
+    a disk with no test in smart_max_age_days, and a disk with no tests at all.
+
+    `checks` is one entry per thing that can change state, keyed for the
+    event log: storage:pool:<name>, storage:scrub:<name>, storage:smart:<serial>.
+    """
+    st = sample.get("storage")
+    if not st:
+        return None
+    # A host that stopped sending pool health has not said its pools are fine.
+    # The row is ignored once it is older than staleness allows, measured
+    # against the host's own latest sample so a quiet host keeps its last word
+    # until the host itself is stale.
+    if st["ts"] < sample["ts"] - stale_after_for(sample["host"]):
+        return None
+    lim = zfs_limits(sample["host"])
+    smart = st.get("smart")
+    if not st.get("pools") and not smart:
+        return None
+    serial_of = {d["disk"]: d.get("serial") for d in smart or [] if d.get("disk")}
+    checks = []
+    pools = []
+    for p in st.get("pools") or []:
+        sev, why = zfs.judge_pool(p)
+        ssev, swhy, sage = zfs.judge_scrub(p.get("scan"), now, lim["scrub_max_age_days"])
+        bad = [dict(b, serial=serial_of.get(b.get("name"))) for b in p.get("bad_devices") or []]
+        pools.append({
+            "name": p.get("name"), "state": p.get("state"), "boot": bool(p.get("boot")),
+            "severity": sev, "reason": why,
+            "read_errors": p.get("read_errors"), "write_errors": p.get("write_errors"),
+            "checksum_errors": p.get("checksum_errors"),
+            "data_errors": p.get("data_errors"),
+            "bad_devices": bad,
+            "scan": p.get("scan"),
+            "scrub": {"severity": ssev, "reason": swhy,
+                      "age_days": None if sage is None else round(sage, 1)},
+            "detail": p.get("detail"),
+            "disks": p.get("disks") or [],
+        })
+        # "tank DEGRADED · ada4 FAULTED (WD-WCC7K0000000)": the pool, then
+        # the reason when the state alone is not it, then the disk to pull.
+        said = ["%s %s" % (p.get("name"), p.get("state"))]
+        if why and sev != "ok" and not why.startswith("pool "):
+            said.append(why)
+        said += ["%s %s%s" % (b["name"], b["state"], " (%s)" % b["serial"] if b.get("serial") else "")
+                 for b in bad]
+        checks.append({"key": "pool:%s" % p.get("name"), "severity": sev,
+                       "detail": " · ".join(said)})
+        checks.append({"key": "scrub:%s" % p.get("name"), "severity": ssev,
+                       "detail": "%s: %s" % (p.get("name"), swhy or "scrubbed")})
+    pool_of = {}
+    for p in pools:
+        for d in p["disks"]:
+            pool_of[d] = p["name"]
+    disks = []
+    max_h = float(lim["smart_max_age_days"]) * 24
+    for d in smart or []:
+        status = d.get("status")
+        note = None
+        if status == "FAILED":
+            sev = "critical"
+        elif status in ("SUCCESS", "RUNNING"):
+            sev = "ok"
+            if d.get("age_hours") is not None and d["age_hours"] > max_h:
+                note = "no test in %d days" % (d["age_hours"] // 24)
+        elif status is None:
+            sev, note = "unknown", "no self-test on record"
+        else:
+            sev, note = "unknown", "last test %s" % status.lower()
+        name = d.get("serial") or d.get("disk")
+        disks.append(dict(d, severity=sev, note=note, pool=pool_of.get(d.get("disk"))))
+        checks.append({"key": "smart:%s" % name, "severity": sev,
+                       "detail": "%s (%s): SMART %s" % (
+                           name, d.get("disk"),
+                           (d.get("status_verbose") or status or "no test").lower())})
+    # Only what is wrong colours the dot. "unknown" is a note, not a fault.
+    worst = "ok"
+    for c in checks:
+        if c["severity"] in ("warning", "critical") and _RANK[c["severity"]] > _RANK[worst]:
+            worst = c["severity"]
+    return {
+        "status": worst,
+        "pools": pools,
+        # None, not [], when nothing reports SMART for this host.
+        "smart": disks if smart is not None else None,
+        "failing": [d.get("serial") or d.get("disk") for d in disks
+                    if d["severity"] == "critical"],
+        "limits": lim,
+        "checks": checks,
+        "ts": st["ts"],
+    }
+
+
 def summarize(sample, now=None):
     """Turn a raw sample row into the shape the UI consumes."""
     now = now or time.time()
@@ -773,6 +905,8 @@ def summarize(sample, now=None):
             cpu_status = held
     mem_status = _level(mem_pct, th["mem"])
     disk_status = _level(worst_disk_pct, th["disk"])
+    storage = storage_summary(sample, now)
+    storage_status = storage["status"] if storage else "unknown"
 
     host = sample["host"]
     stale = age > stale_after_for(host)
@@ -832,7 +966,7 @@ def summarize(sample, now=None):
     # stays a statement about CPU, memory and disk.
     overall = ("stopped" if stopped else "down" if down_reason
                else "stale" if stale else max(
-        (cpu_status, mem_status, disk_status), key=lambda s: _RANK[s]
+        (cpu_status, mem_status, disk_status, storage_status), key=lambda s: _RANK[s]
     ))
     # A jail listed over the TrueNAS API has no readings to judge -- the API
     # gives none per jail -- so the rollup above can only say unknown. Its host
@@ -875,6 +1009,10 @@ def summarize(sample, now=None):
             "status": mem_status,
         },
         "disk": {"worst_pct": worst_disk_pct, "status": disk_status, "mounts": disks},
+        # ZFS pool health, scrubs and SMART, for any host that reports them:
+        # TrueNAS over its API, a ZFS host through its collector. Counts
+        # toward `status`, unlike fleet and patches; see storage_summary.
+        "storage": storage,
         # The devices a console has adopted. None for everything that is not one.
         "fleet": fleet_summary(sample, th),
         # The effective values, so an override can be confirmed from the API
@@ -1006,6 +1144,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if not payload.get("host"):
             return self._json(400, {"error": "missing 'host'"})
+        ingest_zpool(payload)
 
         try:
             db.insert_sample(CONN, payload, peer=self.client_address[0])
@@ -1408,6 +1547,30 @@ def roller():
         time.sleep(interval)
 
 
+def storage_events(host, storage, last, now=None):
+    """Log each pool, scrub and SMART check whose severity moved.
+
+    Keyed (host, "storage:<key>"), seeded from the event log the way the host
+    states are. The first sighting of a check after a restart, or ever, is
+    recorded only if it is bad: a pool already DEGRADED when netdash first
+    looks is worth a line, a healthy one is not news. "unknown" is never
+    recorded -- it is the absence of a reading, not a state.
+    """
+    if not storage:
+        return
+    for c in storage.get("checks") or []:
+        k = (host, "storage:" + c["key"])
+        sev = c["severity"]
+        if sev == "unknown":
+            continue
+        prev = last.get(k)
+        if prev == sev or (prev is None and sev == "ok"):
+            last[k] = sev
+            continue
+        db.record_event(CONN, host, k[1], prev, sev, c["detail"], ts=now)
+        last[k] = sev
+
+
 def event_watcher():
     """Record status transitions, so an outage leaves a trace after it ends.
 
@@ -1426,11 +1589,16 @@ def event_watcher():
         last = db.last_states(CONN)
     except Exception:
         last = {}
+    try:
+        last_storage = db.last_storage_states(CONN)
+    except Exception:
+        last_storage = {}
     while True:
         try:
             for sample in db.latest_per_host(CONN):
                 host = sample["host"]
                 view = summarize(sample)
+                storage_events(host, view.get("storage"), last_storage)
                 now_state = view["status"]
                 prev = last.get(host)
                 if prev is None:

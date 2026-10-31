@@ -30,6 +30,10 @@
     "disk": {
       "warn": 85,
       "crit": 95
+    },
+    "zfs": {
+      "scrub_max_age_days": 42,
+      "smart_max_age_days": 35
     }
   },
   "truenas": {
@@ -40,7 +44,8 @@
     "verify_tls": false,
     "api_key": "",
     "poll_seconds": 60,
-    "patch_poll_seconds": 3600
+    "patch_poll_seconds": 3600,
+    "smart_poll_seconds": 3600
   },
   "hubitat": {
     "enabled": false,

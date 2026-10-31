@@ -12,7 +12,13 @@ Endpoints (verified live against TrueNAS CORE 13.0-U6.8):
   GET  /system/info        -> physmem, uptime_seconds, version
   POST /reporting/get_data -> cpu / memory / arcsize series
   GET  /pool/dataset       -> per-pool used+available (root datasets only)
-  GET  /boot/get_state     -> the boot pool, which /pool/dataset leaves out
+  GET  /boot/get_state     -> the boot pool, which /pool/dataset leaves out,
+                              and its health, scan and topology
+  GET  /pool               -> each data pool's status, scan and topology
+  GET  /disk               -> serial, model and standby setting per disk
+  GET  /smart/test/results -> every disk's SMART self-test log, newest first
+  POST /disk/smart_attributes "ada0" -> attribute 9, power-on hours, which is
+                              what the test log dates its entries in
   GET  /jail               -> every iocage jail, running or not (see _jails)
   GET  /system/product_name -> "TrueNAS" on CORE, "FreeCORE" on FreeCORE
 
@@ -38,6 +44,8 @@ import sys
 import time
 import urllib.error
 import urllib.request
+
+import zfs
 try:
     import zoneinfo
 except ImportError:          # Python < 3.9: jail uptimes go unreported
@@ -163,7 +171,16 @@ def _pools(cfg):
     return out
 
 
-def _boot_pool(cfg):
+def _boot_state(cfg):
+    """/boot/get_state, or {} when the box cannot answer it. Fetched once a
+    poll and read twice: for the boot pool's capacity and for its health."""
+    try:
+        return _request(cfg, "/boot/get_state") or {}
+    except TrueNASError:
+        return {}
+
+
+def _boot_pool(st):
     """The OS drive, as one more disk row named for its pool.
 
     /pool/dataset lists data pools only, so without this the boot pool -- where
@@ -177,16 +194,114 @@ def _boot_pool(cfg):
     Best-effort, like the metric graphs: a box that cannot answer still reports
     its data pools. Returns a list so the caller can simply add it on.
     """
-    try:
-        st = _request(cfg, "/boot/get_state") or {}
-    except TrueNASError:
-        return []
     props = st.get("properties") or {}
     size = (props.get("size") or {}).get("parsed")
     alloc = (props.get("allocated") or {}).get("parsed")
     if not st.get("name") or size is None or alloc is None or int(size) <= 0:
         return []
     return [{"mount": st["name"], "used_bytes": int(alloc), "total_bytes": int(size)}]
+
+
+def _pool_health(cfg, boot):
+    """Every pool's health, boot pool included, as zfs pool records.
+
+    Polled at the metric rate, unlike SMART: a pool going DEGRADED is the
+    reading that matters most on a NAS, and /pool is one cheap call that
+    reads the kernel's state without touching a disk.
+
+    None, not [], when /pool cannot be read: "no pools" would be a claim,
+    and the dashboard should show it as unknown instead.
+    """
+    try:
+        rows = _request(cfg, "/pool") or []
+    except TrueNASError:
+        return None
+    out = [r for r in (zfs.pool_from_truenas(p) for p in rows if isinstance(p, dict)) if r]
+    b = zfs.pool_from_truenas(boot, boot=True) if boot else None
+    if b:
+        out.append(b)
+    return out
+
+
+# SMART is polled on its own slow interval, like the update check. The test
+# log changes once a day at most, and power-on hours need a smartctl run per
+# disk on the NAS. Per box, keyed by host, for the same reason _PATCH_CACHES is.
+_SMART_CACHES = {}
+
+
+def _power_on_hours(cfg, disk):
+    """Attribute 9 for one disk, or None.
+
+    Only ATA disks have it: FreeCORE's virtual disks answer 422 "Only ATA
+    device support S.M.A.R.T. attributes", and so would NVMe. Their tests are
+    still reported, just without an age.
+    """
+    try:
+        attrs = _request(cfg, "/disk/smart_attributes", "POST", disk) or []
+    except TrueNASError:
+        return None
+    for a in attrs if isinstance(attrs, list) else []:
+        if isinstance(a, dict) and a.get("id") == 9:
+            raw = (a.get("raw") or {}).get("value")
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _smart(cfg):
+    """The newest self-test per disk, named by serial. None until known.
+
+    /smart/test/results dates each test by the disk's power-on hours when it
+    ran (`lifetime`), not by the clock, so a test's age is the disk's power-on
+    hours now minus that. Reading them runs smartctl, which wakes a disk that
+    has spun down -- so a disk with a standby timer is not asked, and its age
+    is left unknown rather than keeping it spinning for netdash.
+
+    Ordered by the log: entry 1 is the newest. A disk with SMART switched off
+    in the GUI is skipped; one with no tests at all is listed with none.
+    """
+    cache = _SMART_CACHES.setdefault(cfg.get("host"), {"ts": 0.0, "value": None})
+    now = time.time()
+    interval = int(cfg.get("smart_poll_seconds") or 3600)
+    if now - cache["ts"] < interval:
+        return cache["value"]
+    cache["ts"] = now
+    try:
+        disks = _request(cfg, "/disk") or []
+        results = _request(cfg, "/smart/test/results") or []
+    except TrueNASError:
+        return cache["value"]
+    by_name = {d.get("name"): d for d in disks if isinstance(d, dict)}
+    out = []
+    for r in results if isinstance(results, list) else []:
+        if not isinstance(r, dict) or not r.get("disk"):
+            continue
+        d = by_name.get(r["disk"]) or {}
+        if d.get("togglesmart") is False:
+            continue
+        tests = [t for t in r.get("tests") or [] if isinstance(t, dict)]
+        tests.sort(key=lambda t: t.get("num") or 0)
+        t = tests[0] if tests else None
+        age = None
+        if t and t.get("lifetime") is not None \
+                and str(d.get("hddstandby") or "ALWAYS ON").upper() == "ALWAYS ON":
+            poh = _power_on_hours(cfg, r["disk"])
+            if poh is not None:
+                age = max(0, poh - int(t["lifetime"]))
+        out.append({
+            "disk": r["disk"],
+            "serial": d.get("serial") or None,
+            "model": d.get("model") or None,
+            "status": (str(t.get("status") or "").upper() or None) if t else None,
+            "status_verbose": t.get("status_verbose") if t else None,
+            "test": t.get("description") if t else None,
+            "age_hours": age,
+        })
+    out.sort(key=lambda x: x["disk"])
+    cache["value"] = out
+    return out
 
 
 def _jail_address(ip4_addr):
@@ -381,6 +496,7 @@ def collect(cfg):
     # "TrueNAS-13.0-U6.8" -> "13.0 U6.8". The product prefix is stripped
     # whatever it says, since the name comes from _product instead.
     version = re.sub(r"^[A-Za-z]\w*-", "", info.get("version") or "").replace("-", " ", 1)
+    boot = _boot_state(cfg)
     return {
         "host": cfg.get("display_name") or cfg["host"],
         "ts": int(time.time()),
@@ -389,7 +505,9 @@ def collect(cfg):
         "mem_used_bytes": mem,
         "mem_total_bytes": physmem,
         "uptime_seconds": int(info["uptime_seconds"]) if info.get("uptime_seconds") else None,
-        "disks": _pools(cfg) + _boot_pool(cfg),
+        "disks": _pools(cfg) + _boot_pool(boot),
+        "pools": _pool_health(cfg, boot),
+        "smart": _smart(cfg),
         "patches": _patches(cfg),
         "jails": _jails(cfg, info),
     }
