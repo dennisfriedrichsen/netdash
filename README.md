@@ -19,6 +19,7 @@ collectors/   per-OS collector scripts
   macos/      top, vm_stat, sysctl, df, mount               + com.apple.SoftwareUpdate
   install.sh  installer for Linux + BSD hosts
   probe.sh    read-only dump of what a new OS reports, for adding support
+mcp/          read-only MCP server, so an LLM agent can ask netdash (see MCP server)
 homebrew/     sample config packaged by the Homebrew formula
 ```
 
@@ -256,6 +257,7 @@ sudo -u netdash python3 -c "import sys, time; sys.path.insert(0, '/opt/netdash/s
 | `POST /api/host/<name>/patches/unack?package=<name>` | back to pending; without `package`, the whole host |
 | `POST /api/host/<name>/eol/ack`, `/eol/unack` | the same for an end-of-life warning, which is one per host |
 | `POST /api/host/<name>/forget` | remove a host from the fleet, with its samples, history and acknowledgements; its events are kept |
+| `GET /api/events?host=&kind=&since=&limit=100` | the state-change log, newest first; `kind=service` also matches every `service:<id>`, `since` is a unix time |
 | `GET /api/health` | liveness |
 
 Payload shape:
@@ -1314,6 +1316,57 @@ claims, and only one of them belongs in a log.
 
 `kind` is deliberately open rather than a status enum, so a WAN link flapping
 or an access point dropping off a controller can join the same log.
+
+## MCP server
+
+`mcp/netdash-mcp.py` lets an LLM agent — Claude Code, or anything else that
+speaks the Model Context Protocol — ask netdash what is wrong and what
+changed, instead of someone reading the dashboard to it: "why was mercury
+amber at 3am?", "which hosts are behind on security patches?".
+
+It is a client of the HTTP API above and nothing more: Python 3, standard
+library only, no database, no state. It runs where the agent runs, usually a
+laptop, and never on the netdash server — which is why it lives beside
+`collectors/` rather than in `server/`, where `deploy.sh` would install it on
+the one machine that does not need it.
+
+```sh
+claude mcp add netdash -- python3 /path/to/netdash/mcp/netdash-mcp.py \
+    --url http://netdash.example:8080
+```
+
+`NETDASH_URL` works in place of `--url`. On a machine whose Python is only
+`python3.12` (FreeBSD), name that instead.
+
+| tool | answers |
+|---|---|
+| `fleet_status` | every host's status, resources, reachability, patches, EOL and failing checks; `problems_only` for just what needs attention |
+| `host_detail` | one host: every disk with its fill projection, CPU and memory over a window (min/avg/max, when the peak was), pending packages, checks, recent changes |
+| `events` | the event log, by host, kind and hours back |
+| `patches` | pending updates per host, which were acknowledged, reboot required, EOL |
+| `services` | every service check with its state, and BMC sensors where read |
+
+The answers are shaped for an agent rather than copied from the API: a
+browser wants every chart point and the thresholds block on every host, and
+an agent pays for each token it reads. Timestamps are local ISO time, not
+epoch seconds an agent then has to convert and gets wrong. A sleeping laptop
+reads as `away`, as it does on the dashboard — the API leaves that to the UI,
+and an agent rederiving it would sooner or later report one as an outage.
+
+### Read-only, and what that does and does not mean
+
+There is no tool that acknowledges, unacknowledges or forgets, and the tests
+run a session using every tool and check the server saw no POST. An agent
+that can acknowledge a security update can silence the one you needed to
+see; those stay a human action on the dashboard.
+
+That is a property of this program, not a credential. netdash's API has no
+read/write split to hand an agent — the acknowledge and forget routes trust
+the network, like the dashboard that calls them — so anything that can reach
+the server can POST to them, with or without this. A read-only token would
+mean authenticating the dashboard's own browser requests as well, and that is
+a separate change. Until then, "trusted network only" covers the agent's
+machine too.
 
 ## Tests
 

@@ -1016,16 +1016,16 @@ PY
 fi
 
 if want version; then
-  echo "version (six hardcoded copies must not drift, and 0.3.10 > 0.3.9)"
+  echo "version (seven hardcoded copies must not drift, and 0.3.10 > 0.3.9)"
   snippet() { python3 - "$@" <<'PY'
 import re,sys,json,glob
 root=sys.argv[1]; sys.path.insert(0,f"{root}/server")
 import app
 want=open(f"{root}/VERSION").read().strip()
 found={}
-for f in sorted(glob.glob(f"{root}/collectors/*/netdash-*.sh")):
+for f in sorted(glob.glob(f"{root}/collectors/*/netdash-*.sh")) + [f"{root}/mcp/netdash-mcp.py"]:
     m=re.search(r'^NETDASH_VERSION="([^"]+)"', open(f).read(), re.M)
-    found[f.split("/collectors/")[1]] = m.group(1) if m else None
+    found[f[len(root)+1:]] = m.group(1) if m else None
 def newest(vs): return app.newest_version([{"collector_version":v} for v in vs])
 print(json.dumps({
   "want": want, "found": found,
@@ -1037,10 +1037,10 @@ print(json.dumps({
 PY
   }
   J=$(snippet "$ROOT") || J=''
-  check "every collector and patch check matches the VERSION file" \
+  check "every collector, patch check and the MCP server matches the VERSION file" \
         "assert not d['mismatched'], d['mismatched']" "$J"
-  check "all six scripts carry a version at all" \
-        "assert len(d['found'])==6 and all(d['found'].values()), d['found']" "$J"
+  check "all seven carry a version at all" \
+        "assert len(d['found'])==7 and all(d['found'].values()), d['found']" "$J"
   # Compared per component, not as text: "0.3.10" sorts before "0.3.9" as a
   # string, which would mark an entire fleet outdated the first time a minor
   # number reached double digits.
@@ -3152,6 +3152,74 @@ PYEOF
   J=$(snippet "$ROOT") || J=''
   check "starting the checks never delays the server listening" \
         "assert d=={'inline':0,'threaded':1}, d" "$J"
+fi
+
+# ------------------------------------------------------------------- MCP ----
+if want mcp; then
+  echo "mcp (an agent can ask, and cannot change anything)"
+  J=$(python3 "$ROOT/tests/mcp.py" "$ROOT" 2>/dev/null) || J=''
+  check "initialize answers the version asked for, with tools and our version" \
+        "assert d['init_version']=='2025-06-18' and d['init_tools_cap'] and d['has_instructions'], d" "$J"
+  check "and a version it does not know gets the newest, not an error" \
+        "assert d['init_unknown_version']=='2025-11-25', d" "$J"
+  check "the MCP server reports the VERSION file" \
+        "assert d['server_version']==open('$ROOT/VERSION').read().strip(), d" "$J"
+  # An answered notification is a reply with an id nobody is waiting for, and
+  # the client then reads it as the answer to its next request.
+  check "a notification is never answered" \
+        "assert d['after_notification']['id']==d['ping_id'], d" "$J"
+  check "every tool is read-only, and none of them acknowledges or forgets" \
+        "assert d['tool_names']==['events','fleet_status','host_detail','patches','services'] and d['all_read_only'] and d['schemas_are_objects'], d" "$J"
+  # The whole safety argument, measured rather than asserted: a full session
+  # of every tool, and the netdash server never saw a POST.
+  check "a session using every tool sends netdash no POST at all" \
+        "assert d['posts']==[], d['posts']" "$J"
+  check "stdout carries protocol and nothing else" \
+        "assert d['stdout_all_json'] and d['trailing_stdout']=='', d" "$J"
+  check "the fleet is counted, with a sleeping laptop as away, not stale" \
+        "assert d['fleet_total']==9 and d['laptop_status']=='away' and d['fleet_by_status'].get('away')==1 and 'stale' not in d['fleet_by_status'], d" "$J"
+  check "and times read as local ISO, with no thresholds repeated per host" \
+        "assert d['fleet_iso'][10]=='T' and d['fleet_iso'][-6] in '+-' and d['no_thresholds_per_host'], d" "$J"
+  # Security counts on three hosts, held CPU on one, a full disk on another.
+  # The away laptop is not a problem; neither is a disabled check.
+  check "problems_only lists exactly the hosts needing attention" \
+        "assert d['problems']==['bsd-server','linux-server','linux-small','mac-desktop','pi-armv7'], d['problems']" "$J"
+  check "host_detail shows the full disk, and summarises the window" \
+        "assert d['pi_root']['status']=='warning' and d['pi_root']['pct']>90 and 'change_pct_points' in d['pi_root'] and d['pi_cpu_points']>10, d" "$J"
+  check "chart points only when asked for, and capped" \
+        "assert not d['pi_has_series'] and 10<d['pi_series_len']<=120 and d['pi_series_cols']==['time','cpu_pct','mem_pct'], d" "$J"
+  check "host_detail carries the host's recent state changes" \
+        "assert d['pi_events']==['warning','ok'], d['pi_events']" "$J"
+  check "a wrong host name says which names exist" \
+        "assert d['bad_host'][0] and 'pi-armv7' in d['bad_host'][1] and d['missing_host_arg'][0], d" "$J"
+  check "events: the window is honoured, and kind=service finds every check" \
+        "assert d['ev_24h']==['service:plex-linux-server','servicex','status'] and d['ev_72h_count']==4 and d['ev_service']==['service:plex-linux-server'], d" "$J"
+  check "events: by host, and a junk argument is an error, not a default" \
+        "assert d['ev_host']==['pi-armv7'] and d['ev_bad_hours'][0], d" "$J"
+  check "patches: counts, unnamed items, and every host when none is named" \
+        "assert d['patches_ls']['security']==3 and d['patches_ls']['unnamed_count']==3 and d['patches_all']==9 and d['patches_bad_host'], d" "$J"
+  check "services: listed with their state, unknown host refused" \
+        "assert d['services']==[['linux-server','plex','disabled']] and d['disabled_not_a_problem'] and d['services_bad_host'], d" "$J"
+  check "bad tool, bad method, bad JSON: each its own JSON-RPC error" \
+        "assert d['unknown_tool']['error']['code']==-32602 and d['unknown_method']['error']['code']==-32601 and d['parse_error']['error']['code']==-32700, d" "$J"
+  check "a batch is answered for its requests only" \
+        "assert d['batch']==[{'jsonrpc':'2.0','id':900,'result':{}}], d['batch']" "$J"
+  check "an empty batch is one Invalid Request, not silence" \
+        "assert d['empty_batch']['error']['code']==-32600 and d['empty_batch']['id'] is None, d['empty_batch']" "$J"
+  check "a URL with no scheme is refused at startup, saying what it wants" \
+        "assert d['no_scheme'][0]==2 and d['no_scheme'][1] and d['no_scheme'][2]=='', d['no_scheme']" "$J"
+  # A ten-minute spike is an hour averaging 25%; the max of the averages hid it.
+  check "over hourly rollups the peak is the hour's max, not its average" \
+        "assert d['hourly_stats']==[2.0,12.0,100.0,True] and d['raw_stats']==[10.0,20.0,30.0], d" "$J"
+  check "a KeyError inside a tool is an internal error, logged, not 'unknown tool'" \
+        "assert d['inner_keyerror']==[-32603,True], d['inner_keyerror']" "$J"
+  check "netdash unreachable is a tool error that says so, and the session lives" \
+        "assert d['down_err'][0] and 'cannot reach netdash' in d['down_err'][1] and d['down_still_alive'], d" "$J"
+  # 'servicex' is not a service check; a LIKE 'service%' would have said it was.
+  check "/api/events: kind matches itself and what is under it at ':'" \
+        "assert d['api_kind_service']==['service:plex-linux-server'] and d['api_kind_exact']==['servicex'], d" "$J"
+  check "/api/events: host and since filter, and a junk since is a 400" \
+        "assert d['api_host']==['pi-armv7'] and d['api_since']==3 and d['api_bad_since']==400, d" "$J"
 fi
 
 if want ipmi; then

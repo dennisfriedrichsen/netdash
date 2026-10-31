@@ -1163,7 +1163,9 @@ def record_event(conn, host, kind, from_state, to_state, detail=None, ts=None):
         conn.commit()
 
 
-def recent_events(conn, host=None, limit=100, since=None):
+def recent_events(conn, host=None, limit=100, since=None, kind=None):
+    """Newest first. `kind` matches itself and everything under it, so
+    "service" finds every "service:<id>" without the caller knowing the ids."""
     with _DB:
         q = "SELECT * FROM events WHERE 1=1"
         args = []
@@ -1173,6 +1175,11 @@ def recent_events(conn, host=None, limit=100, since=None):
         if since:
             q += " AND ts >= ?"
             args.append(int(since))
+        if kind:
+            # substr rather than LIKE: an id may carry "_", which LIKE reads as
+            # a wildcard.
+            q += " AND (kind=? OR substr(kind, 1, ?)=?)"
+            args += [kind, len(kind) + 1, kind + ":"]
         q += " ORDER BY ts DESC, id DESC LIMIT ?"
         args.append(int(limit))
         return [dict(r) for r in conn.execute(q, args)]

@@ -5,6 +5,7 @@ Routes:
   POST /api/ingest        collector push (JSON, X-Netdash-Token header)
   GET  /api/overview      all hosts, latest sample + rolled-up status
   GET  /api/host/<name>   one host: latest + recent history, with its service checks
+  GET  /api/events        the state-change log, filtered by host, kind and since
   GET  /                  dashboard UI
 """
 
@@ -1187,8 +1188,19 @@ class Handler(BaseHTTPRequestHandler):
                 limit = max(1, min(int((q.get("limit") or ["100"])[0]), 500))
             except ValueError:
                 limit = 100
-            return self._json(200, {"now": int(time.time()),
-                                    "events": db.recent_events(CONN, limit=limit)})
+            # A malformed `since` is refused rather than dropped: ignoring it
+            # would answer "what happened overnight" with the whole log.
+            try:
+                since = int((q.get("since") or ["0"])[0]) or None
+            except ValueError:
+                return self._json(400, {"error": "since must be a unix timestamp"})
+            try:
+                events = db.recent_events(CONN, host=(q.get("host") or [None])[0],
+                                          limit=limit, since=since,
+                                          kind=(q.get("kind") or [None])[0])
+            except Exception as e:
+                return self._fail(500, "events", e)
+            return self._json(200, {"now": int(time.time()), "events": events})
 
         if path == "/api/health":
             return self._json(200, {"ok": True, "hosts": len(db.known_hosts(CONN))})
