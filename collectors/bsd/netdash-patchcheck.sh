@@ -174,7 +174,14 @@ FreeBSD|DragonFly)
 
   # Out-of-date packages, a different question from "vulnerable" -- a package
   # can be behind with no advisory against it.
-  OTH=$(run pkg version -vRL= | grep -c . || true)
+  #
+  # -U, because without it pkg version refreshes the catalogues first and
+  # prints "Updating FreeBSD-ports repository catalogue..." and its kin to
+  # stdout, which this counts line by line: two lines per repository and one
+  # to close. Every FreeBSD and DragonFly host read that many packages behind
+  # with nothing pending -- rubidium, with three repositories, sat at 7. `pkg update -q` above has
+  # already refreshed them, and with NETDASH_PATCH_REFRESH=no nothing should.
+  OTH=$(run pkg version -U -vRL= | grep -c . || true)
 
   if [ "$FETCHED" -eq 1 ]; then
     CHECKED=$NOW

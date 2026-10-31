@@ -27,6 +27,8 @@ numbers are untouched.
 | `linux/df-P-k-opensuse.txt` | openSUSE layout | the same filesystem repeated once per subvolume |
 | `freebsd/df-k-T-l.txt` | FreeBSD 15.1 | `-T` is accepted here and on DragonFly, nowhere else |
 | `dragonfly/df-k-T-l.txt` | DragonFly 6.4 (bhyve guest) | root is `serno/<disk>.s1d`, no `/dev/`; six `null` mounts repeat `/build`'s numbers |
+| `dragonfly/pkg-audit.txt` | DragonFly 6.4 | FreeBSD's `pkg audit` wording exactly: 17 problems in 6 packages |
+| `dragonfly/pkg-version-refresh.txt`, `freebsd/pkg-version-refresh.txt` | DragonFly 6.4; FreeBSD 15.1 pkgbase (rubidium) | `pkg version -vRL=` with nothing pending: only the catalogue refresh lines, two per repository and one more |
 | `freebsd/zfs-list.txt`, `netbsd/zfs-list.txt` | — | `zfs list -Hp -d 0` pool roots |
 | `freebsd/zpool-status-p.txt` | FreeBSD 15.1, OpenZFS 2.4.2 (cerium, at -0500) | `zpool status -p`: two pools, a multi-line `status:`, the scrub line's local-time date, and `repaired 0B` even under `-p` |
 | `truenas/core13/*.json` | TrueNAS CORE 13.0-U6.8 (mercury) | `/pool`, `/boot/get_state`, `/disk`, `/smart/test/results`, `/disk/smart_attributes`: the boot pool's tree is `groups`, not `topology`; tests are dated in power-on hours |

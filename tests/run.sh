@@ -751,25 +751,35 @@ fi
 
 if want patches-dragonfly; then
   echo "patches-dragonfly (pkg audit as on FreeBSD; base is said to be unchecked)"
-  # DragonFly runs the same pkg, so the FreeBSD capture stands in for its audit.
+  # pkg version without -U refreshes first and prints the catalogue lines,
+  # captured on both platforms; with -U, on hosts with nothing pending, it
+  # prints nothing.
   B=$(mkbin x uname sysctl)
   cat > "$B/pkg" <<EOF
 #!/bin/sh
 case "\$*" in
   "audit -F -q"|"update -q") exit 0 ;;
-  audit) cat "$FIX/freebsd/pkg-audit.txt"; exit 1 ;;
-  "version -vRL=") printf 'vim-9.1 < needs updating (remote has 9.2)\\n' ;;
+  audit) cat "$FIX/\$NETDASH_PKG_FIX/pkg-audit.txt"; exit 1 ;;
+  "version -vRL=") cat "$FIX/\$NETDASH_PKG_FIX/pkg-version-refresh.txt" ;;
+  "version -U -vRL=") ;;
   *) exit 1 ;;
 esac
 EOF
   chmod +x "$B/pkg"
   J=$(env "PATH=$B:/usr/bin:/bin" NETDASH_CONF=/dev/null NETDASH_FIXTURES="$FIX" \
-      NETDASH_MOCK_OS=DragonFly NETDASH_MOCK_REL=6.4-RELEASE \
+      NETDASH_PKG_FIX=dragonfly NETDASH_MOCK_OS=DragonFly NETDASH_MOCK_REL=6.4-RELEASE \
       sh "$ROOT/collectors/bsd/netdash-patchcheck.sh" --print 2>/dev/null) || J=''
-  check "packages audited like FreeBSD's: 9 vulnerable, 1 behind" \
-        "assert (d['security'],d['other'],d['source'])==(9,1,'pkg-audit'), d" "$J"
+  check "the captured audit: 6 packages, not 17 problems" \
+        "assert (d['security'],d['source'])==(6,'pkg-audit') and d['packages'].startswith('libnghttp2-1.65.0, libxml2'), d" "$J"
+  check "catalogue refresh lines are not packages behind" \
+        "assert d['other']==0, d" "$J"
   check "base is reported as not checked, not as clean, and no reboot answer" \
         "assert 'DragonFly ships no binary patch' in d['detail'] and d['reboot_required'] is None, d" "$J"
+  J=$(env "PATH=$B:/usr/bin:/bin" NETDASH_CONF=/dev/null NETDASH_FIXTURES="$FIX" \
+      NETDASH_PKG_FIX=freebsd NETDASH_MOCK_OS=FreeBSD NETDASH_MOCK_REL=15.1-RELEASE-p6 \
+      sh "$ROOT/collectors/bsd/netdash-patchcheck.sh" --print 2>/dev/null) || J=''
+  check "nor on FreeBSD, whose three repositories read as 7 behind" \
+        "assert (d['security'],d['other'])==(9,0), d" "$J"
   rm -rf "$B"
 fi
 

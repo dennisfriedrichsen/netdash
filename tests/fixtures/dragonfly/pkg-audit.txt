@@ -1,0 +1,175 @@
+libnghttp2-1.65.0 is vulnerable:
+  nghttp2 -- CWE-617: Reachable Assertion
+  CVE: CVE-2026-27135
+  WWW: https://vuxml.FreeBSD.org/freebsd/c08273b5-30e5-11f1-b9f2-b42e991fc52e.html
+
+libxml2-2.11.9_1 is vulnerable:
+  libxml2 -- multiple vulnerabilities
+  CVE: CVE-2025-49795
+  CVE: CVE-2025-49794
+  CVE: CVE-2025-6170
+  CVE: CVE-2025-6021
+  WWW: https://vuxml.FreeBSD.org/freebsd/abbc8912-5efa-11f0-ae84-99047d0a6bcc.html
+
+openssl-3.0.16,1 is vulnerable:
+  OpenSSL -- Multiple vulnerabilities
+  CVE: CVE-2026-31789
+  CVE: CVE-2026-28390
+  CVE: CVE-2026-28389
+  CVE: CVE-2026-28388
+  CVE: CVE-2026-28387
+  CVE: CVE-2026-28386
+  CVE: CVE-2026-2637
+  CVE: CVE-2026-31790
+  WWW: https://vuxml.FreeBSD.org/freebsd/c7a52cee-32ab-11f1-9839-8447094a420f.html
+
+  OpenSSL -- Multiple vulnerabilities
+  CVE: CVE-2026-45446
+  CVE: CVE-2026-42771
+  CVE: CVE-2026-42770
+  CVE: CVE-2026-42769
+  CVE: CVE-2026-42768
+  CVE: CVE-2026-42767
+  CVE: CVE-2026-42766
+  CVE: CVE-2026-42765
+  CVE: CVE-2026-34181
+  CVE: CVE-2026-34180
+  CVE: CVE-2026-9076
+  CVE: CVE-2026-7383
+  CVE: CVE-2026-45445
+  CVE: CVE-2026-42764
+  CVE: CVE-2026-35188
+  CVE: CVE-2026-34183
+  CVE: CVE-2026-34182
+  CVE: CVE-2026-45447
+  WWW: https://vuxml.FreeBSD.org/freebsd/259b562f-64ab-11f1-8607-8447094a420f.html
+
+  OpenSSL -- Multiple vulnerabilities
+  CVE: CVE-2026-75803
+  CVE: CVE-2026-63075
+  CVE: CVE-2026-63074
+  CVE: CVE-2026-63073
+  CVE: CVE-2026-54874
+  CVE: CVE-2026-14457
+  CVE: CVE-2026-63076
+  CVE: CVE-2026-63072
+  WWW: https://vuxml.FreeBSD.org/freebsd/9008d14d-a0af-11f1-8144-8447094a420f.html
+
+  OpenSSL -- Multiple vulnerabilities
+  CVE: CVE-2026-84784
+  CVE: CVE-2026-77696
+  CVE: CVE-2026-75806
+  CVE: CVE-2026-75805
+  CVE: CVE-2026-75804
+  CVE: CVE-2026-72897
+  CVE: CVE-2026-54875
+  CVE: CVE-2026-54873
+  CVE: CVE-2026-54872
+  CVE: CVE-2026-42772
+  CVE: CVE-2026-35191
+  CVE: CVE-2026-35189
+  CVE: CVE-2026-84783
+  CVE: CVE-2026-84782
+  WWW: https://vuxml.FreeBSD.org/freebsd/0d183075-bcb5-11f1-b09d-8447094a420f.html
+
+  OpenSSL -- multiple vulnerabilities
+  CVE: CVE-2025-9232
+  CVE: CVE-2025-9231
+  CVE: CVE-2025-9230
+  WWW: https://vuxml.FreeBSD.org/freebsd/00e912c5-9e92-11f0-bc5f-8447094a420f.html
+
+  OpenSSL -- Multiple vulnerabilities
+  CVE: CVE-2026-22796
+  CVE: CVE-2026-22795
+  CVE: CVE-2025-69421
+  CVE: CVE-2025-69420
+  CVE: CVE-2025-69419
+  CVE: CVE-2025-69418
+  CVE: CVE-2025-68160
+  CVE: CVE-2025-66199
+  CVE: CVE-2025-15469
+  CVE: CVE-2025-15468
+  CVE: CVE-2025-15467
+  CVE: CVE-2025-11187
+  WWW: https://vuxml.FreeBSD.org/freebsd/4b824428-fb93-11f0-b194-8447094a420f.html
+
+curl-8.14.1 is vulnerable:
+  curl -- Multiple vulnerabilties
+  CVE: CVE-2026-1965
+  CVE: CVE-2026-3783
+  CVE: CVE-2026-3784
+  CVE: CVE-2026-3805
+  WWW: https://vuxml.FreeBSD.org/freebsd/1933737d-1d46-11f1-81da-8447094a420f.html
+
+  Curl -- Multiple vulnerabilities
+  CVE: CVE-2026-87866
+  CVE: CVE-2026-87865
+  CVE: CVE-2026-87863
+  CVE: CVE-2026-87862
+  CVE: CVE-2026-87861
+  CVE: CVE-2026-86415
+  CVE: CVE-2026-86414
+  CVE: CVE-2026-86413
+  CVE: CVE-2026-86412
+  CVE: CVE-2026-86410
+  CVE: CVE-2026-92392
+  CVE: CVE-2026-92391
+  CVE: CVE-2026-92390
+  CVE: CVE-2026-92389
+  CVE: CVE-2026-92388
+  CVE: CVE-2026-92387
+  CVE: CVE-2026-92386
+  CVE: CVE-2026-94265
+  CVE: CVE-2026-94266
+  CVE: CVE-2026-107928
+  CVE: CVE-2026-107929
+  WWW: https://vuxml.FreeBSD.org/freebsd/14dab969-c797-11f1-a6ea-8447094a420f.html
+
+  curl -- Multiple vulnerabilities
+  CVE: CVE-2025-13034
+  CVE: CVE-2025-14017
+  CVE: CVE-2025-14524
+  CVE: CVE-2025-14819
+  CVE: CVE-2025-15079
+  CVE: CVE-2025-15224
+  WWW: https://vuxml.FreeBSD.org/freebsd/086d53fa-1d47-11f1-81da-8447094a420f.html
+
+expat-2.7.0 is vulnerable:
+  expat -- multiple vulnerabilities
+  CVE: CVE-2026-25210
+  CVE: CVE-2026-24515
+  WWW: https://vuxml.FreeBSD.org/freebsd/027c6c07-065b-11f1-baae-589cfc023192.html
+
+  Vulnerability found in Expat
+  CVE: CVE-2026-45186
+  WWW: https://vuxml.FreeBSD.org/freebsd/bacc1417-4d82-11f1-87f3-18dbf25a98c6.html
+
+  (lib)expat -- Insufficient entropy
+  CVE: CVE-2026-41080
+  WWW: https://vuxml.FreeBSD.org/freebsd/88440f1d-4168-11f1-95f7-00a098b42aeb.html
+
+  libexpat -- Improper Handling of Unicode Encoding
+  CVE: CVE-2026-93990
+  WWW: https://vuxml.FreeBSD.org/freebsd/7fed71c4-be3a-11f1-ab8d-00a0980083d7.html
+
+  Multiple vulnerability found in Expat
+  CVE: CVE-2026-56412
+  CVE: CVE-2026-56411
+  CVE: CVE-2026-56410
+  CVE: CVE-2026-56409
+  CVE: CVE-2026-56408
+  CVE: CVE-2026-56407
+  CVE: CVE-2026-56406
+  CVE: CVE-2026-56405
+  CVE: CVE-2026-56404
+  CVE: CVE-2026-56403
+  CVE: CVE-2026-56132
+  CVE: CVE-2026-56131
+  CVE: CVE-2026-50219
+  WWW: https://vuxml.FreeBSD.org/freebsd/d06b1fa2-731f-11f1-a0d2-589cfc10a551.html
+
+ca_root_nss-3.108 is vulnerable:
+  ca_root_nss -- trusted root certificate from compromised CA eMudhra
+  WWW: https://vuxml.FreeBSD.org/freebsd/b755b277-cf12-11f1-bae2-3497f65b111b.html
+
+17 problem(s) in 6 package(s) found.
