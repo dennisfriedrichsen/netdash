@@ -2563,6 +2563,30 @@ if want render; then
           "assert d['disk_traces_are_coloured_like_cpu_and_memory'] is None, d['disk_traces_are_coloured_like_cpu_and_memory']" "$J"
     check "and an axis caption on each, exactly like cpu and memory" \
           "assert d['a_disk_panel_carries_a_caption_like_cpu_does'] is None, d['a_disk_panel_carries_a_caption_like_cpu_does']" "$J"
+    check "a 1h disk view plots every raw reading, in one line" \
+          "assert d['a_1h_disk_view_plots_every_raw_reading'] is None, d['a_1h_disk_view_plots_every_raw_reading']" "$J"
+    check "its tooltip names one reading and the second it was taken" \
+          "assert d['a_raw_disk_tooltip_names_the_reading_and_its_moment'] is None, d['a_raw_disk_tooltip_names_the_reading_and_its_moment']" "$J"
+    check "a reporting gap breaks the disk line and its fill" \
+          "assert d['a_reporting_gap_breaks_the_disk_line'] is None, d['a_reporting_gap_breaks_the_disk_line']" "$J"
+    check "while two missed minutes do not" \
+          "assert d['a_missed_reading_inside_the_gap_allowance_does_not_break_it'] is None, d['a_missed_reading_inside_the_gap_allowance_does_not_break_it']" "$J"
+    check "a null disk reading is a break, never an empty disk" \
+          "assert d['a_null_disk_reading_is_a_break_not_zero'] is None, d['a_null_disk_reading_is_a_break_not_zero']" "$J"
+    check "a reading alone between silences still gets a mark" \
+          "assert d['an_isolated_disk_reading_still_shows'] is None, d['an_isolated_disk_reading_still_shows']" "$J"
+    check "a 5-minute view says max and shows each bucket as an interval" \
+          "assert d['a_5min_disk_view_says_max_and_shows_its_interval'] is None, d['a_5min_disk_view_says_max_and_shows_its_interval']" "$J"
+    check "an hourly tooltip flags a mount resized inside the hour" \
+          "assert d['an_hourly_disk_tooltip_flags_a_resize'] is None, d['an_hourly_disk_tooltip_flags_a_resize']" "$J"
+    check "a legacy daily point does not claim to be complete" \
+          "assert d['a_daily_legacy_disk_point_does_not_claim_to_be_complete'] is None, d['a_daily_legacy_disk_point_does_not_claim_to_be_complete']" "$J"
+    check "a refresh redraws the 1h view with the newest reading" \
+          "assert d['a_refresh_redraws_the_1h_view_with_the_new_reading'] is None, d['a_refresh_redraws_the_1h_view_with_the_new_reading']" "$J"
+    check "a payload from an older server still renders" \
+          "assert d['an_older_server_without_disk_meta_still_renders'] is None, d['an_older_server_without_disk_meta_still_renders']" "$J"
+    check "cpu and memory keep their own tooltip" \
+          "assert d['cpu_and_memory_keep_their_own_tooltip'] is None, d['cpu_and_memory_keep_their_own_tooltip']" "$J"
     check "a mount with no history keeps its panel and says so" \
           "assert d['a_mount_with_no_history_still_gets_its_panel'] is None, d['a_mount_with_no_history_still_gets_its_panel']" "$J"
     check "and an appliance with no filesystem shows an honest blank" \
@@ -3238,7 +3262,7 @@ PYEOF
   # runs. Asserting 720 exactly failed roughly once an hour, for no reason.
   check "while rollups outlive it by weeks" \
         "assert 29 <= d['roll_age_d'] <= 30.1 and 719 <= d['cerium_buckets'] <= 721, (d['roll_age_d'], d['cerium_buckets'])" "$J"
-  check "disk history is bucketed, never one point per sample" \
+  check "an hourly disk view is bucketed, one point an hour" \
         "assert d['disk_pts_24h'] <= 25 and d['disk_pts_24h'] >= 20, d['disk_pts_24h']" "$J"
   check "and events are never pruned when no event window is set" \
         "assert d['kept']['events']==2, d['kept']" "$J"
@@ -3641,6 +3665,338 @@ PYEOF
         "assert d['healed']==[2,2.0,'full'], d['healed']" "$J"
   check "acks, events and the host register come through untouched" \
         "assert (d['acks'], d['events'], d['hosts'])==(1, 1, 1), d" "$J"
+fi
+
+if want disk-resolution; then
+  echo "disk-resolution (a 1h disk chart plots the hour's readings, not two clock hours)"
+  # The disk chart used to be hourly at every range: a rolling hour crossing
+  # 05:00 drew two points, 04:00 and 05:00, from sixty readings. It now
+  # plots every reading through 6 h, 5-minute maxima through 24 h, hourly
+  # maxima out to raw retention and the daily rollups past it -- each bucket
+  # one real reading, its peak -- under a point budget. Driven through the real
+  # HTTP handler on a loopback port, on a fake clock, against a temp database.
+  snippet() { python3 - "$@" <<'PYEOF'
+import json, os, sys, tempfile, threading, time as _time
+import urllib.request
+sys.path.insert(0, os.path.join(sys.argv[1], "server"))
+import db, app
+
+H, D = 3600, 86400
+T0 = 20362 * D                       # a UTC midnight
+NOW = T0 + 2 * D + 5 * H + 30 * 60   # 05:30 on day 2: a rolling hour spans 04:30-05:30
+
+class Clock:
+    def __init__(self, t): self.t = t
+    def time(self): return self.t
+    def __getattr__(self, k): return getattr(_time, k)
+clock = Clock(NOW)
+db.time = clock
+app.time = clock
+
+tmp = tempfile.mkdtemp()
+cfg = json.load(open(os.path.join(sys.argv[1], "server", "config.example.json")))
+for k, v in app.DEFAULTS.items():
+    cfg.setdefault(k, v)
+cfg["retention_hours"] = 48
+cfg["db_path"] = os.path.join(tmp, "t.db")
+app.CFG = cfg
+conn = db.connect(cfg["db_path"])
+app.CONN = conn
+out = {}
+
+def disk(mount, used, total):
+    return {"mount": mount, "used_bytes": used, "total_bytes": total}
+
+# -- cerium: one reading a minute for 50 h, irregular by a few seconds, two
+#    mounts. /data spikes to 99% for exactly one reading at 05:12:xx yesterday.
+#    /var drops out for 20 minutes inside the last hour; the whole host is
+#    silent for 15 minutes before that.
+GB = 10 ** 9
+SPIKE_T = NOW - 20 * H - 18 * 60
+SPIKE = None
+cer_raw = {"/": [], "/data": [], "/var": []}
+batch = []
+t = NOW - 50 * H
+while t <= NOW:
+    ts = t + (t // 60) % 7          # 0-6 s of jitter
+    if t == SPIKE_T:
+        SPIKE = ts
+    if not (NOW - 40 * 60 <= ts < NOW - 25 * 60):       # host silent 04:50-05:05
+        dk = [disk("/", 40 * GB, 100 * GB),
+              disk("/data", (99 if ts == SPIKE else 50) * 10 * GB, 1000 * GB)]
+        if ts < NOW - 20 * 60:                           # /var gone from 05:10
+            dk.append(disk("/var", 3 * GB, 10 * GB))
+        batch.append({"host": "cerium", "ts": ts, "cpu_pct": 5.0,
+                      "mem_used_bytes": 1, "mem_total_bytes": 2, "disks": dk})
+        if ts >= NOW - 48 * H:
+            for d in dk:
+                cer_raw[d["mount"]].append(ts)
+    t += 60
+for p in batch:
+    db.insert_sample(conn, p)
+db.prune(conn, 48, 400, None)
+
+# -- freebsd16pkgbase: one reading a minute for 3 h, seconds-irregular --
+fb_ts = []
+for k in range(180):
+    ts = NOW - 3 * H + k * 60 + 20 + (k * 13) % 11
+    if ts > NOW:
+        break
+    fb_ts.append(ts)
+    db.insert_sample(conn, {"host": "freebsd16pkgbase", "ts": ts, "cpu_pct": 3.0,
+                            "disks": [disk("/", (30 * GB) + k * 10 ** 6, 100 * GB),
+                                      disk("/usr/local", 7 * GB, 50 * GB)]})
+
+# -- the 1h view, through the real HTTP handler on a local port --
+srv = app.Server(("127.0.0.1", 0), app.Handler)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+def get(host, minutes):
+    url = "http://127.0.0.1:%d/api/host/%s?minutes=%d" % (srv.server_address[1], host, minutes)
+    with urllib.request.urlopen(url) as r:
+        body = r.read()
+    return json.loads(body), len(body)
+
+rf, sizef = get("freebsd16pkgbase", 60)
+fpts = rf["disk_history"]["/"]
+fold = conn.execute(
+    """SELECT COUNT(DISTINCT s.ts - (s.ts % 3600)) FROM samples s JOIN disks d ON d.sample_id = s.id
+        WHERE s.host = ? AND s.ts >= ? AND d.mount = '/'""",
+    ("freebsd16pkgbase", NOW - H)).fetchone()[0]
+out["fb"] = {"n": len(fpts), "n2": len(rf["disk_history"]["/usr/local"]), "before": fold,
+             "ts_exact": [p["ts"] for p in fpts] == [t for t in fb_ts if t >= NOW - H],
+             "aligned": sum(1 for p in fpts if p["ts"] % 60 == 0),
+             "res": rf["disk_resolution"], "meta": rf["disk_meta"], "size": sizef,
+             "disk_bytes": len(json.dumps(rf["disk_history"])),
+             "used_exact": all(p["used_bytes"] == 30 * GB + ((p["ts"] - (NOW - 3 * H) - 20) // 60) * 10 ** 6
+                               for p in fpts)}
+
+r1, size1 = get("cerium", 60)
+pts = r1["disk_history"]["/data"]
+want = [ts for ts in cer_raw["/data"] if ts >= NOW - H]
+out["h1"] = {"res": r1["disk_resolution"], "meta": r1["disk_meta"], "n": len(pts),
+             "ts_exact": [p["ts"] for p in pts] == want,
+             "aligned": sum(1 for p in pts if p["ts"] % H == 0),
+             "spans_hours": sorted({p["ts"] // H for p in pts}) == [(NOW - H) // H, NOW // H],
+             "consistent": all(abs(p["pct"] - 100.0 * p["used_bytes"] / p["total_bytes"]) < 1e-3
+                               for p in pts),
+             "var_last": r1["disk_history"]["/var"][-1]["ts"] - NOW,
+             "mounts": sorted(r1["disk_history"]), "size": size1,
+             "cpu_res": r1["resolution"], "cpu_n": len(r1["history"]),
+             "gap_jumps": [b["ts"] - a["ts"] for a, b in zip(pts, pts[1:])
+                           if b["ts"] - a["ts"] > r1["disk_meta"]["gap_seconds"]]}
+
+# The old query, verbatim, for the before/after count.
+old = conn.execute(
+    """SELECT d.mount, s.ts - (s.ts % 3600) AS ts FROM samples s JOIN disks d ON d.sample_id = s.id
+        WHERE s.host = ? AND s.ts >= ? AND d.total_bytes > 0 AND d.used_bytes IS NOT NULL
+        GROUP BY d.mount, s.ts - (s.ts % 3600)""", ("cerium", NOW - H)).fetchall()
+out["h1"]["before"] = sum(1 for r in old if r[0] == "/data")
+
+# -- the 24h view: 5-minute maxima, the one-reading spike survives --
+r24, size24 = get("cerium", 1440)
+b = r24["disk_history"]["/data"]
+spike = [p for p in b if p["pct"] > 90]
+out["h24"] = {"res": r24["disk_resolution"], "meta": r24["disk_meta"], "n": len(b),
+              "size": size24, "cpu_res": r24["resolution"],
+              "aligned": all(p["ts"] % 300 == 0 for p in b),
+              "unique": all(len({p["ts"] for p in v}) == len(v) for v in r24["disk_history"].values()),
+              "first": b[0]["ts"] - (NOW - D),
+              "spike": spike and {k: spike[0][k] for k in
+                                  ("ts", "peak_ts", "pct", "used_bytes", "total_bytes", "samples")},
+              "spike_bucket": SPIKE - SPIKE % 300, "spike_ts": SPIKE,
+              "last_cov": b[-1]["coverage"], "inner_cov": sorted({p["coverage"] for p in b[:-1]}),
+              "samples_ok": all(1 <= p["samples"] <= 5 for p in b),
+              "peak_inside": all(p["ts"] <= p["peak_ts"] < p["ts"] + 300 for p in b),
+              "no_totals": not [p for p in b if "total_min" in p]}
+
+# -- 48h: hourly maxima from raw; the spike is still there --
+r48, size48 = get("cerium", 2880)
+h48 = r48["disk_history"]["/data"]
+first = h48[0]
+out["h48"] = {"res": r48["disk_resolution"], "n": len(h48), "size": size48,
+              "spike": max(p["pct"] for p in h48),
+              "first_cov": first["coverage"], "first_ts_ok": first["ts"] % H == 0,
+              "meta": r48["disk_meta"]}
+
+# -- every range the picker offers, plus the tier edges --
+plans = {}
+for m in (60, 360, 361, 1440, 1441, 2880, 2881, 10080, 43200, 525600):
+    r, sz = get("cerium", m)
+    plans[m] = [r["disk_resolution"], r["disk_meta"]["bucket_seconds"], r["disk_meta"]["source"],
+                max([len(v) for v in r["disk_history"].values()] or [0]), sz]
+out["plans"] = plans
+
+# -- the retention setting moves the edges, not a constant --
+def plan(m, ret, count=60, mounts=3):
+    b = app.disk_plan(m, ret, count, mounts)
+    return None if b is None else app.DISK_LABELS[b]
+out["retention"] = {
+    "24h:1440": plan(1440, 24), "24h:1441": plan(1441, 24),
+    "168h:10080": plan(10080, 168), "720h:43200": plan(43200, 720),
+    "2h:360": plan(360, 2), "2h:60": plan(60, 2),
+    "9000h:525600": plan(525600, 9000)}
+
+# -- nulls, invalid capacity, a resize inside one bucket: venus, one minute apart --
+V = NOW - 30 * 60
+vrows = []
+for i in range(30):
+    ts = V + i * 60
+    root = disk("/", 80 * GB, 100 * GB if i < 8 else 200 * GB)   # grown at minute 8
+    if i == 3: root["used_bytes"] = None
+    if i == 4: root["total_bytes"] = 0
+    if i == 5: root["total_bytes"] = None
+    if i == 6: root["used_bytes"] = -1; root["total_bytes"] = -5
+    vrows.append(root)
+    db.insert_sample(conn, {"host": "venus", "ts": ts, "cpu_pct": 1.0, "disks": [root]})
+db.insert_sample(conn, {"host": "venus", "ts": V + 60, "cpu_pct": 1.0,
+                        "disks": [disk("/", 81 * GB, 100 * GB)]})
+rv, _ = get("venus", 60)
+vr = rv["disk_history"]["/"]
+vb = db.disk_history(conn, "venus", NOW - H, 300, now=NOW)["/"]
+grown = [p for p in vb if p["capacity_changed"]]
+out["venus"] = {"raw_n": len(vr), "raw_ts": [p["ts"] - V for p in vr][:6],
+                "zeros": sum(1 for p in vr if not p["pct"]),
+                "dup": [p["used_bytes"] for p in vr if p["ts"] == V + 60],
+                "grown": grown and {k: grown[0][k] for k in
+                                    ("pct", "used_bytes", "total_bytes", "total_min", "total_max",
+                                     "samples", "peak_ts")},
+                "grown_n": len(grown),
+                "grown_bucket": V + 300 - (V + 300) % 300, "V": V}
+
+# -- partial coverage and empty history --
+for i in range(20):
+    db.insert_sample(conn, {"host": "pluto", "ts": NOW - 20 * 60 + i * 60, "cpu_pct": 1.0,
+                            "disks": [disk("/", GB, 2 * GB)]})
+db.insert_sample(conn, {"host": "lanthanum", "ts": NOW - 30, "cpu_pct": 1.0, "disks": []},
+                 source="unifi")
+rp, _ = get("pluto", 60)
+rl, _ = get("lanthanum", 60)
+rl24, _ = get("lanthanum", 1440)
+rl7, _ = get("lanthanum", 10080)
+out["partial"] = {"n": len(rp["disk_history"]["/"]), "res": rp["disk_resolution"]}
+out["empty"] = [rl["disk_history"], rl24["disk_history"], rl7["disk_history"],
+                rl["disk_meta"]["points"]]
+
+# -- the daily path: legacy, resized and steady days, read without writing --
+conn.execute("DELETE FROM disk_rollups WHERE host='cerium'")
+conn.executemany(
+    "INSERT INTO disk_rollups (host, mount, bucket, samples, pct_avg, pct_max, used_avg,"
+    " total_bytes, pct_sum, used_sum, total_min, coverage) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+    [("cerium", "/data", NOW - NOW % D - 5 * D, 9, 40.0, 41.0, 4e11, 10 ** 12, None, None, None, None),
+     ("cerium", "/data", NOW - NOW % D - 4 * D, 1440, 50.0, 60.0, 5e11, 2 * 10 ** 12, 1, 1, 10 ** 12, "full"),
+     ("cerium", "/data", NOW - NOW % D - 3 * D, 1440, 50.0, 55.0, 5e11, 10 ** 12, 1, 1, 10 ** 12, "full"),
+     ("cerium", "/data", NOW - NOW % D - 2 * D, 700, 50.0, 52.0, 5e11, 10 ** 12, 1, 1, 10 ** 12, "partial")])
+conn.commit()
+snap = conn.execute("SELECT * FROM disk_rollups ORDER BY host, mount, bucket").fetchall()
+changes = conn.total_changes
+r7, size7 = get("cerium", 10080)
+dd = {p["ts"]: p for p in r7["disk_history"]["/data"]}
+base = NOW - NOW % D
+out["daily"] = {
+    "res": r7["disk_resolution"], "meta": r7["disk_meta"], "size": size7,
+    "legacy": dd[base - 5 * D], "resized": dd[base - 4 * D], "steady": dd[base - 3 * D],
+    "partial": dd[base - 2 * D]["coverage"],
+    "untouched": snap == conn.execute(
+        "SELECT * FROM disk_rollups ORDER BY host, mount, bucket").fetchall(),
+    "writes": conn.total_changes - changes}
+
+# -- many mounts: 40 of them, one reading a minute for 48 h, and a 30 s collector --
+rows = []
+for k in range(48 * 60):
+    ts = NOW - 48 * H + k * 60 + 30
+    rows.append({"host": "silicon", "ts": ts, "cpu_pct": 1.0,
+                 "disks": [disk("/pool/ds%02d" % j, (j + 1) * GB, 100 * GB) for j in range(40)]})
+for k in range(48 * 120):
+    ts = NOW - 48 * H + k * 30 + 15
+    rows.append({"host": "mac", "ts": ts, "cpu_pct": 1.0, "disks": [disk("/", GB, 2 * GB)]})
+for p in rows:
+    db.insert_sample(conn, p)
+big = {}
+for host in ("silicon", "mac"):
+    for m in (60, 360, 1440, 2880):
+        t0 = _time.perf_counter()
+        r, sz = get(host, m)
+        ms = (_time.perf_counter() - t0) * 1000
+        per = max(len(v) for v in r["disk_history"].values())
+        tot = sum(len(v) for v in r["disk_history"].values())
+        big["%s:%d" % (host, m)] = [r["disk_resolution"], per, tot, sz, round(ms, 1)]
+out["big"] = big
+c0 = conn.total_changes
+for host in ("cerium", "venus", "pluto"):
+    for m in (60, 1440, 2880, 10080):
+        app.disk_view(host, m, 3, now=NOW)
+out["writes_all"] = conn.total_changes - c0
+srv.shutdown()
+print(json.dumps(out))
+PYEOF
+  }
+  J=$(snippet "$ROOT") || J=''
+  check "a 1h view crossing a clock hour plots ~60 readings, not 2" \
+        "f=d['fb']; assert f['res']=='raw' and f['n']==60 and f['n2']==60 and f['before']==2, f" "$J"
+  check "at their own timestamps, never snapped to the hour" \
+        "f=d['fb']; assert f['ts_exact'] and f['aligned']==0 and f['used_exact'], f" "$J"
+  check "irregular readings keep their seconds, and a 1h window holds both hours" \
+        "h=d['h1']; assert h['ts_exact'] and h['aligned']==0 and h['spans_hours'], h" "$J"
+  check "pct, used and total in a raw point are one reading" \
+        "assert d['h1']['consistent'], d['h1']" "$J"
+  check "a 15-minute silence is wider than the chart's gap, so the line breaks" \
+        "h=d['h1']; assert h['meta']['gap_seconds']==300 and h['gap_jumps']==[962], h" "$J"
+  check "a mount that stopped reporting ends where its readings do" \
+        "h=d['h1']; assert h['var_last'] < -19*60 and h['mounts']==['/','/data','/var'], h" "$J"
+  check "cpu and memory stay at the resolution they had" \
+        "assert d['h1']['cpu_res']=='raw' and d['h24']['cpu_res']=='raw' and d['h1']['cpu_n']==46, d['h1']" "$J"
+  check "24h is 5-minute maxima on 5-minute boundaries, the first bucket whole" \
+        "h=d['h24']; assert h['res']=='5min' and h['meta']['bucket_seconds']==300 and h['aligned'] and h['first']==0 and 280 <= h['n'] <= 289 and h['unique'], h" "$J"
+  check "a one-reading spike to 99% survives into its 5-minute bucket" \
+        "h=d['h24']; s=h['spike']; assert s and s['pct']==99.0 and s['ts']==h['spike_bucket'] and s['peak_ts']==h['spike_ts'], h" "$J"
+  check "and the bucket's bytes are that reading's, not separate maxima" \
+        "s=d['h24']['spike']; assert (s['used_bytes'], s['total_bytes'], s['samples'])==(990*10**9, 10**12, 5), s" "$J"
+  check "every peak lies inside its bucket" \
+        "h=d['h24']; assert h['peak_inside'] and h['samples_ok'], h" "$J"
+  check "the bucket still filling says partial, the finished ones full" \
+        "h=d['h24']; assert h['last_cov']=='partial' and h['inner_cov']==['full'], h" "$J"
+  check "an unresized bucket ships no capacity range" \
+        "assert d['h24']['no_totals'], d['h24']" "$J"
+  check "48h is hourly maxima from raw, the spike still at 99%" \
+        "h=d['h48']; assert h['res']=='hourly' and h['n']==49 and h['spike']==99.0 and h['meta']['source']=='raw', h" "$J"
+  check "and its first hour, older than the prune horizon, is marked partial" \
+        "h=d['h48']; assert h['first_cov']=='partial' and h['first_ts_ok'], h" "$J"
+  check "every range the picker offers gets its own resolution" \
+        "p=d['plans']; assert [p[k][0] for k in ('60','1440','10080','43200','525600')]==['raw','5min','daily','daily','daily'], p" "$J"
+  check "the tier edges sit at 6h, 24h and the retention window" \
+        "p=d['plans']; assert [p[k][0] for k in ('360','361','1440','1441','2880','2881')]==['raw','5min','5min','hourly','hourly','daily'], p" "$J"
+  check "past retention the daily rollups answer, and say so" \
+        "p=d['plans']; assert p['10080'][1:3]==[86400,'daily_rollups'], p" "$J"
+  check "retention_hours moves the edges rather than a hard-coded 48" \
+        "r=d['retention']; assert r=={'24h:1440':'5min','24h:1441':None,'168h:10080':'hourly','720h:43200':'3hourly','2h:360':None,'2h:60':'raw','9000h:525600':'daily'}, r" "$J"
+  check "null used, zero, absent and negative totals are left out, never zero" \
+        "v=d['venus']; assert v['raw_ts']==[0,60,120,420,480,540] and v['zeros']==0 and v['raw_n']==26, v" "$J"
+  check "two readings at one timestamp collapse to the later-written one" \
+        "assert d['venus']['dup']==[81*10**9], d['venus']" "$J"
+  check "a resize inside a bucket keeps the peak reading's own capacity, and says so" \
+        "v=d['venus']; g=v['grown']; assert v['grown_n']==1 and g['pct']==80.0 and (g['used_bytes'],g['total_bytes'])==(80*10**9,100*10**9) and (g['total_min'],g['total_max'])==(10**11,2*10**11) and g['peak_ts']==v['V']+420, v" "$J"
+  check "a host reporting for 20 minutes draws 20 readings, not a padded hour" \
+        "assert d['partial']=={'n':20,'res':'raw'}, d['partial']" "$J"
+  check "a host with no mounts gets empty history at every tier" \
+        "assert d['empty']==[{},{},{},0], d['empty']" "$J"
+  check "a legacy daily row keeps NULL coverage and claims no bytes" \
+        "l=d['daily']['legacy']; assert l['coverage'] is None and l['used_bytes'] is None and l['total_bytes'] is None and l['pct']==41.0, l" "$J"
+  check "a resized day gives the peak but no bytes it cannot pair with it" \
+        "r=d['daily']['resized']; assert r['pct']==60.0 and r['used_bytes'] is None and r['capacity_changed'] is True, r" "$J"
+  check "a steady day's bytes are the peak's own" \
+        "s=d['daily']['steady']; assert (s['used_bytes'],s['total_bytes'],s['coverage'])==(550*10**9,10**12,'full'), s" "$J"
+  check "the folding roller's partial coverage reaches the chart" \
+        "assert d['daily']['partial']=='partial', d['daily']" "$J"
+  check "drawing a disk chart never writes to the database" \
+        "assert d['daily']['untouched'] and d['daily']['writes']==0 and d['writes_all']==0, (d['daily']['writes'], d['writes_all'])" "$J"
+  check "forty mounts stay inside the per-mount and total point budgets" \
+        "b=d['big']; assert all(v[1] <= 400 and v[2] <= 3000 for v in b.values()), b" "$J"
+  check "and step coarser to do it: 24h of forty mounts is hourly" \
+        "b=d['big']; assert b['silicon:60'][0]=='raw' and b['silicon:360'][0]=='5min' and b['silicon:1440'][0]=='hourly', b" "$J"
+  check "a 30-second collector's 6h steps to 5-minute maxima" \
+        "b=d['big']; assert b['mac:60'][:2]==['raw',120] and b['mac:360'][0]=='5min', b" "$J"
+  check "and the slowest of them answers in seconds, not tens" \
+        "b=d['big']; assert max(v[4] for v in b.values()) < 10000, b" "$J"
 fi
 
 

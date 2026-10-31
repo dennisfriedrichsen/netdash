@@ -956,8 +956,12 @@ function renderOverview(data, tab) {
 
 var NS = 'http://www.w3.org/2000/svg';
 
-function sparkline(points, colorVar, th) {
-  /* points: [{ts, v}] with v possibly null. `th` is this host's effective
+function sparkline(points, colorVar, th, opts) {
+  /* points: [{ts, v}] with v possibly null. `opts` is optional:
+       gap  seconds; two neighbouring points further apart than this are
+            drawn as a break, not a line across time nobody reported
+       tip  function(point) -> tooltip text, in place of "v% · date"
+     `th` is this host's effective
      {warn, crit} for the metric, which is what turns a floating line into a
      line with a position: 14% means nothing on its own, and everything once
      you can see it is nowhere near the 85 that would matter.
@@ -1012,9 +1016,17 @@ function sparkline(points, colorVar, th) {
   if (th && th.crit != null) rule(th.crit, 'var(--st-crit)', '4 4');
 
   /* break the line across gaps rather than drawing through missing samples */
+  opts = opts || {};
+  var prev = null;
+  function broken(p) {
+    var b = !prev || (opts.gap && p.ts - prev.ts > opts.gap);
+    prev = p;
+    return b;
+  }
   var d = '', pen = false;
   points.forEach(function (p) {
-    if (p.v === null || p.v === undefined) { pen = false; return; }
+    if (p.v === null || p.v === undefined) { pen = false; prev = null; return; }
+    if (broken(p)) pen = false;
     d += (pen ? 'L' : 'M') + x(p).toFixed(1) + ' ' + y(p.v).toFixed(1) + ' ';
     pen = true;
   });
@@ -1033,11 +1045,29 @@ function sparkline(points, colorVar, th) {
     }
     run = [];
   }
+  prev = null;
   points.forEach(function (p) {
-    if (p.v === null || p.v === undefined) { flushRun(); return; }
+    if (p.v === null || p.v === undefined) { flushRun(); prev = null; return; }
+    if (broken(p)) flushRun();
     run.push(p);
   });
   flushRun();
+  /* A reading with no neighbour inside the gap draws no line at all, so it
+     gets a dot: an isolated sample is still a sample. */
+  points.forEach(function (p, i) {
+    if (!opts.gap || p.v === null || p.v === undefined) return;
+    var a = points[i - 1], b = points[i + 1];
+    var near = function (q) {
+      return q && q.v !== null && q.v !== undefined && Math.abs(q.ts - p.ts) <= opts.gap;
+    };
+    if (near(a) || near(b)) return;
+    var c = document.createElementNS(NS, 'circle');
+    c.setAttribute('class', 'lone');
+    c.setAttribute('cx', x(p).toFixed(1)); c.setAttribute('cy', y(p.v).toFixed(1));
+    c.setAttribute('r', '2.5');
+    c.setAttribute('fill', colorVar);
+    svg.appendChild(c);
+  });
   if (area) {
     var fill = document.createElementNS(NS, 'path');
     fill.setAttribute('d', area);
@@ -1090,7 +1120,7 @@ function sparkline(points, colorVar, th) {
     dotm.style.display = '';
     /* Date and time at every range, not just the time: on a 1y chart the
        time of day is the one part that tells you nothing. */
-    tipEl.textContent = best.v.toFixed(1) + '% · ' +
+    tipEl.textContent = opts.tip ? opts.tip(best) : best.v.toFixed(1) + '% · ' +
       new Date(best.ts * 1000).toLocaleString([], {
         year: 'numeric', month: 'short', day: 'numeric',
         hour: '2-digit', minute: '2-digit' });
@@ -1121,10 +1151,22 @@ function spanLabel(minutes) {
   return Math.round(minutes / 43200) + ' mo ago';
 }
 
-function chartCaption(th, minutes, resolution) {
+/* What one point on a disk chart is. Every bucketed tier is the fullest single
+   reading in its bucket, never an average, and the caption says so. */
+var DISK_RES = {
+  raw:       { cap: ' · each reading', tip: 'reading' },
+  '5min':    { cap: ' · 5-min max',    tip: '5-min max' },
+  '15min':   { cap: ' · 15-min max',   tip: '15-min max' },
+  hourly:    { cap: ' · hourly max',   tip: 'hourly max' },
+  '3hourly': { cap: ' · 3-hour max',   tip: '3-hour max' },
+  '6hourly': { cap: ' · 6-hour max',   tip: '6-hour max' },
+  daily:     { cap: ' · daily max',    tip: 'daily max' }
+};
+
+function chartCaption(th, minutes, resolution, label) {
   var c = el('div', 'cap');
-  c.appendChild(el('span', null, spanLabel(minutes) +
-    (resolution === 'hourly' ? ' · hourly' : resolution === 'daily' ? ' · daily' : '')));
+  c.appendChild(el('span', null, spanLabel(minutes) + (label !== undefined ? label :
+    (resolution === 'hourly' ? ' · hourly' : resolution === 'daily' ? ' · daily' : ''))));
   var mid = el('span', null);
   if (th && th.warn != null) {
     mid.appendChild(el('span', 'capw', 'warn ' + th.warn + '%'));
@@ -1289,6 +1331,50 @@ function servicesPanel(c) {
   return p;
 }
 
+/* A disk point's tooltip. A raw reading is a moment, and says when it was
+   taken. A bucket is an interval: its start is not when anything was
+   measured, so it is shown as start-end, with when the peak was read where
+   that is known, how many readings stand behind it, and whether it is whole. */
+function diskTip(x, res, bucket, now) {
+  var day = { year: 'numeric', month: 'short', day: 'numeric' };
+  var hm = { hour: '2-digit', minute: '2-digit' };
+  var at = function (t, o) { return new Date(t * 1000).toLocaleString([], o); };
+  var full = { year: 'numeric', month: 'short', day: 'numeric',
+               hour: '2-digit', minute: '2-digit' };
+  var parts = [x.pct.toFixed(1) + '%'];
+  if (x.used_bytes != null && x.total_bytes) {
+    parts.push(fmtBytes(x.used_bytes) + ' / ' + fmtBytes(x.total_bytes));
+  }
+  if (res === 'raw') {
+    parts.push('reading at ' + at(x.ts, merge2(full, { second: '2-digit' })));
+    return parts.join(' · ');
+  }
+  parts.push((DISK_RES[res] || DISK_RES.hourly).tip);
+  var end = bucket ? x.ts + bucket : null;
+  if (res === 'daily') {
+    parts.push(at(x.ts, day));
+  } else if (end) {
+    /* The end is exclusive; show it as the minute the bucket ran up to. */
+    parts.push(at(x.ts, full) + '–' + at(end, hm));
+  } else {
+    parts.push('from ' + at(x.ts, full));
+  }
+  if (x.peak_ts) parts.push('peak at ' + at(x.peak_ts, hm));
+  if (x.samples != null) parts.push(x.samples + (x.samples === 1 ? ' reading' : ' readings'));
+  if (x.capacity_changed) {
+    parts.push('capacity changed ' + fmtBytes(x.total_min) + ' → ' + fmtBytes(x.total_max));
+  }
+  if (x.coverage === 'partial') {
+    /* The server's clock, not this browser's: a wall panel a few minutes
+       out would otherwise call the current bucket expired. */
+    parts.push(end && end > (now || Date.now() / 1000) ? 'so far, still in progress'
+                                              : 'partial: some readings already expired');
+  }
+  else if (res === 'daily' && x.coverage == null) parts.push('older summary, may be incomplete');
+  return parts.join(' · ');
+}
+function merge2(a, b) { var o = {}, k; for (k in a) o[k] = a[k]; for (k in b) o[k] = b[k]; return o; }
+
 function renderDetail(host, data, range) {
   var c = data.current, s = hostStyle(c);
   range = range || '24h';
@@ -1375,7 +1461,10 @@ function renderDetail(host, data, range) {
      one that is actually filling are routinely different, and a single trace
      would hide exactly the case worth catching. */
   var dh = data.disk_history || {};
-  var dres = data.disk_resolution === 'daily' ? 'daily' : 'hourly';
+  var dmeta = data.disk_meta || {};
+  /* A server from before disk_meta existed answered hourly or daily. */
+  var dres = DISK_RES[data.disk_resolution] ? data.disk_resolution
+           : data.disk_resolution === 'daily' ? 'daily' : 'hourly';
   var sorted = c.disk.mounts.slice().sort(function (a2, b4) {
     return (b4.pct || 0) - (a2.pct || 0);
   });
@@ -1403,15 +1492,20 @@ function renderDetail(host, data, range) {
     bd.style.color = st(d.status).css;
     pd.appendChild(bd);
 
+    /* Null stays null: a reading the server could not turn into a percentage
+       is a break in the line, never an empty disk. */
     var pts = (dh[d.mount] || []).map(function (x) {
-      return { ts: x.ts, v: x.pct };
+      return { ts: x.ts, v: typeof x.pct === 'number' ? x.pct : null, src: x };
     });
     /* st().css, not a bare token: sparkline() drops this straight into a
        stroke/fill attribute, so it has to be a colour value and not the name
        of a custom property. Passing the mount's own status also makes the
        trace change colour at warn and crit exactly as CPU and memory do. */
-    pd.appendChild(sparkline(pts, st(d.status).css, th.disk));
-    pd.appendChild(chartCaption(th.disk, data.minutes || 60, dres));
+    pd.appendChild(sparkline(pts, st(d.status).css, th.disk, {
+      gap: dmeta.gap_seconds || null,
+      tip: function (p) { return diskTip(p.src, dres, dmeta.bucket_seconds, data.now); }
+    }));
+    pd.appendChild(chartCaption(th.disk, data.minutes || 60, dres, DISK_RES[dres].cap));
 
     /* The reason to keep history at all, and it belongs next to the trace it
        was fitted from. A percentage is a fact already on the card; a slope is

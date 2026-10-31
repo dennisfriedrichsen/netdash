@@ -1157,21 +1157,14 @@ class Handler(BaseHTTPRequestHandler):
                         else:
                             h["mem_pct"] = None
                 resolution = "raw"
-                # Disk is bucketed hourly even here -- see db.disk_history.
-                disk_hist = db.disk_history(CONN, host, time.time() - mins * 60, db.HOUR)
-                disk_resolution = "hourly"
             else:
                 hist = db.rollup_series(CONN, host, time.time() - mins * 60)
                 resolution = "hourly"
-                disk_hist = {}
-                for r in db.disk_series(CONN, host, time.time() - mins * 60):
-                    disk_hist.setdefault(r["mount"], []).append(
-                        {"ts": r["ts"], "pct": r["pct_max"],
-                         "used_bytes": r["used_avg"], "total_bytes": r["total_bytes"],
-                         "coverage": r["coverage"]})
-                disk_resolution = "daily"
-
+            # Disk picks its own resolution from the span and a point budget;
+            # see disk_plan. CPU and memory above are untouched by it.
             cur = summarize(samples[0])
+            disk_hist, disk_resolution, disk_meta = disk_view(
+                host, mins, len(cur["disk"]["mounts"]))
             for m in cur["disk"]["mounts"]:
                 m["projection"] = disk_projection(host, m["mount"])
             return self._json(200, {
@@ -1184,6 +1177,7 @@ class Handler(BaseHTTPRequestHandler):
                 "history": hist,
                 "disk_history": disk_hist,
                 "disk_resolution": disk_resolution,
+                "disk_meta": disk_meta,
                 "events": db.recent_events(CONN, host=host, limit=40),
             })
 
@@ -1441,6 +1435,78 @@ def event_watcher():
         except Exception as e:
             sys.stderr.write("event watcher error: %s\n" % e)
         time.sleep(interval)
+
+
+# Disk chart resolution. The span picks a starting tier; the budgets then step
+# it coarser until the payload fits. Raw holds through 6 h (360 points a mount
+# at one reading a minute), 5-minute maxima through 24 h (288), hourly maxima
+# out to the raw retention window, and past it the daily rollups -- the only
+# store left, which no tier here tries to second-guess.
+#
+# The budgets are what keep a fast collector or a host with dozens of mounts
+# from shipping megabytes on a page that reloads every 30 seconds: a launchd
+# Mac at 30 s gives 720 readings in 6 h, which steps to 5-minute buckets, and
+# forty ZFS datasets over 24 h step from 5- to hourly maxima. A bucketed point
+# is ~150 bytes of JSON, so the total caps disk at roughly 450 KB a refresh.
+DISK_TIERS = ((360, 0), (1440, 300), (None, 3600))
+DISK_LADDER = (0, 300, 900, 3600, 3 * 3600, 6 * 3600, 86400)
+DISK_POINTS_PER_MOUNT = 400
+DISK_POINTS_TOTAL = 3000
+DISK_LABELS = {0: "raw", 300: "5min", 900: "15min", 3600: "hourly",
+               3 * 3600: "3hourly", 6 * 3600: "6hourly", 86400: "daily"}
+
+
+def disk_plan(minutes, retention_hours, raw_count, mounts):
+    """The bucket length in seconds (0 = every reading) for a disk chart over
+    `minutes`, or None when the span reaches past raw retention and only the
+    daily rollups can answer."""
+    if minutes > retention_hours * 60:
+        return None
+    start = next(b for lim, b in DISK_TIERS if lim is None or minutes <= lim)
+    mounts = max(1, mounts)
+    for b in DISK_LADDER[DISK_LADDER.index(start):]:
+        est = raw_count if b == 0 else -(-minutes * 60 // b) + 1
+        if est <= DISK_POINTS_PER_MOUNT and est * mounts <= DISK_POINTS_TOTAL:
+            return b
+    return DISK_LADDER[-1]
+
+
+def disk_gap_seconds(bucket, typical):
+    """How far apart two neighbouring points may be before the chart breaks the
+    line rather than drawing it across silence. Raw: three missed readings, and
+    never under five minutes, so a collector's jitter is not an outage. A
+    bucketed chart breaks at a missing bucket, unless the host reports so
+    rarely that an empty bucket is normal for it."""
+    typical = typical or 60
+    if not bucket:
+        return int(max(300, 3 * typical))
+    return int(max(1.5 * bucket, 3 * typical))
+
+
+def disk_view(host, minutes, mounts, now=None):
+    """(disk_history, disk_resolution, disk_meta) for the host-detail page."""
+    now = int(time.time() if now is None else now)
+    since = now - minutes * 60
+    retention = CFG["retention_hours"]
+    count, oldest = db.raw_extent(CONN, host, since)
+    bucket = disk_plan(minutes, retention, count, mounts)
+    typical = (now - oldest) / float(count - 1) if count > 1 else None
+    if bucket is None:
+        hist, bucket, source, typical = db.disk_daily(CONN, host, since), 86400, "daily_rollups", None
+    else:
+        hist, source = db.disk_history(CONN, host, since, bucket, now=now), "raw"
+        if not bucket:
+            gaps = sorted(b["ts"] - a["ts"] for pts in hist.values()
+                          for a, b in zip(pts, pts[1:]))
+            typical = gaps[len(gaps) // 2] if gaps else None
+    resolution = DISK_LABELS[bucket]
+    meta = {"resolution": resolution, "bucket_seconds": bucket or None,
+            "aggregate": "max" if bucket else None, "source": source,
+            "gap_seconds": disk_gap_seconds(bucket, typical),
+            "retention_hours": retention,
+            "points": sum(len(p) for p in hist.values()),
+            "points_per_mount_max": DISK_POINTS_PER_MOUNT}
+    return hist, resolution, meta
 
 
 def disk_projection(host, mount, min_days=5):

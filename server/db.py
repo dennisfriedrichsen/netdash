@@ -1026,37 +1026,131 @@ def disk_series(conn, host, since):
         return [dict(r) for r in rows]
 
 
-def disk_history(conn, host, since, bucket=HOUR):
-    """Per-mount usage over time, bucketed in SQL rather than shipped per sample.
-
-    Disk is never served at sample resolution, at any range. A mount does not
-    move meaningfully inside an hour, so 69 points an hour per mount would be
-    the same number repeated -- several hundred kilobytes of JSON, on a page
-    that reloads every 30 seconds, to draw a line that is already flat between
-    the hours. Bucketing here caps a 48-hour view at 48 points per mount.
-
-    MAX rather than AVG within a bucket: the question a disk chart is asked is
-    how close this got, and an average across an hour hides the spike that
-    filled it.
-    """
+def raw_extent(conn, host, since):
+    """(samples, oldest ts) for one host since `since`: what a raw disk view
+    would cost, read off the (host, ts) index without touching the disk rows."""
     with _DB:
+        r = conn.execute("SELECT COUNT(*), MIN(ts) FROM samples WHERE host=? AND ts >= ?",
+                         (host, int(since))).fetchone()
+        return r[0], r[1]
+
+
+def disk_history(conn, host, since, bucket=HOUR, now=None):
+    """Per-mount usage over time from raw samples: every reading, or one per bucket.
+
+    bucket=0 (or None) returns each reading as collected, at its own ts. Any
+    other bucket returns, per mount and bucket, the single reading with the
+    highest percentage -- MAX rather than AVG, because the question a disk
+    chart is asked is how close this got, and an average hides the spike that
+    filled it. pct, used_bytes and total_bytes all come from that one reading,
+    so the point is something the host actually reported: taking MAX(used) and
+    MAX(total) separately, as this used to, paired the fullest moment with the
+    largest capacity and on a resized mount described a disk that never
+    existed.
+
+    A bucketed point's ts is the bucket start -- it ends `bucket` seconds
+    later -- and it says so: `peak_ts` (when that reading was taken; on a tie,
+    one of the tied ones), `samples` (how many readings the bucket holds), and
+    `capacity_changed`, with `total_min`/`total_max` only when it is true, so a
+    host with forty mounts does not ship two totals per point that say
+    nothing. `coverage` is 'partial' for a bucket that
+    starts before the raw prune horizon -- some of its readings are gone -- or
+    that has not ended yet, and 'full' otherwise.
+
+    `since` is aligned down to a bucket boundary, so the first bucket is whole
+    rather than a sliver labelled with a start time it does not cover.
+
+    A reading with no used figure or a zero/absent total has no percentage and
+    is left out, never counted as empty. Two readings of one mount at the same
+    ts collapse to the later-written one.
+    """
+    bucket = int(bucket or 0)
+    now = int(time.time() if now is None else now)
+    since = int(since)
+    if bucket:
+        since -= since % bucket
+    valid = ("s.host = :host AND s.ts >= :since AND d.total_bytes > 0"
+             " AND d.used_bytes IS NOT NULL")
+    with _DB:
+        if not bucket:
+            rows = conn.execute(
+                """SELECT d.mount AS mount, s.ts AS ts, d.used_bytes AS used,
+                          d.total_bytes AS total
+                     FROM samples s JOIN disks d ON d.sample_id = s.id
+                    WHERE %s ORDER BY d.mount, s.ts, s.id""" % valid,
+                {"host": host, "since": since}).fetchall()
+            out = {}
+            for r in rows:
+                pts = out.setdefault(r["mount"], [])
+                p = {"ts": r["ts"], "pct": round(100.0 * r["used"] / r["total"], 3),
+                     "used_bytes": r["used"], "total_bytes": r["total"]}
+                if pts and pts[-1]["ts"] == p["ts"]:
+                    pts[-1] = p
+                else:
+                    pts.append(p)
+            return out
+        horizon = _meta(conn, "raw_pruned_before") or 0
+        # The one MAX() is what makes ts, used and total bare columns from the
+        # row holding it -- documented SQLite behaviour, and what keeps the
+        # point a single reading. It must stay the only min()/max() aggregate
+        # in the query, or SQLite may take the bare columns from another's
+        # row; the capacities come back as a list for that reason. Among
+        # readings tied at the maximum -- most of them, on a quiet mount --
+        # which one supplies peak_ts is SQLite's choice. This costs what the
+        # GROUP BY it replaces did; a window function picking the same row
+        # measured four times slower over 40 mounts x 48 h.
         rows = conn.execute(
-            """SELECT d.mount AS mount, s.ts - (s.ts % ?) AS ts,
-                      MAX(100.0 * d.used_bytes / d.total_bytes) AS pct,
-                      MAX(d.used_bytes) AS used_bytes, MAX(d.total_bytes) AS total_bytes
+            """SELECT d.mount AS mount, s.ts - s.ts %% :b AS bucket,
+                      MAX(1.0 * d.used_bytes / d.total_bytes) AS frac,
+                      s.ts AS ts, d.used_bytes AS used, d.total_bytes AS total,
+                      COUNT(*) AS n, GROUP_CONCAT(DISTINCT d.total_bytes) AS totals
                  FROM samples s JOIN disks d ON d.sample_id = s.id
-                WHERE s.host = ? AND s.ts >= ? AND d.total_bytes > 0
-                      AND d.used_bytes IS NOT NULL
-                GROUP BY d.mount, s.ts - (s.ts % ?)
-                ORDER BY d.mount, ts ASC""",
-            (int(bucket), host, int(since), int(bucket)),
-        ).fetchall()
+                WHERE %s
+                GROUP BY d.mount, bucket
+                ORDER BY d.mount, bucket""" % valid,
+            {"host": host, "since": since, "b": bucket}).fetchall()
         out = {}
         for r in rows:
-            out.setdefault(r["mount"], []).append(
-                {"ts": r["ts"], "pct": r["pct"],
-                 "used_bytes": r["used_bytes"], "total_bytes": r["total_bytes"]})
+            end = r["bucket"] + bucket
+            totals = [int(x) for x in str(r["totals"]).split(",")]
+            p = {"ts": r["bucket"], "peak_ts": r["ts"],
+                 "pct": round(100.0 * r["used"] / r["total"], 3),
+                 "used_bytes": r["used"], "total_bytes": r["total"],
+                 "samples": r["n"], "capacity_changed": len(totals) > 1,
+                 "coverage": "partial" if r["bucket"] < horizon or end > now else "full"}
+            if p["capacity_changed"]:
+                p["total_min"], p["total_max"] = min(totals), max(totals)
+            out.setdefault(r["mount"], []).append(p)
         return out
+
+
+def disk_daily(conn, host, since):
+    """Daily per-mount maxima from disk_rollups, shaped like disk_history's buckets.
+
+    The rollup keeps pct_max but not the reading it came from. Where the
+    capacity held all day, that reading's used figure is pct_max of the one
+    total and is given; on a day the mount was resized there is no telling
+    which total the peak was against, so used_bytes and total_bytes are null
+    rather than a guess, and total_min/total_max say what is known. A legacy
+    row (coverage NULL, from before the folding roller) has no total_min and
+    is treated the same way. Its coverage stays NULL: it may be the truncated
+    tail of a day, and nothing here pretends otherwise.
+    """
+    out = {}
+    for r in disk_series(conn, host, since):
+        tmax, tmin = r["total_bytes"], r["total_min"]
+        steady = tmax is not None and tmin is not None and tmin == tmax
+        used = (int(round(r["pct_max"] * tmax / 100.0))
+                if steady and r["pct_max"] is not None else None)
+        out.setdefault(r["mount"], []).append({
+            "ts": r["ts"], "peak_ts": None,
+            "pct": r["pct_max"], "pct_avg": r["pct_avg"],
+            "used_bytes": used, "total_bytes": tmax if steady else None,
+            "used_avg": r["used_avg"], "samples": r["samples"],
+            "total_min": tmin, "total_max": tmax,
+            "capacity_changed": (None if tmin is None or tmax is None else tmin != tmax),
+            "coverage": r["coverage"]})
+    return out
 
 
 def record_event(conn, host, kind, from_state, to_state, detail=None, ts=None):

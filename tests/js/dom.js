@@ -26,7 +26,19 @@ function mkEl(tag, ns) {
     setAttribute: function (k, v) { this.attrs[k] = v; },
     removeAttribute: function (k) { delete this.attrs[k]; },
     getAttribute: function (k) { return k in this.attrs ? this.attrs[k] : null; },
-    addEventListener: function () {},
+    /* Kept rather than dropped, so a test can hover a chart the way a mouse
+       would and read the tooltip it writes. */
+    listeners: {},
+    addEventListener: function (type, fn) {
+      (this.listeners[type] = this.listeners[type] || []).push(fn);
+    },
+    dispatch: function (type, ev) {
+      (this.listeners[type] || []).forEach(function (fn) { fn(ev); });
+    },
+    /* A 600px-wide box at the left edge: the chart's own viewBox width, so a
+       clientX is a viewBox x. */
+    getBoundingClientRect: function () { return { left: 0, top: 200, width: 600, height: 84 }; },
+    offsetWidth: 100, offsetHeight: 20,
     remove: function () {}
   };
   return e;

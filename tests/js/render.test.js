@@ -412,6 +412,231 @@ check('a_daily_disk_range_says_daily', function () {
   }
 });
 
+// -- disk resolution: what one point on a disk chart is --
+function find(node, pred, acc) {
+  acc = acc || [];
+  if (!node || typeof node !== 'object') return acc;
+  if (pred(node)) acc.push(node);
+  (node.children || []).forEach(function (c) { find(c, pred, acc); });
+  return acc;
+}
+function diskPanel(mount) {
+  return find(ctx.root, function (n) {
+    return n.className === 'panel' && (n.children || []).some(function (c) {
+      return c.tagName === 'h2' && c.textContent === 'Disk · ' + mount;
+    });
+  })[0];
+}
+function trace(panel) {
+  var svg = find(panel, function (n) { return n.tagName === 'svg'; })[0];
+  var line = find(svg, function (n) {
+    return n.tagName === 'path' && n.attrs.fill === 'none';
+  })[0];
+  var area = find(svg, function (n) {
+    return n.tagName === 'path' && n.attrs.fill !== 'none';
+  })[0];
+  var d = line ? line.attrs.d : '';
+  return { svg: svg, d: d, vertices: (d.match(/[ML]/g) || []).length,
+           runs: (d.match(/M/g) || []).length,
+           areas: area ? (area.attrs.d.match(/M/g) || []).length : 0,
+           lone: find(svg, function (n) { return n.attrs['class'] === 'lone'; }).length };
+}
+function hover(svg, clientX) {
+  svg.dispatch('mousemove', { clientX: clientX });
+  return ctx.tipEl.textContent;
+}
+/* Sixty one-minute readings ending at `now`, irregular by a few seconds,
+   across a clock-hour boundary: the shape freebsd16pkgbase reports. */
+var NOW = 1788436210;
+function rawPoints(n, skip) {
+  var pts = [];
+  for (var i = n - 1; i >= 0; i--) {
+    var ts = NOW - i * 60 - (i * 7) % 11;
+    if (skip && skip(i)) continue;
+    pts.push({ ts: ts, pct: 30 + i / 100, used_bytes: 30e9 + i * 1e8, total_bytes: 100e9 });
+  }
+  return pts;
+}
+function oneMount(pct) {
+  var h = host();
+  h.disk = { worst_pct: pct, status: 'ok', mounts: [
+    { mount: '/', used_bytes: pct, total_bytes: 100, pct: pct, status: 'ok', projection: null }] };
+  return h;
+}
+function rawDetail(pts, extra) {
+  return detail(oneMount(30), merge({ disk_history: { '/': pts }, disk_resolution: 'raw',
+    disk_meta: { resolution: 'raw', bucket_seconds: null, aggregate: null, source: 'raw',
+                 gap_seconds: 300, retention_hours: 48, points: pts.length } }, extra || {}));
+}
+
+check('a_1h_disk_view_plots_every_raw_reading', function () {
+  var pts = rawPoints(60);
+  if (Math.floor(pts[0].ts / 3600) === Math.floor(pts[59].ts / 3600)) {
+    throw new Error('fixture must cross a clock hour');
+  }
+  ctx.renderDetail('freebsd16pkgbase', rawDetail(pts), '1h');
+  var t = trace(diskPanel('/'));
+  if (t.vertices !== 60 || t.runs !== 1) {
+    throw new Error('expected one unbroken line through 60 readings, got ' +
+                    t.vertices + ' vertices in ' + t.runs + ' runs');
+  }
+  var cap = textOf(diskPanel('/'));
+  if (cap.indexOf('each reading') < 0) throw new Error('raw caption missing: ' + cap);
+});
+check('a_raw_disk_tooltip_names_the_reading_and_its_moment', function () {
+  var pts = rawPoints(60);
+  ctx.renderDetail('freebsd16pkgbase', rawDetail(pts), '1h');
+  var t = trace(diskPanel('/'));
+  var tip = hover(t.svg, 599);
+  var want = new Date(pts[59].ts * 1000).toLocaleString([], { year: 'numeric', month: 'short',
+    day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  if (tip.indexOf('30.0%') !== 0 || tip.indexOf('reading at ' + want) < 0 ||
+      tip.indexOf('/') < 0 || /max|readings/.test(tip)) {
+    throw new Error('raw tooltip should be one reading at its own second: ' + tip + ' / ' + want);
+  }
+  /* The leftmost reading, an hour earlier, in the other clock hour. */
+  var first = hover(t.svg, 0);
+  var w0 = new Date(pts[0].ts * 1000).toLocaleString([], { year: 'numeric', month: 'short',
+    day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  if (first.indexOf(w0) < 0 || first.indexOf('30.6%') !== 0) {
+    throw new Error('hovering the left edge should find the oldest reading: ' + first);
+  }
+});
+check('a_reporting_gap_breaks_the_disk_line', function () {
+  /* Readings 20-35 minutes ago missing: one gap wider than gap_seconds. */
+  ctx.renderDetail('h', rawDetail(rawPoints(60, function (i) { return i >= 20 && i < 36; })), '1h');
+  var t = trace(diskPanel('/'));
+  if (t.runs !== 2 || t.areas !== 2 || t.vertices !== 44) {
+    throw new Error('a 16-minute hole must split line and fill: ' + JSON.stringify(t.runs) +
+                    ' runs, ' + t.areas + ' areas, ' + t.vertices + ' vertices');
+  }
+});
+check('a_missed_reading_inside_the_gap_allowance_does_not_break_it', function () {
+  ctx.renderDetail('h', rawDetail(rawPoints(60, function (i) { return i === 30 || i === 31; })), '1h');
+  var t = trace(diskPanel('/'));
+  if (t.runs !== 1 || t.vertices !== 58) throw new Error('two missed minutes broke the line: ' + t.runs);
+});
+check('a_null_disk_reading_is_a_break_not_zero', function () {
+  var pts = rawPoints(10);
+  pts[5] = { ts: pts[5].ts, pct: null, used_bytes: null, total_bytes: 0 };
+  ctx.renderDetail('h', rawDetail(pts), '1h');
+  var t = trace(diskPanel('/'));
+  /* y(0) is the bottom edge, 81.0: no vertex may sit there. */
+  if (/[ML][\d.]+ 81\.0/.test(t.d)) throw new Error('a null was drawn as an empty disk: ' + t.d);
+  if (t.runs !== 2 || t.vertices !== 9) throw new Error('null should split the line: ' + t.d);
+});
+check('an_isolated_disk_reading_still_shows', function () {
+  /* One reading alone between two long silences draws no line segment, so
+     it needs a mark of its own. */
+  ctx.renderDetail('h', rawDetail(rawPoints(60, function (i) {
+    return (i > 5 && i < 30) || (i > 30 && i < 55);
+  })), '1h');
+  var t = trace(diskPanel('/'));
+  if (t.lone !== 1) throw new Error('expected one lone dot, got ' + t.lone);
+});
+check('a_5min_disk_view_says_max_and_shows_its_interval', function () {
+  var b0 = NOW - NOW % 300 - 300;
+  var pts = [
+    { ts: b0 - 300, peak_ts: b0 - 200, pct: 50, used_bytes: 50e9, total_bytes: 100e9,
+      samples: 5, capacity_changed: false, coverage: 'full' },
+    { ts: b0, peak_ts: b0 + 127, pct: 99, used_bytes: 99e9, total_bytes: 100e9,
+      samples: 5, capacity_changed: false, coverage: 'full' },
+    { ts: b0 + 300, peak_ts: b0 + 310, pct: 50, used_bytes: 50e9, total_bytes: 100e9,
+      samples: 1, capacity_changed: false, coverage: 'partial' }];
+  ctx.renderDetail('h', detail(oneMount(50), { minutes: 1440, disk_history: { '/': pts },
+    disk_resolution: '5min', disk_meta: { resolution: '5min', bucket_seconds: 300,
+    aggregate: 'max', source: 'raw', gap_seconds: 450 } }), '24h');
+  var p = diskPanel('/'), t = trace(p);
+  if (textOf(p).indexOf('5-min max') < 0) throw new Error('caption must say 5-min max: ' + textOf(p));
+  var tip = hover(t.svg, 300);
+  var hm = { hour: '2-digit', minute: '2-digit' };
+  var start = new Date(b0 * 1000).toLocaleString([], { year: 'numeric', month: 'short',
+    day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  var end = new Date((b0 + 300) * 1000).toLocaleString([], hm);
+  var peak = new Date((b0 + 127) * 1000).toLocaleString([], hm);
+  ['99.0%', '5-min max', start + '–' + end, 'peak at ' + peak, '5 readings'].forEach(function (w) {
+    if (tip.indexOf(w) < 0) throw new Error('5-min tooltip lacks "' + w + '": ' + tip);
+  });
+  if (tip.indexOf('reading at') >= 0) throw new Error('a bucket posed as a reading: ' + tip);
+  /* The newest bucket ends after the payload's `now`: still filling. */
+  var last = hover(t.svg, 599);
+  if (!/ 1 reading( |$)/.test(last) || last.indexOf('so far, still in progress') < 0) {
+    throw new Error('the bucket still filling must say so: ' + last);
+  }
+  /* The same bucket read by a server whose clock is past its end has lost
+     readings to the prune, and says that instead. */
+  ctx.renderDetail('h', detail(oneMount(50), { now: NOW + 3600, minutes: 1440,
+    disk_history: { '/': pts }, disk_resolution: '5min', disk_meta: { resolution: '5min',
+    bucket_seconds: 300, aggregate: 'max', source: 'raw', gap_seconds: 450 } }), '24h');
+  var old = hover(trace(diskPanel('/')).svg, 599);
+  if (old.indexOf('partial: some readings already expired') < 0) {
+    throw new Error('an ended partial bucket must say readings expired: ' + old);
+  }
+});
+check('an_hourly_disk_tooltip_flags_a_resize', function () {
+  var b0 = NOW - NOW % 3600;
+  var pts = [
+    { ts: b0 - 3600, peak_ts: b0 - 3000, pct: 80, used_bytes: 80e9, total_bytes: 100e9,
+      samples: 60, capacity_changed: true, total_min: 100e9, total_max: 200e9, coverage: 'full' },
+    { ts: b0, peak_ts: b0 + 60, pct: 40, used_bytes: 80e9, total_bytes: 200e9,
+      samples: 30, capacity_changed: false, coverage: 'partial' }];
+  ctx.renderDetail('h', detail(oneMount(40), { minutes: 2880, disk_history: { '/': pts },
+    disk_resolution: 'hourly', disk_meta: { resolution: 'hourly', bucket_seconds: 3600,
+    aggregate: 'max', source: 'raw', gap_seconds: 5400 } }), '24h');
+  var p = diskPanel('/'), t = trace(p);
+  if (textOf(p).indexOf('hourly max') < 0) throw new Error('caption: ' + textOf(p));
+  var tip = hover(t.svg, 0);
+  if (tip.indexOf('capacity changed') < 0 || tip.indexOf('80.0%') !== 0) {
+    throw new Error('resize not flagged: ' + tip);
+  }
+});
+check('a_daily_legacy_disk_point_does_not_claim_to_be_complete', function () {
+  var d0 = NOW - NOW % 86400;
+  var pts = [
+    { ts: d0 - 3 * 86400, peak_ts: null, pct: 41, used_bytes: null, total_bytes: null,
+      samples: 9, capacity_changed: null, coverage: null },
+    { ts: d0 - 2 * 86400, peak_ts: null, pct: 55, used_bytes: 55e10, total_bytes: 1e12,
+      samples: 1440, capacity_changed: false, coverage: 'full' }];
+  ctx.renderDetail('h', detail(oneMount(55), { minutes: 10080, resolution: 'hourly',
+    disk_history: { '/': pts }, disk_resolution: 'daily',
+    disk_meta: { resolution: 'daily', bucket_seconds: 86400, aggregate: 'max',
+                 source: 'daily_rollups', gap_seconds: 129600 } }), '7d');
+  var p = diskPanel('/'), t = trace(p);
+  if (textOf(p).indexOf('daily max') < 0) throw new Error('caption: ' + textOf(p));
+  var legacy = hover(t.svg, 0), whole = hover(t.svg, 599);
+  if (legacy.indexOf('older summary, may be incomplete') < 0 || legacy.indexOf(' / ') >= 0) {
+    throw new Error('a legacy day passed as complete, or invented bytes: ' + legacy);
+  }
+  if (whole.indexOf('incomplete') >= 0 || whole.indexOf('1440 readings') < 0) {
+    throw new Error('a full day was doubted: ' + whole);
+  }
+});
+check('a_refresh_redraws_the_1h_view_with_the_new_reading', function () {
+  /* tick() calls renderDetail again with the next payload every 30 s. The
+     panel must be replaced, not stacked, and carry the new reading. */
+  var pts = rawPoints(60);
+  ctx.renderDetail('freebsd16pkgbase', rawDetail(pts), '1h');
+  var next = pts.slice(1).concat([{ ts: NOW + 60, pct: 31, used_bytes: 31e9, total_bytes: 100e9 }]);
+  ctx.renderDetail('freebsd16pkgbase', rawDetail(next), '1h');
+  var panels = find(ctx.root, function (n) {
+    return n.tagName === 'h2' && n.textContent === 'Disk · /';
+  });
+  if (panels.length !== 1) throw new Error('refresh stacked ' + panels.length + ' disk panels');
+  var t = trace(diskPanel('/'));
+  if (t.vertices !== 60) throw new Error('refresh lost readings: ' + t.vertices);
+  if (hover(t.svg, 599).indexOf('31.0%') !== 0) throw new Error('newest reading not drawn last');
+});
+check('an_older_server_without_disk_meta_still_renders', function () {
+  ctx.renderDetail('h', detail(twoMounts(), { disk_history: DISKH, disk_resolution: 'hourly' }), '24h');
+  if (textOf(ctx.root).indexOf('hourly max') < 0) throw new Error('old payload lost its caption');
+});
+check('cpu_and_memory_keep_their_own_tooltip', function () {
+  ctx.renderDetail('h', rawDetail(rawPoints(60)), '1h');
+  var cpu = find(ctx.root, function (n) { return n.tagName === 'svg' && n.attrs['class'] === 'spark'; })[0];
+  var tip = hover(cpu, 599);
+  if (!/^12\.0% · /.test(tip) || tip.indexOf('reading') >= 0) throw new Error('cpu tooltip changed: ' + tip);
+});
+
 // -- os icons for the polled appliances --
 check('appliances_get_their_own_icons', function () {
   var want = [['UniFi OS 5.1.31', 'gateway'], ['Hubitat C-8 Pro 2.5.1.174', 'hub'],

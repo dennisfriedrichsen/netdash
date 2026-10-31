@@ -1231,13 +1231,48 @@ that is actually filling are routinely different, and a single trace would hide
 exactly the case worth catching. A host that reports no filesystem at all still
 gets one panel saying so, rather than the section quietly disappearing.
 
-Disk is **never** served at sample resolution, at any range. A mount does not
-move meaningfully inside an hour, so 69 identical points per hour per mount
-would be several hundred kilobytes of JSON on a page that reloads every 30
-seconds, to draw a line already flat between the hours. It is bucketed in SQL:
-hourly within the raw window, daily beyond it, capping a 48-hour view at 48
-points per mount. Buckets take the `MAX`, not the average — the question a disk
-chart is asked is how close this got, and an average hides the spike.
+The disk chart picks its own resolution from the span, separately from CPU and
+memory. It used to be hourly at every range, so a 1h view crossing 05:00 drew
+two points from sixty readings:
+
+| span                         | each point is            | ~points per mount   |
+|------------------------------|--------------------------|---------------------|
+| up to 6 h                    | one reading, at its own ts | 60 an hour         |
+| up to 24 h                   | 5-minute maximum         | 288                 |
+| up to `retention_hours`      | hourly maximum           | 48 at 48 h          |
+| past `retention_hours`       | daily maximum (rollups)  | one a day           |
+
+Then a budget: at most 400 points per mount and 3,000 per host. A tier that
+would exceed either steps coarser (15 min, 1 h, 3 h, 6 h, 1 day) until it fits.
+That is why a 30-second launchd Mac's 6 h view is 5-minute maxima, and 24 h of
+a forty-dataset pool is hourly. A bucketed point is ~150 bytes of JSON, so disk
+tops out around 450 KB per refresh.
+
+A bucket is **one real reading**: the one with the highest percentage, with
+that reading's own `used_bytes` and `total_bytes`. It is `MAX`, not the
+average, because the question a disk chart is asked is how close this got.
+Separate `MAX(used)` and `MAX(total)` values would describe a disk that never
+existed on a mount that was resized. If the capacity changed inside a bucket,
+the point says `capacity_changed` and carries `total_min`/`total_max`. Each
+reading's percentage is taken against its own total. A daily rollup keeps
+`pct_max` but not the reading behind it. Its bytes are given only when the
+capacity held all day, and are null otherwise.
+
+A reading with no used figure or a zero/missing total is left out, never
+counted as 0%. The line breaks across a gap wider than `disk_meta.gap_seconds`
+(three missed readings, five minutes at least, or one missing bucket), and a
+reading alone between two gaps is drawn as a dot. The tooltip says what a point
+is: a reading and the second it was taken; or a bucket as start–end, with when
+its peak was read, how many readings stand behind it, and whether it is
+`partial` (still filling, or older than the prune horizon). A daily row from
+before the folding roller (coverage NULL) is labelled "older summary, may be
+incomplete".
+
+The response carries `disk_resolution` (`raw`, `5min`, `15min`, `hourly`,
+`3hourly`, `6hourly` or `daily`) and `disk_meta`: `bucket_seconds` (null for
+raw), `aggregate` (`max` or null), `source` (`raw` or `daily_rollups`),
+`gap_seconds`, `points`, `retention_hours`. A bucketed point's `ts` is the
+bucket start, never a reading time; `peak_ts` is the reading time.
 
 ### Disk projections
 
