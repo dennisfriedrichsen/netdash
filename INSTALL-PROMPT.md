@@ -56,7 +56,7 @@ Then detect the platform -- don't ask the user for what the shell already
 knows:
 
 ```sh
-uname -s          # Linux, FreeBSD, OpenBSD, NetBSD, Darwin
+uname -s          # Linux, FreeBSD, DragonFly, OpenBSD, NetBSD, Darwin
 uname -m           # x86_64/amd64, aarch64/arm64, armv7l (Pi 3B+), ...
 command -v systemctl >/dev/null && echo "has systemd"
 ```
@@ -121,7 +121,7 @@ exactly this case).
 
 ## Step 2 -- collector (skip if this host is server-only)
 
-For **Linux, FreeBSD, OpenBSD, or NetBSD**:
+For **Linux, FreeBSD, DragonFly, OpenBSD, or NetBSD**:
 
 ```sh
 git clone https://github.com/dennisfriedrichsen/netdash.git   # skip if already cloned in Step 1

@@ -1,0 +1,14 @@
+Filesystem                                Type    1K-blocks   Used    Avail Capacity  Mounted on
+serno/BHYVE-9642-C476-326A.s1d            hammer2  32433152 674624 31758528     2%    /
+devfs                                     devfs           1      1        0   100%    /dev
+/dev/serno/BHYVE-9642-C476-326A.s1a       ufs       1046318 657720   304894    68%    /boot
+/dev/serno/BHYVE-9642-C476-326A.s1e@DATA  hammer2  10471232  43072 10428160     0%    /build
+/build/usr.obj                            null     10471232  43072 10428160     0%    /usr/obj
+/build/var.crash                          null     10471232  43072 10428160     0%    /var/crash
+/build/var.cache                          null     10471232  43072 10428160     0%    /var/cache
+/build/var.spool                          null     10471232  43072 10428160     0%    /var/spool
+/build/var.log                            null     10471232  43072 10428160     0%    /var/log
+/build/var.tmp                            null     10471232  43072 10428160     0%    /var/tmp
+tmpfs                                     tmpfs      998144      0   998144     0%    /tmp
+procfs                                    procfs          4      4        0   100%    /proc
+tmpfs                                     tmpfs      998144      0   998144     0%    /var/run/shm

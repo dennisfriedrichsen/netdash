@@ -1,5 +1,5 @@
 #!/bin/sh
-# netdash collector -- FreeBSD, OpenBSD and NetBSD.
+# netdash collector -- FreeBSD, DragonFly, OpenBSD and NetBSD.
 # Native tools only: sysctl, df, and curl / fetch / ftp.
 # Usage: netdash-collector.sh [--print]
 set -eu
@@ -45,6 +45,7 @@ JAILED=$(sysctl -n security.jail.jailed 2>/dev/null || true)
 #   FreeBSD  1000 50 500 20 8430                     (5, space-separated)
 #   OpenBSD  7413,20,29570,0,20845,90572418          (6, comma-separated)
 #   NetBSD   user = 16238, nice = 3814, ... idle = N (5, "key = value" pairs)
+# DragonFly prints FreeBSD's form.
 # Strip everything that is not a digit or separator, so all three reduce to bare
 # numbers. Without this, NetBSD only worked by accident: awk coerced the "user"
 # and "=" tokens to zero, which happened to leave the arithmetic right while
@@ -115,6 +116,21 @@ FreeBSD)
   fi
   fi
   ;;
+DragonFly)
+  # FreeBSD's sysctl names, as of before FreeBSD 12 dropped the cache queue.
+  # DragonFly still has it: cache pages are clean and can be reused at once,
+  # so they count as reclaimable with free and inactive. No ARC -- HAMMER2's
+  # cache lives in those same page queues -- and no laundry queue.
+  MEM_TOTAL=$(sysctl_n hw.physmem)
+  PS=$(sysctl_n vm.stats.vm.v_page_size)
+  FREE=$(sysctl_n vm.stats.vm.v_free_count)
+  INACT=$(sysctl_n vm.stats.vm.v_inactive_count)
+  CACHE=$(sysctl_n vm.stats.vm.v_cache_count); CACHE=${CACHE:-0}
+  if [ -n "$MEM_TOTAL" ] && [ -n "$PS" ] && [ -n "$FREE" ] && [ -n "$INACT" ]; then
+    MEM_USED=$(awk -v t="$MEM_TOTAL" -v ps="$PS" -v f="$FREE" -v i="$INACT" -v c="$CACHE" 'BEGIN{
+      u = t - (f+i+c)*ps; if (u<0) u=0; printf "%.0f", u }')
+  fi
+  ;;
 OpenBSD|NetBSD)
   # OpenBSD refuses to expose vm.uvmexp through sysctl -- it answers "use vmstat
   # or systat" -- and has no hw.physmem64 or vm.uvmexp2 (those are NetBSD names).
@@ -161,6 +177,10 @@ esac
 # using used+available, the usable view, rather than zpool's raw size which
 # counts raidz parity. Plus real non-ZFS mounts filtered on df -T's type column,
 # because `df -t no<type>` does not exclude on FreeBSD.
+# DragonFly takes the FreeBSD path: it has df -T, and needs it, because its
+# root is mounted as "serno/<disk>.s1d" with no /dev/ in front. Its nullfs
+# type is spelled "null", and the default install null-mounts six of /build's
+# directories, each repeating /build's numbers.
 # OpenBSD/NetBSD: no df -T, so keep rows whose device sits under /dev/. That is
 # what drops tmpfs/kernfs/ptyfs/procfs, since -l does NOT exclude them on NetBSD
 # -- its -l output is identical to plain df. NetBSD does ship ZFS, so the pool
@@ -174,10 +194,10 @@ if command -v zfs >/dev/null 2>&1; then
       if (total > 0) printf "%s{\"mount\":\"%s\",\"used_bytes\":%.0f,\"total_bytes\":%.0f}", (n++?",":""), $1, $2, total }')
 fi
 
-if [ "$OSNAME" = "FreeBSD" ]; then
+if [ "$OSNAME" = "FreeBSD" ] || [ "$OSNAME" = "DragonFly" ]; then
   # In a jail, / is reported on its own below, whatever its filesystem.
   OTHER=$(df -k -T -l 2>/dev/null | awk -v jailed="$JAILED" '
-    NR>1 && $3+0 > 0 && $2 !~ /^(zfs|devfs|procfs|fdescfs|tmpfs|linprocfs|linsysfs|nullfs|cd9660|fusefs|nfs|nfs4|smbfs|cifs)$/ {
+    NR>1 && $3+0 > 0 && $2 !~ /^(zfs|devfs|procfs|fdescfs|tmpfs|linprocfs|linsysfs|nullfs|null|cd9660|fusefs|nfs|nfs4|smbfs|cifs)$/ {
       mp=$7; for(i=8;i<=NF;i++) mp=mp" "$i
       if (jailed == 1 && mp == "/") next
       gsub(/\\/,"\\\\",mp); gsub(/"/,"\\\"",mp)
@@ -207,7 +227,8 @@ fi
 if [ -n "$ZPOOLS" ] && [ -n "$OTHER" ]; then DISKS="$ZPOOLS,$OTHER"
 else DISKS="$ZPOOLS$OTHER"; fi
 
-# FreeBSD and NetBSD print '{ sec = N, usec = M }'; anchor on the leading brace,
+# FreeBSD and NetBSD print '{ sec = N, usec = M }', DragonFly
+# '{ sec = N, nsec = M }'; anchor on the leading brace,
 # because a greedy .* before 'sec' runs past the 'u' in 'usec' and captures the
 # microseconds (~20000 days of uptime). OpenBSD prints a bare epoch instead.
 RAWBOOT=$(sysctl -n kern.boottime 2>/dev/null || true)
@@ -254,6 +275,12 @@ FreeBSD)
   # box would read as bare metal.
   if [ "$JAILED" = 1 ]; then V=jail; else V=$(sysctl_n kern.vm_guest); fi
   [ -n "$V" ] && VIRT="\"$V\""
+  ;;
+DragonFly)
+  # Its own sysctl for the same thing, under another name. "unknown" is a
+  # guest it could not identify, which is not an answer.
+  V=$(sysctl_n kern.vmm_guest)
+  case "$V" in ""|unknown) ;; *) VIRT="\"$V\"" ;; esac
   ;;
 OpenBSD|NetBSD)
   HWV=""

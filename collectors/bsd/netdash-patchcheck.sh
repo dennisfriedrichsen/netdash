@@ -1,5 +1,5 @@
 #!/bin/sh
-# netdash patch check -- FreeBSD, OpenBSD and NetBSD.
+# netdash patch check -- FreeBSD, DragonFly, OpenBSD and NetBSD.
 #
 # Runs DAILY and once at every boot, not at collector cadence. Writes a small
 # JSON file that netdash-collector reads back and inlines. The boot run matters
@@ -10,9 +10,10 @@
 #   netdash-patchcheck.sh            # check, write the state file
 #   netdash-patchcheck.sh --print    # check, print, write nothing
 #
-# The three BSDs answer three different questions, and two of them cannot
-# answer at all for part of the system:
+# The BSDs answer different questions, and most of them cannot answer at all
+# for part of the system:
 #   FreeBSD  packages (pkg audit, CVE-based) AND base (freebsd-update)
+#   DragonFly packages only (the same pkg audit); base is rebuilt from source
 #   OpenBSD  base only (syspatch); packages carry no security classification
 #   NetBSD   packages only (pkg_admin audit); base has no patch mechanism
 set -eu
@@ -131,7 +132,7 @@ pkg_add_upgrades() {
 }
 
 case "$OSNAME" in
-FreeBSD)
+FreeBSD|DragonFly)
   SRC=pkg-audit
   # pkg audit reads /var/db/pkg/vuln.xml and touches the network only with -F.
   # The base system already refreshes it daily through
@@ -181,12 +182,17 @@ FreeBSD)
     CHECKED=$(mtime /var/db/pkg/vuln.xml)
   fi
 
+  # DragonFly ships no binary base updates: base fixes come from rebuilding
+  # world, so there is nothing to ask. Saying so beats a silent zero.
+  if [ "$OSNAME" = DragonFly ]; then
+    DET="base system not checked (DragonFly ships no binary patch mechanism)"
+
   # Base system. On a pkgbase host the base IS packages -- FreeBSD-runtime and
   # friends -- so pkg audit and pkg version above already cover it, and
   # freebsd-update manages nothing here. Running its fetch would download
   # binary patches for a base it does not own, so pkgbase is detected and that
   # whole branch skipped. (Verified: the test host runs pkgbase.)
-  if pkg info -e FreeBSD-runtime >/dev/null 2>&1; then
+  elif pkg info -e FreeBSD-runtime >/dev/null 2>&1; then
     DET="pkgbase host: base system is covered by pkg, not freebsd-update"
     SRC="pkg-audit-pkgbase"
 

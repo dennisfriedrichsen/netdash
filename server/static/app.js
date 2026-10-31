@@ -627,6 +627,16 @@ var OS_ICONS = {
      rectangle at icon size. */
   netbsd: [['path', { d: 'M6.2 3.4v17.2', fill: 'none', 'stroke-width': 1.8 }],
            ['path', { d: 'M7.3 4.7h12.4l-3.1 3.5 3.1 3.5H7.3z' }]],
+  /* DragonFly's dragonfly, seen from above: head, a long abdomen, and two
+     pairs of wings swept the way a resting one holds them. The forewings
+     sweep forward and the hindwings back, which is what keeps it from reading
+     as a cross or a plane at 19px. */
+  dragonfly: [['circle', { cx: 12, cy: 4.9, r: 1.7 }],
+              ['path', { d: 'M12 7.2v13.6', fill: 'none', 'stroke-width': 1.8 }],
+              ['path', { d: 'M12.9 8.6C15.4 5.9 19.4 5 21.3 6.3 20.7 8.5 16.6 9.6 12.9 8.6z' }],
+              ['path', { d: 'M11.1 8.6C8.6 5.9 4.6 5 2.7 6.3 3.3 8.5 7.4 9.6 11.1 8.6z' }],
+              ['path', { d: 'M12.9 10.7C15.9 10.1 19.6 11 20.7 12.9 18.9 14.2 15.3 13.3 12.9 10.7z' }],
+              ['path', { d: 'M11.1 10.7C8.1 10.1 4.4 11 3.3 12.9 5.1 14.2 8.7 13.3 11.1 10.7z' }]],
   /* A rack gateway seen head on: body, two link LEDs, and the uplink arcs
      above it. The arcs are what separate it from the NAS glyph below, which is
      otherwise also a stack of boxes with lights on. */
@@ -690,6 +700,8 @@ function osFamily(os) {
      them and render every BSD as the FreeBSD daemon. */
   if (s.indexOf('openbsd') > -1) return 'openbsd';
   if (s.indexOf('netbsd') > -1) return 'netbsd';
+  /* uname -s says "DragonFly", with no "BSD" in it, so it has to be named. */
+  if (s.indexOf('dragonfly') > -1) return 'dragonfly';
   if (s.indexOf('bsd') > -1) return 'bsd';
   /* 'suse' and 'slackware' are here because their PRETTY_NAMEs carry no
      'Linux' -- "openSUSE Tumbleweed", "Slackware 15.0 x86_64" -- so each fell
@@ -867,6 +879,7 @@ function compactRow(h) {
 var OS_GROUPS = {
   apple: 'macOS', nas: 'TrueNAS', debian: 'Debian', ubuntu: 'Ubuntu',
   raspberry: 'Raspberry Pi OS', openbsd: 'OpenBSD', netbsd: 'NetBSD',
+  dragonfly: 'DragonFly BSD',
   gateway: 'UniFi', hub: 'Hubitat', unknown: 'Unknown OS'
 };
 

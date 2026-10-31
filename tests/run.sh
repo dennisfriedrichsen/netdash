@@ -193,6 +193,38 @@ if want freebsd-jailhost; then
   rm -rf "$B"
 fi
 
+# -------------------------------------------------------------- DragonFly ----
+if want dragonfly; then
+  echo "dragonfly (FreeBSD's sysctls plus a cache queue; a root with no /dev/)"
+  # The sysctl values are the capture from dragonflybsd6dot4dot0.
+  B=$(mkbin x uname sysctl df hostname)
+  J=$(run_collector "$B" bsd \
+      MOCK_PHYSMEM=4257349632 MOCK_PAGESIZE=4096 MOCK_FREE=561476 MOCK_INACT=184464 \
+      MOCK_CACHE=82515 MOCK_VMM_GUEST=bhyve \
+      MOCK_BOOTTIME="{ sec = 1793462032, nsec = 0 } Sat Oct 31 10:53:52 2026" \
+      NETDASH_MOCK_OS=DragonFly NETDASH_MOCK_REL=6.4-RELEASE NETDASH_MOCK_ARCH=x86_64)
+  check "reports as DragonFly" \
+        "assert d['os']=='DragonFly 6.4-RELEASE (x86_64)', d['os']" "$J"
+  # 4257349632 - (561476 free + 184464 inactive + 82515 cache) * 4096
+  check "memory counts the cache queue as reclaimable" \
+        "assert (d['mem_total_bytes'],d['mem_used_bytes'])==(4257349632,863997952), d" "$J"
+  check "the root is kept though its device has no /dev/, and null mounts are not" \
+        "assert [x['mount'] for x in d['disks']]==['/','/boot','/build'], d['disks']" "$J"
+  check "the root's numbers come through" \
+        "r=d['disks'][0]; assert (r['used_bytes'],r['total_bytes'])==(674624*1024,32433152*1024), r" "$J"
+  check "nsec boottime read like usec" \
+        "assert 0 < d['uptime_seconds'] < 86400*400, d['uptime_seconds']" "$J"
+  check "virt from kern.vmm_guest" \
+        "assert d['virt']=='bhyve', d['virt']" "$J"
+  J=$(run_collector "$B" bsd \
+      MOCK_PHYSMEM=4257349632 MOCK_PAGESIZE=4096 MOCK_FREE=561476 MOCK_INACT=184464 \
+      MOCK_VMM_GUEST=unknown MOCK_BOOTTIME="{ sec = 1793462032, nsec = 0 }" \
+      NETDASH_MOCK_OS=DragonFly NETDASH_MOCK_REL=6.4-RELEASE)
+  check "an unidentified guest is null, and a missing cache count is zero" \
+        "assert d['virt'] is None and d['mem_used_bytes']==4257349632-(561476+184464)*4096, d" "$J"
+  rm -rf "$B"
+fi
+
 # ---------------------------------------------------------------- OpenBSD ----
 if want openbsd; then
   echo "openbsd (6-field comma cp_time, vmstat -s memory, bare-epoch boottime)"
@@ -715,6 +747,30 @@ PY
   # old string stops matching on its own.
   check "a different running version yields a different string" \
         "assert d['version_only'] != d['version_bump'], d" "$J"
+fi
+
+if want patches-dragonfly; then
+  echo "patches-dragonfly (pkg audit as on FreeBSD; base is said to be unchecked)"
+  # DragonFly runs the same pkg, so the FreeBSD capture stands in for its audit.
+  B=$(mkbin x uname sysctl)
+  cat > "$B/pkg" <<EOF
+#!/bin/sh
+case "\$*" in
+  "audit -F -q"|"update -q") exit 0 ;;
+  audit) cat "$FIX/freebsd/pkg-audit.txt"; exit 1 ;;
+  "version -vRL=") printf 'vim-9.1 < needs updating (remote has 9.2)\\n' ;;
+  *) exit 1 ;;
+esac
+EOF
+  chmod +x "$B/pkg"
+  J=$(env "PATH=$B:/usr/bin:/bin" NETDASH_CONF=/dev/null NETDASH_FIXTURES="$FIX" \
+      NETDASH_MOCK_OS=DragonFly NETDASH_MOCK_REL=6.4-RELEASE \
+      sh "$ROOT/collectors/bsd/netdash-patchcheck.sh" --print 2>/dev/null) || J=''
+  check "packages audited like FreeBSD's: 9 vulnerable, 1 behind" \
+        "assert (d['security'],d['other'],d['source'])==(9,1,'pkg-audit'), d" "$J"
+  check "base is reported as not checked, not as clean, and no reboot answer" \
+        "assert 'DragonFly ships no binary patch' in d['detail'] and d['reboot_required'] is None, d" "$J"
+  rm -rf "$B"
 fi
 
 if want patches-macos; then

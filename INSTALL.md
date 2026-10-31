@@ -103,7 +103,7 @@ schedules anything. It installs the following schedule:
 
 - Linux with systemd: `netdash-collector.timer`, every 30 seconds
 - Alpine/OpenRC: root crontab, every 60 seconds; `crond` is enabled and started
-- FreeBSD, OpenBSD, and NetBSD: root crontab, every 60 seconds
+- FreeBSD, DragonFly, OpenBSD, and NetBSD: root crontab, every 60 seconds
 
 It also installs `netdash-patchcheck` and schedules it **daily and at every
 boot** — as `netdash-patchcheck.timer` under systemd, otherwise root crontab
@@ -124,7 +124,7 @@ age of the metadata already on disk. See [PATCH-CHECKS.md](PATCH-CHECKS.md).
 
 Configuration is stored with mode 600 at `/etc/netdash/collector.conf` on
 Linux, OpenBSD, and NetBSD, or `/usr/local/etc/netdash/collector.conf` on
-FreeBSD.
+FreeBSD and DragonFly.
 
 FreeBSD is tested. OpenBSD and NetBSD support is implemented but has not been
 verified on real hardware. Before relying on memory figures from either, run:

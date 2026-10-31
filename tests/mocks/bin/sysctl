@@ -17,6 +17,8 @@ case "$key" in
   vm.stats.vm.v_page_size)       [ -n "$MOCK_PAGESIZE" ] && { echo "$MOCK_PAGESIZE"; exit 0; }; exit 1 ;;
   vm.stats.vm.v_free_count)      [ -n "$MOCK_FREE" ]     && { echo "$MOCK_FREE"; exit 0; };     exit 1 ;;
   vm.stats.vm.v_inactive_count)  [ -n "$MOCK_INACT" ]    && { echo "$MOCK_INACT"; exit 0; };    exit 1 ;;
+  vm.stats.vm.v_cache_count)     [ -n "$MOCK_CACHE" ]    && { echo "$MOCK_CACHE"; exit 0; };    exit 1 ;;
+  kern.vmm_guest) [ -n "$MOCK_VMM_GUEST" ] && { echo "$MOCK_VMM_GUEST"; exit 0; }; exit 1 ;;
   vm.stats.vm.v_laundry_count)   [ -n "$MOCK_LAUNDRY" ]  && { echo "$MOCK_LAUNDRY"; exit 0; };  exit 1 ;;
   kstat.zfs.misc.arcstats.size)  [ -n "$MOCK_ARC" ]      && { echo "$MOCK_ARC"; exit 0; };      exit 1 ;;
   security.jail.jailed) [ -n "$MOCK_JAILED" ] && { echo "$MOCK_JAILED"; exit 0; }; exit 1 ;;

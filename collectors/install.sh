@@ -7,7 +7,7 @@
 # Re-running is the upgrade path: it overwrites the script and leaves config alone.
 #
 # Linux:   Debian/Ubuntu/Raspbian, Fedora, Arch, openSUSE, Alpine, Slackware
-# BSD:     FreeBSD, OpenBSD, NetBSD
+# BSD:     FreeBSD, DragonFly, OpenBSD, NetBSD
 set -eu
 
 URL=""; TOKEN=""; INTERVAL=""
@@ -29,7 +29,8 @@ OS=$(uname -s)
 case "$OS" in
   Linux)   SRC="$SRC_DIR/linux/netdash-collector.sh"; CONF_DIR=/etc/netdash
            PSRC="$SRC_DIR/linux/netdash-patchcheck.sh" ;;
-  FreeBSD) SRC="$SRC_DIR/bsd/netdash-collector.sh";   CONF_DIR=/usr/local/etc/netdash
+  FreeBSD|DragonFly)
+           SRC="$SRC_DIR/bsd/netdash-collector.sh";   CONF_DIR=/usr/local/etc/netdash
            PSRC="$SRC_DIR/bsd/netdash-patchcheck.sh" ;;
   OpenBSD|NetBSD)
            SRC="$SRC_DIR/bsd/netdash-collector.sh";   CONF_DIR=/etc/netdash
