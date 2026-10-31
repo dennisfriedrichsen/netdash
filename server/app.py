@@ -1167,7 +1167,8 @@ class Handler(BaseHTTPRequestHandler):
                 for r in db.disk_series(CONN, host, time.time() - mins * 60):
                     disk_hist.setdefault(r["mount"], []).append(
                         {"ts": r["ts"], "pct": r["pct_max"],
-                         "used_bytes": r["used_avg"], "total_bytes": r["total_bytes"]})
+                         "used_bytes": r["used_avg"], "total_bytes": r["total_bytes"],
+                         "coverage": r["coverage"]})
                 disk_resolution = "daily"
 
             cur = summarize(samples[0])
@@ -1261,7 +1262,7 @@ def pruner():
             h = CFG.get("history") or {}
             db.prune(CONN, CFG["retention_hours"],
                      h.get("keep_rollup_days") if h.get("enabled") else None,
-                     h.get("keep_event_days"))
+                     h.get("keep_event_days"), fold=bool(h.get("enabled")))
         except Exception as e:
             sys.stderr.write("prune error: %s\n" % e)
 
@@ -1384,11 +1385,12 @@ def reach_prober():
 def roller():
     """Fold raw samples into hourly and daily buckets, forever.
 
-    Runs more often than hourly on purpose. The job rewrites every bucket in
-    the raw window each pass, so running it four times an hour costs four cheap
-    passes and means the current hour is never more than fifteen minutes stale
-    on a chart -- rather than a graph whose right-hand end snaps into existence
-    on the hour.
+    Runs more often than hourly on purpose. Each pass folds only what arrived
+    since the last, so running it four times an hour costs four cheap passes
+    and means the current hour is never more than fifteen minutes stale on a
+    chart -- rather than a graph whose right-hand end snaps into existence on
+    the hour. Correctness does not depend on the interval: the pruner folds
+    before it deletes, so a stalled roller delays the chart and loses nothing.
     """
     h = CFG.get("history") or {}
     interval = max(60, int(h.get("roll_seconds") or 900))
@@ -1581,7 +1583,10 @@ def main():
         sys.exit("config not found: %s (copy config.example.json)" % cfg_path)
     CFG = load_config(cfg_path)
     CONN = db.connect(CFG["db_path"])
-    db.prune(CONN, CFG["retention_hours"])
+    # Folds first: this runs before the roller's first pass, and after a long
+    # outage everything it deletes is a sample the roller has not seen.
+    db.prune(CONN, CFG["retention_hours"],
+             fold=bool((CFG.get("history") or {}).get("enabled")))
 
     # A per-host block keyed by a hostname that never reports does nothing at
     # all, silently, and a typo looks exactly like a host not installed yet.

@@ -3284,6 +3284,365 @@ PYEOF
         "assert d['th'] < 1 and d['ts'] < 1, (d['th'], d['ts'])" "$J"
 fi
 
+if want history-rollup; then
+  echo "history-rollup (a bucket stays whole after the raw samples behind it expire)"
+  # The roller used to recompute every bucket from the raw rows still on hand
+  # and INSERT OR REPLACE the result. As the 48-hour cutoff walked through an
+  # old hour or day, each pass overwrote that bucket with whatever tail was
+  # left, and the last pass before the cutoff cleared it left the tail behind
+  # for good: mercury's older daily disk rows held a median of 8.5 samples
+  # against 1,337 for a whole day. Driven here through connect/prune/rollup in
+  # the order main(), pruner() and roller() call them, on a fake clock.
+  snippet() { python3 - "$@" <<'PYEOF'
+import json, os, sys, tempfile
+sys.path.insert(0, os.path.join(sys.argv[1], "server"))
+import db, app
+
+H, D, RET = 3600, 86400, 48
+T0 = 20362 * D                       # a UTC midnight
+
+class Clock:
+    def __init__(self, t): self.t = t
+    def time(self): return self.t
+clock = Clock(T0)
+db.time = clock
+app.time = clock
+
+path = os.path.join(tempfile.mkdtemp(), "t.db")
+exp_h, exp_d, ingested = {}, {}, {}
+
+def expect(p):
+    ts = p["ts"]
+    ingested[p["host"]] = ingested.get(p["host"], 0) + 1
+    e = exp_h.setdefault((p["host"], ts - ts % H), [0, [], []])
+    e[0] += 1
+    if p.get("cpu_pct") is not None:
+        e[1].append(p["cpu_pct"])
+    m = p.get("mem_pct")
+    if m is None and (p.get("mem_total_bytes") or 0) > 0 and p.get("mem_used_bytes") is not None:
+        m = 100.0 * p["mem_used_bytes"] / p["mem_total_bytes"]
+    if m is not None:
+        e[2].append(m)
+    for d in p.get("disks") or []:
+        if (d.get("total_bytes") or 0) > 0 and d.get("used_bytes") is not None:
+            x = exp_d.setdefault((p["host"], d["mount"], ts - ts % D), [[], [], []])
+            x[0].append(100.0 * d["used_bytes"] / d["total_bytes"])
+            x[1].append(d["used_bytes"])
+            x[2].append(d["total_bytes"])
+
+def mercury(t):
+    # Busy for the first ten minutes of every hour and idle after, with the
+    # hour's peak at minute two; /data near full for twenty hours of each day
+    # and nearly empty for the last four. The tail of either is a lie.
+    mh, md = (t % H) // 60, (t % D) // 60
+    cpu = 100.0 if mh == 2 else (90.0 if mh < 10 else 10.0)
+    pct = 95.0 if md < 1200 else 10.0
+    return {"host": "mercury", "ts": t, "cpu_pct": cpu,
+            "mem_used_bytes": int(6e9 if mh < 10 else 2e9), "mem_total_bytes": int(8e9),
+            "disks": [{"mount": "/", "used_bytes": int(4e10), "total_bytes": int(1e11)},
+                      {"mount": "/data", "used_bytes": int(1e12 * pct / 100),
+                       "total_bytes": int(1e12)}]}
+
+def venus(t):
+    # Everything that can be missing, is, on some samples: no cpu, a zero
+    # memory total, a zero / absent disk total, an absent used figure. And "/"
+    # is grown from 100 GB to 200 GB thirty hours in.
+    n = t // 60
+    p = {"host": "venus", "ts": t, "cpu_pct": None if n % 7 == 0 else float(n % 50)}
+    if n % 11 == 0:
+        p.update(mem_used_bytes=5, mem_total_bytes=0)
+    else:
+        p["mem_pct"] = 30.0 + n % 5
+    root = {"mount": "/", "used_bytes": int(5e10),
+            "total_bytes": int(1e11 if t < T0 + 30 * H else 2e11)}
+    if n % 13 == 0: root["total_bytes"] = 0
+    if n % 17 == 0: root["total_bytes"] = None
+    if n % 19 == 0: root["used_bytes"] = None
+    p["disks"] = [root, {"mount": "/var", "used_bytes": int(1e9 + n), "total_bytes": int(1e10)}]
+    return p
+
+def ingest(p):
+    db.insert_sample(conn, p)
+    expect(p)
+
+seen, shrunk = {}, []
+def observe(when):
+    for r in conn.execute("SELECT host, bucket, samples, cpu_max FROM rollups"):
+        k = ("hourly", r[0], r[1])
+        cur = (r[2], -1 if r[3] is None else r[3])
+        if k in seen and (cur[0] < seen[k][0] or cur[1] < seen[k][1]):
+            shrunk.append([when - T0, k[1], k[2] - T0, seen[k], cur])
+        seen[k] = cur
+    for r in conn.execute("SELECT host, mount, bucket, samples, pct_max FROM disk_rollups"):
+        k = ("daily", r[0], r[1], r[2])
+        cur = (r[3], -1 if r[4] is None else r[4])
+        if k in seen and (cur[0] < seen[k][0] or cur[1] < seen[k][1]):
+            shrunk.append([when - T0, k[1], k[2], k[3] - T0, seen[k], cur])
+        seen[k] = cur
+
+def start():
+    # main(): connect, prune, and then the roller's first pass.
+    global conn, next_roll, next_prune
+    conn = db.connect(path)
+    conn.execute("PRAGMA synchronous=OFF")
+    db.prune(conn, RET, 400, None); observe(clock.t)
+    db.rollup(conn, RET); observe(clock.t)
+    next_roll, next_prune = clock.t + 900, clock.t + 600
+
+def run_until(end, roll=True):
+    global next_roll, next_prune
+    while clock.t < end:
+        ingest(mercury(clock.t)); ingest(venus(clock.t))
+        clock.t += 60
+        if clock.t >= next_prune:
+            db.prune(conn, RET, 400, None); observe(clock.t)
+            next_prune = clock.t + 600
+        if clock.t >= next_roll:
+            if roll:
+                db.rollup(conn, RET); observe(clock.t)
+            next_roll = clock.t + 900
+
+start()
+run_until(T0 + 30 * H)
+ingest(dict(venus(T0 + 5 * H + 30), ts=T0 + 5 * H + 30))      # late, still in raw
+run_until(T0 + 36 * H)
+run_until(T0 + 40 * H, roll=False)                              # roller stalled
+run_until(T0 + 60 * H)
+ingest(dict(venus(T0 + 3 * H + 30), ts=T0 + 3 * H + 30))      # late, past retention
+ingest({"host": "pluto", "ts": T0 + 1 * H + 30, "cpu_pct": 5.0, "disks": []})
+conn.close()
+clock.t = T0 + 110 * H                                          # down for 50 hours
+start()
+run_until(T0 + 170 * H)
+
+def dump():
+    return (conn.execute("SELECT * FROM rollups ORDER BY host, bucket").fetchall(),
+            conn.execute("SELECT * FROM disk_rollups ORDER BY host, mount, bucket").fetchall())
+before = [[tuple(r) for r in t] for t in dump()]
+db.rollup(conn, RET); db.rollup(conn, RET); db.prune(conn, RET, 400, None)
+after = [[tuple(r) for r in t] for t in dump()]
+
+def close(a, b):
+    return (a is None and b is None) or (a is not None and b is not None and abs(a - b) < 1e-6)
+
+bad_h = []
+for (host, b), (n, cpus, mems) in sorted(exp_h.items()):
+    r = conn.execute("SELECT * FROM rollups WHERE host=? AND bucket=?", (host, b)).fetchone()
+    want = (n, min(cpus) if cpus else None, sum(cpus) / len(cpus) if cpus else None,
+            max(cpus) if cpus else None, min(mems) if mems else None,
+            sum(mems) / len(mems) if mems else None, max(mems) if mems else None)
+    got = r and (r["samples"], r["cpu_min"], r["cpu_avg"], r["cpu_max"],
+                 r["mem_min"], r["mem_avg"], r["mem_max"])
+    if not got or got[0] != want[0] or not all(close(x, y) for x, y in zip(got[1:], want[1:])):
+        bad_h.append([host, (b - T0) // H, want, got])
+bad_d = []
+for (host, mount, b), (pcts, used, tot) in sorted(exp_d.items()):
+    r = conn.execute("SELECT * FROM disk_rollups WHERE host=? AND mount=? AND bucket=?",
+                     (host, mount, b)).fetchone()
+    want = (len(pcts), sum(pcts) / len(pcts), max(pcts), sum(used) / len(used), max(tot))
+    got = r and (r["samples"], r["pct_avg"], r["pct_max"], r["used_avg"], r["total_bytes"])
+    if not got or got[0] != want[0] or not all(close(x, y) for x, y in zip(got[1:], want[1:])):
+        bad_d.append([host, mount, (b - T0) // D, want, got])
+
+cols = {r[1] for r in conn.execute("PRAGMA table_info(disk_rollups)")}
+coverage = {}
+if "coverage" in cols:
+    for t in ("rollups", "disk_rollups"):
+        for r in conn.execute("SELECT host, coverage, COUNT(*) FROM %s GROUP BY 1, 2" % t):
+            coverage["%s/%s/%s" % (t, r[0], r[1])] = r[2]
+grown = None
+if "total_min" in cols:
+    grown = tuple(conn.execute("SELECT total_min, total_bytes FROM disk_rollups WHERE "
+                               "host='venus' AND mount='/' AND bucket=?", (T0 + D,)).fetchone())
+
+hour0 = conn.execute("SELECT samples, cpu_min, cpu_avg, cpu_max FROM rollups "
+                     "WHERE host='mercury' AND bucket=?", (T0,)).fetchone()
+day0 = conn.execute("SELECT samples, pct_avg, pct_max FROM disk_rollups "
+                    "WHERE host='mercury' AND mount='/data' AND bucket=?", (T0,)).fetchone()
+folded = {r[0]: r[1] for r in conn.execute("SELECT host, SUM(samples) FROM rollups GROUP BY host")}
+series = db.rollup_series(conn, "mercury", T0)
+app.CONN, app.CFG = conn, {"history": {"project_days": 30}}
+print(json.dumps({
+    "hour0": hour0 and list(hour0), "day0": day0 and list(day0),
+    "bad_h": len(bad_h), "bad_h_eg": bad_h[:3], "bad_d": len(bad_d), "bad_d_eg": bad_d[:3],
+    "shrunk": len(shrunk), "shrunk_eg": shrunk[:3],
+    "ingested": ingested, "folded": folded, "rerun_same": before == after,
+    "coverage": coverage, "grown": grown,
+    "series_keys": sorted(series[0]) if series else None, "series_len": len(series),
+    "raw_left_h": (clock.t - conn.execute("SELECT MIN(ts) FROM samples").fetchone()[0]) / H,
+    "projection": app.disk_projection("mercury", "/data")}))
+PYEOF
+  }
+  J=$(snippet "$ROOT") || J=''
+  check "the first hour keeps all 60 samples and its early peak" \
+        "assert d['hour0']==[60, 10.0, (9*90+100+50*10)/60.0, 100.0], d['hour0']" "$J"
+  check "the first day of /data keeps all 1440 samples, not the idle tail" \
+        "assert d['day0'][0]==1440 and abs(d['day0'][1]-(1200*95+240*10)/1440.0)<1e-6 and d['day0'][2]==95.0, d['day0']" "$J"
+  check "no bucket ever loses samples or its maximum on a later pass" \
+        "assert d['shrunk']==0, (d['shrunk'], d['shrunk_eg'])" "$J"
+  check "every hourly bucket matches the samples that went into it" \
+        "assert d['bad_h']==0, (d['bad_h'], d['bad_h_eg'])" "$J"
+  check "every daily disk bucket matches too, nulls and bad totals left out" \
+        "assert d['bad_d']==0, (d['bad_d'], d['bad_d_eg'])" "$J"
+  check "every sample ingested is counted once, across a 50-hour outage" \
+        "assert d['folded']==d['ingested'], (d['folded'], d['ingested'])" "$J"
+  check "rolling up and pruning again changes nothing" \
+        "assert d['rerun_same'], 'rerun changed the rollups'" "$J"
+  check "raw still ages out at its own window" \
+        "assert d['raw_left_h'] <= 48.2, d['raw_left_h']" "$J"
+  check "buckets folded from their first sample say they are complete" \
+        "c=d['coverage']; assert c.get('rollups/mercury/full')==120 and c.get('disk_rollups/venus/full')==14 and not [k for k in c if '/pluto/' not in k and not k.endswith('/full')], c" "$J"
+  check "and a late sample older than the raw window lands in a partial bucket" \
+        "assert d['coverage'].get('rollups/pluto/partial')==1, d['coverage']" "$J"
+  check "a mount resized mid-day keeps both capacities" \
+        "assert d['grown']==[int(1e11), int(2e11)], d['grown']" "$J"
+  check "the hourly series still feeds the chart, now saying how complete it is" \
+        "assert d['series_len']==120 and set(['ts','cpu_pct','mem_pct','cpu_min','cpu_max','samples','coverage']) <= set(d['series_keys']), d['series_keys']" "$J"
+
+  # The roller and the pruner are separate threads, and ingest is a third. A
+  # prune that lands between two rolls must not delete a sample nobody has
+  # folded yet -- here with a zero-hour window, so every prune deletes almost
+  # everything.
+  snippet() { python3 - "$@" <<'PYEOF'
+import json, os, sys, tempfile, threading, time
+sys.path.insert(0, os.path.join(sys.argv[1], "server"))
+import db
+
+conn = db.connect(os.path.join(tempfile.mkdtemp(), "race.db"))
+stop, errors, sent = threading.Event(), [], {"a": 0, "b": 0}
+
+def loop(fn):
+    def run():
+        while not stop.is_set():
+            try:
+                fn()
+            except Exception as e:
+                errors.append("%s: %s" % (type(e).__name__, e)); return
+    return run
+
+def ingester(host):
+    def go():
+        db.insert_sample(conn, {"host": host, "ts": int(time.time()), "cpu_pct": 3.0,
+            "disks": [{"mount": "/", "used_bytes": 1, "total_bytes": 2}]})
+        sent[host] += 1
+    return go
+
+threads = [threading.Thread(target=loop(ingester("a"))),
+           threading.Thread(target=loop(ingester("b"))),
+           threading.Thread(target=loop(lambda: db.rollup(conn, 48))),
+           threading.Thread(target=loop(lambda: db.prune(conn, 0)))]
+for t in threads: t.start()
+time.sleep(3.0)
+stop.set()
+for t in threads: t.join(10)
+time.sleep(1.1)
+db.prune(conn, 0)
+db.rollup(conn, 48)
+q = lambda s: {r[0]: r[1] for r in conn.execute(s)}
+print(json.dumps({"errors": errors[:3], "sent": sent,
+    "hourly": q("SELECT host, SUM(samples) FROM rollups GROUP BY host"),
+    "daily": q("SELECT host, SUM(samples) FROM disk_rollups GROUP BY host"),
+    "raw": conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0]}))
+PYEOF
+  }
+  J=$(snippet "$ROOT") || J=''
+  check "roller, pruner and ingest racing on one connection raise nothing" \
+        "assert d['errors']==[], d['errors']" "$J"
+  check "and every sample is in the rollups exactly once, though raw is gone" \
+        "assert d['raw']==0 and d['hourly']==d['sent']==d['daily'], d" "$J"
+
+  # A database written by the old roller: its rows carry no running sums and
+  # some are tails. Whatever the surviving raw samples fully cover is rebuilt;
+  # everything else is left exactly as it was and marked as legacy, because
+  # the samples that would repair it are gone and inventing them is worse.
+  snippet() { python3 - "$@" <<'PYEOF'
+import json, os, sqlite3, sys, tempfile
+sys.path.insert(0, os.path.join(sys.argv[1], "server"))
+import db
+
+H, D = 3600, 86400
+T0 = 20362 * D
+class Clock:
+    def __init__(self, t): self.t = t
+    def time(self): return self.t
+db.time = Clock(T0 + 50 * H)
+
+path = os.path.join(tempfile.mkdtemp(), "old.db")
+c = sqlite3.connect(path)
+c.executescript("""
+CREATE TABLE rollups (host TEXT NOT NULL, bucket INTEGER NOT NULL, samples INTEGER NOT NULL,
+    cpu_min REAL, cpu_avg REAL, cpu_max REAL, mem_min REAL, mem_avg REAL, mem_max REAL,
+    PRIMARY KEY (host, bucket));
+CREATE TABLE disk_rollups (host TEXT NOT NULL, mount TEXT NOT NULL, bucket INTEGER NOT NULL,
+    samples INTEGER NOT NULL, pct_avg REAL, pct_max REAL, used_avg REAL, total_bytes INTEGER,
+    PRIMARY KEY (host, mount, bucket));
+""")
+c.executescript(db.SCHEMA.split("CREATE TABLE IF NOT EXISTS rollups")[0])
+c.executescript("CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " ts INTEGER NOT NULL, host TEXT NOT NULL, kind TEXT NOT NULL,"
+                " from_state TEXT, to_state TEXT NOT NULL, detail TEXT);"
+                "CREATE TABLE IF NOT EXISTS patch_acks (host TEXT NOT NULL, package TEXT NOT NULL,"
+                " acked_at INTEGER NOT NULL, missing_since INTEGER, PRIMARY KEY (host, package));")
+# Raw survives from 02:30 on day 0, as a 48-hour prune at 50:30 would leave it.
+for t in range(T0 + 2 * H + 1800, T0 + 50 * H, 60):
+    cur = c.execute("INSERT INTO samples (host, ts, cpu_pct, mem_pct) VALUES ('mercury', ?, 20.0, 40.0)", (t,))
+    c.execute("INSERT INTO disks VALUES (?, '/data', 500, 1000)", (cur.lastrowid,))
+c.execute("INSERT INTO hosts VALUES ('mercury', ?, ?, 'FreeBSD', 'push', NULL)", (T0, T0 + 50 * H))
+legacy = [(1, 7, 3.0), (2, 5, 4.0), (10, 20, 20.0), (49, 30, 20.0)]
+for h, n, v in legacy:
+    c.execute("INSERT INTO rollups VALUES ('mercury', ?, ?, ?, ?, ?, 40, 40, 40)", (T0 + h * H, n, v, v, v))
+c.execute("INSERT INTO disk_rollups VALUES ('mercury', '/data', ?, 9, 50.0, 50.0, 500, 1000)", (T0,))
+c.execute("INSERT INTO disk_rollups VALUES ('mercury', '/data', ?, 100, 50.0, 50.0, 500, 1000)", (T0 + D,))
+c.execute("INSERT INTO patch_acks VALUES ('mercury', 'openssl', 1, NULL)")
+c.execute("INSERT INTO events (ts, host, kind, to_state) VALUES (1, 'mercury', 'status', 'down')")
+c.commit(); c.close()
+
+conn = db.connect(path)
+db.prune(conn, 48, 400, None)            # main(): connect, then prune
+def h(n):
+    r = conn.execute("SELECT samples, cpu_avg, coverage FROM rollups WHERE bucket=?", (T0 + n * H,)).fetchone()
+    return r and list(r)
+def d(n):
+    r = conn.execute("SELECT samples, pct_avg, coverage FROM disk_rollups WHERE bucket=?", (T0 + n * D,)).fetchone()
+    return r and list(r)
+first = {"h1": h(1), "h2": h(2), "h10": h(10), "h30": h(30), "h49": h(49),
+         "d0": d(0), "d1": d(1), "d2": d(2)}
+db.rollup(conn, 48); db.rollup(conn, 48)
+again = {"h10": h(10), "h49": h(49), "d1": d(1), "d2": d(2)}
+db.insert_sample(conn, {"host": "mercury", "ts": T0 + 50 * H + 5, "cpu_pct": 1.0, "disks": []})
+db.rollup(conn, 48)
+h50 = h(50)
+# A rollback: the old roller rewrites the open hour with no sums and no
+# coverage. Back on this server, the next pass must rebuild it, not freeze it.
+with db._DB:
+    conn.execute("INSERT OR REPLACE INTO rollups (host, bucket, samples, cpu_min, cpu_avg,"
+                 " cpu_max) VALUES ('mercury', ?, 1, 1.0, 1.0, 1.0)", (T0 + 50 * H,))
+    conn.commit()
+db.insert_sample(conn, {"host": "mercury", "ts": T0 + 50 * H + 65, "cpu_pct": 3.0, "disks": []})
+db.rollup(conn, 48)
+print(json.dumps({"first": first, "again": again, "h50": h50, "healed": h(50),
+    "acks": conn.execute("SELECT COUNT(*) FROM patch_acks").fetchone()[0],
+    "events": conn.execute("SELECT COUNT(*) FROM events").fetchone()[0],
+    "hosts": conn.execute("SELECT COUNT(*) FROM hosts").fetchone()[0]}))
+PYEOF
+  }
+  J=$(snippet "$ROOT") || J=''
+  check "an upgrade rebuilds the legacy hours its raw samples fully cover" \
+        "f=d['first']; assert f['h10']==[60,20.0,'full'] and f['h49']==[60,20.0,'full'] and f['h30']==[60,20.0,'full'], f" "$J"
+  check "and the legacy days" \
+        "f=d['first']; assert f['d1']==[1440,50.0,'full'] and f['d2']==[120,50.0,'full'], f" "$J"
+  check "but leaves a tail it cannot complete exactly as it was, marked legacy" \
+        "f=d['first']; assert f['h1']==[7,3.0,None] and f['h2']==[5,4.0,None] and f['d0']==[9,50.0,None], f" "$J"
+  check "a rebuilt bucket is not counted again by the next pass" \
+        "assert d['again']=={'h10':[60,20.0,'full'],'h49':[60,20.0,'full'],'d1':[1440,50.0,'full'],'d2':[120,50.0,'full']}, d['again']" "$J"
+  check "and the next sample folds in on its own" \
+        "assert d['h50']==[1,1.0,'full'], d['h50']" "$J"
+  check "an hour rewritten by a rolled-back server is rebuilt on the way back" \
+        "assert d['healed']==[2,2.0,'full'], d['healed']" "$J"
+  check "acks, events and the host register come through untouched" \
+        "assert (d['acks'], d['events'], d['hosts'])==(1, 1, 1), d" "$J"
+fi
+
 
 # ----------------------------------------------------------------- icons ----
 if want icons; then

@@ -138,6 +138,22 @@ CREATE INDEX IF NOT EXISTS idx_fleet_sample ON fleet(sample_id);
 -- min/avg/max, not just avg: an hour that averaged 40% CPU and an hour that
 -- alternated between 5% and 95% are different facts about a machine, and an
 -- average alone erases the second one entirely.
+--
+-- Each sample is folded in once, as it arrives -- see rollup() -- so a bucket
+-- carries running sums beside its averages: the average of an hour cannot be
+-- extended by another sample, its sum and count can. `samples` counts every
+-- sample in the hour; cpu_n and mem_n count the ones that had a value, which
+-- is what the averages divide by.
+--
+-- coverage says how much of the bucket that is:
+--   'full'    folded from the bucket's first sample on
+--   'partial' started after some of the bucket's raw samples were pruned,
+--             so it holds only what was left (a late sample, a re-enabled
+--             history)
+--   NULL      written by a server from before this column, whose roller
+--             rewrote each bucket from the raw samples left on hand -- so an
+--             old one may be just the tail of its hour. Nothing remains that
+--             could say whether it is, and nothing here pretends to.
 CREATE TABLE IF NOT EXISTS rollups (
     host    TEXT    NOT NULL,
     -- Unix ts of the start of the hour, UTC. Integer arithmetic, no calendar.
@@ -145,10 +161,18 @@ CREATE TABLE IF NOT EXISTS rollups (
     samples INTEGER NOT NULL,
     cpu_min REAL, cpu_avg REAL, cpu_max REAL,
     mem_min REAL, mem_avg REAL, mem_max REAL,
+    cpu_sum REAL, cpu_n INTEGER,
+    mem_sum REAL, mem_n INTEGER,
+    coverage TEXT,
     PRIMARY KEY (host, bucket)
 );
 CREATE INDEX IF NOT EXISTS idx_rollups_bucket ON rollups(bucket);
 
+-- Daily, per mount. Only samples with a positive total and a used figure
+-- count; `samples` is how many did. Each sample's percentage is taken against
+-- its own total, so a mount grown mid-day keeps an honest pct_avg; total_bytes
+-- is the largest total seen that day and total_min the smallest, and the two
+-- differ only on a day the capacity changed.
 CREATE TABLE IF NOT EXISTS disk_rollups (
     host        TEXT    NOT NULL,
     mount       TEXT    NOT NULL,
@@ -159,9 +183,23 @@ CREATE TABLE IF NOT EXISTS disk_rollups (
     pct_max     REAL,
     used_avg    REAL,
     total_bytes INTEGER,
+    pct_sum     REAL,
+    used_sum    REAL,
+    total_min   INTEGER,
+    coverage    TEXT,
     PRIMARY KEY (host, mount, bucket)
 );
 CREATE INDEX IF NOT EXISTS idx_disk_rollups_bucket ON disk_rollups(bucket);
+
+-- Bookkeeping the roller and the pruner share, as integers by name:
+--   rollup_folded_id   the highest samples.id already folded into the rollups
+--   raw_pruned_before  the latest cutoff prune() has deleted raw samples
+--                      before; a bucket starting at or after it still has all
+--                      of its raw samples
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT    PRIMARY KEY,
+    value INTEGER
+);
 
 -- State transitions. Tiny, and the only part of netdash with a memory.
 --
@@ -309,6 +347,19 @@ _ADDED_COLUMNS = {
         ("mem_pct", "REAL"),
         ("virt", "TEXT"),
         ("peer_addr", "TEXT"),
+    ],
+    "rollups": [
+        ("cpu_sum", "REAL"),
+        ("cpu_n", "INTEGER"),
+        ("mem_sum", "REAL"),
+        ("mem_n", "INTEGER"),
+        ("coverage", "TEXT"),
+    ],
+    "disk_rollups": [
+        ("pct_sum", "REAL"),
+        ("used_sum", "REAL"),
+        ("total_min", "INTEGER"),
+        ("coverage", "TEXT"),
     ],
 }
 
@@ -538,6 +589,7 @@ def connect(path):
     _migrate_patch_acks(conn)
     _migrate_patch_pending(conn)
     _migrate_hosts(conn)
+    _migrate_rollups(conn)
     conn.commit()
     return conn
 
@@ -653,7 +705,7 @@ ACK_GRACE = 3 * 86400
 GRACE_SOURCES = ("softwareupdate", "softwareupdate+brew")
 
 
-def prune(conn, retention_hours, rollup_days=None, event_days=None):
+def prune(conn, retention_hours, rollup_days=None, event_days=None, fold=True):
     """Drop raw samples past the window, and rollups past a much longer one.
 
     Three tiers with three lifetimes, so "how long do we keep data" stops being
@@ -661,9 +713,21 @@ def prune(conn, retention_hours, rollup_days=None, event_days=None):
     interesting recently; rollups are cheap and only interesting over months;
     events are almost free and are the one thing worth keeping indefinitely,
     which is what `event_days=None` means.
+
+    Folds every unfolded sample into the rollups first, in the same
+    transaction as the delete, so no raw sample is deleted before it has been
+    counted. The pruner and the roller run on separate timers, and main()
+    prunes before the roller's first pass: on a server that had been down
+    longer than the window, that prune used to delete every sample the roller
+    had not yet seen. `fold=False` is for a server with history turned off,
+    which keeps no rollups to fold into.
     """
     with _DB:
         cutoff = int(time.time()) - retention_hours * 3600
+        if fold:
+            _fold(conn)
+        _set_meta(conn, "raw_pruned_before",
+                  max(cutoff, _meta(conn, "raw_pruned_before") or 0))
         conn.execute(
             "DELETE FROM disks WHERE sample_id IN (SELECT id FROM samples WHERE ts < ?)",
             (cutoff,),
@@ -730,65 +794,220 @@ def prune(conn, retention_hours, rollup_days=None, event_days=None):
         conn.commit()
 
 
+def _meta(conn, key):
+    row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+    return None if row is None else row[0]
+
+
+def _set_meta(conn, key, value):
+    conn.execute("INSERT INTO meta (key, value) VALUES (?, ?)"
+                 " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                 (key, int(value)))
+
+
+def _migrate_rollups(conn):
+    """Give a database from before the folding roller its prune horizon.
+
+    A fresh database has pruned nothing, so every bucket it starts can be
+    whole. One that was pruned before raw_pruned_before existed may have lost
+    raw samples from any time before its oldest survivor, and so that is the
+    horizon it starts from: a bucket beginning at or after the oldest sample
+    left is provably intact, and one beginning earlier is not. A database with
+    rollups but no samples at all could have lost anything up to now.
+
+    rollup_folded_id is left unset, so the first fold takes in every sample on
+    hand and _heal_legacy rebuilds the old rows those samples fully cover.
+    """
+    if _meta(conn, "raw_pruned_before") is not None:
+        return
+    oldest = conn.execute("SELECT MIN(ts) FROM samples").fetchone()[0]
+    if oldest is None:
+        had = (conn.execute("SELECT 1 FROM rollups LIMIT 1").fetchone()
+               or conn.execute("SELECT 1 FROM disk_rollups LIMIT 1").fetchone())
+        oldest = int(time.time()) if had else 0
+    _set_meta(conn, "raw_pruned_before", oldest)
+
+
 HOUR, DAY = 3600, 86400
 
+# Both upserts merge a batch of raw samples into whatever their buckets already
+# hold. {where} picks the batch, over `s` (samples) and, for disks, `d`.
+#
+# min() and max() of two values are NULL if either is, so each side falls back
+# to the other: a bucket that had no cpu reading yet takes the new one, and a
+# batch with none leaves the old one alone.
+#
+# The DO UPDATE never touches a NULL-coverage row. That row was written by the
+# old roller and has no sums to add to; _heal_legacy rebuilds it from raw if
+# the raw is all still there, and otherwise it is left exactly as it was.
+_FOLD_HOURLY = """
+INSERT INTO rollups (host, bucket, samples,
+                     cpu_min, cpu_avg, cpu_max, cpu_sum, cpu_n,
+                     mem_min, mem_avg, mem_max, mem_sum, mem_n, coverage)
+SELECT host, bucket, COUNT(*),
+       MIN(cpu_pct), AVG(cpu_pct), MAX(cpu_pct), TOTAL(cpu_pct), COUNT(cpu_pct),
+       MIN(pct), AVG(pct), MAX(pct), TOTAL(pct), COUNT(pct),
+       CASE WHEN bucket >= :horizon THEN 'full' ELSE 'partial' END
+  FROM (SELECT s.host, s.ts - (s.ts %% %(len)d) AS bucket, s.cpu_pct,
+               COALESCE(s.mem_pct,
+                        CASE WHEN s.mem_total_bytes > 0
+                             THEN 100.0 * s.mem_used_bytes / s.mem_total_bytes
+                        END) AS pct
+          FROM samples s WHERE {where})
+ WHERE 1
+ GROUP BY host, bucket
+ON CONFLICT (host, bucket) DO UPDATE SET
+   samples = samples + excluded.samples,
+   cpu_sum = cpu_sum + excluded.cpu_sum,
+   cpu_n   = cpu_n + excluded.cpu_n,
+   cpu_avg = (cpu_sum + excluded.cpu_sum) / NULLIF(cpu_n + excluded.cpu_n, 0),
+   cpu_min = min(COALESCE(cpu_min, excluded.cpu_min), COALESCE(excluded.cpu_min, cpu_min)),
+   cpu_max = max(COALESCE(cpu_max, excluded.cpu_max), COALESCE(excluded.cpu_max, cpu_max)),
+   mem_sum = mem_sum + excluded.mem_sum,
+   mem_n   = mem_n + excluded.mem_n,
+   mem_avg = (mem_sum + excluded.mem_sum) / NULLIF(mem_n + excluded.mem_n, 0),
+   mem_min = min(COALESCE(mem_min, excluded.mem_min), COALESCE(excluded.mem_min, mem_min)),
+   mem_max = max(COALESCE(mem_max, excluded.mem_max), COALESCE(excluded.mem_max, mem_max))
+ WHERE rollups.coverage IS NOT NULL
+""" % {"len": HOUR}
 
-def rollup(conn, window_hours):
-    """Fold every raw sample still on hand into its hour and day buckets.
+# A disk row counts only with a positive total and a used figure: a mount
+# reporting a zero or missing total has no percentage to give, and averaging
+# it in as zero would read as a disk that emptied itself.
+_FOLD_DAILY = """
+INSERT INTO disk_rollups (host, mount, bucket, samples,
+                          pct_avg, pct_max, pct_sum, used_avg, used_sum,
+                          total_bytes, total_min, coverage)
+SELECT host, mount, bucket, COUNT(*),
+       AVG(pct), MAX(pct), TOTAL(pct), AVG(used), TOTAL(used),
+       MAX(total), MIN(total),
+       CASE WHEN bucket >= :horizon THEN 'full' ELSE 'partial' END
+  FROM (SELECT s.host, d.mount, s.ts - (s.ts %% %(len)d) AS bucket,
+               100.0 * d.used_bytes / d.total_bytes AS pct,
+               d.used_bytes AS used, d.total_bytes AS total
+          FROM samples s JOIN disks d ON d.sample_id = s.id
+         WHERE {where} AND d.total_bytes > 0 AND d.used_bytes IS NOT NULL)
+ WHERE 1
+ GROUP BY host, mount, bucket
+ON CONFLICT (host, mount, bucket) DO UPDATE SET
+   samples     = samples + excluded.samples,
+   pct_sum     = pct_sum + excluded.pct_sum,
+   pct_avg     = (pct_sum + excluded.pct_sum) / (samples + excluded.samples),
+   pct_max     = max(pct_max, excluded.pct_max),
+   used_sum    = used_sum + excluded.used_sum,
+   used_avg    = (used_sum + excluded.used_sum) / (samples + excluded.samples),
+   total_bytes = max(total_bytes, excluded.total_bytes),
+   total_min   = min(total_min, excluded.total_min)
+ WHERE disk_rollups.coverage IS NOT NULL
+""" % {"len": DAY}
 
-    Recomputes the whole raw window on each run rather than tracking a
-    watermark. That costs one pass over ~100k rows, which SQLite does in
-    milliseconds, and buys the property that matters: it is idempotent and
-    self-healing. A missed run, a restart mid-hour, a clock step, a bucket
-    written from a partly-filled hour -- all of them correct themselves on the
-    next pass, because every bucket in the window is rewritten from whatever
-    raw data currently backs it.
 
-    INSERT OR REPLACE rather than INSERT: the current hour is necessarily
-    incomplete when it is first written, and gets replaced by the full hour on
-    a later run. Over a 48-hour raw window every bucket is rewritten dozens of
-    times before the samples behind it age out, so what finally remains is
-    always a complete bucket.
+def _fold(conn):
+    """Fold every sample not yet in the rollups into them. Caller holds _DB
+    and commits.
+
+    The watermark is samples.id, not ts. ids only grow -- AUTOINCREMENT never
+    reuses one, even after the prune -- and SQLite allots them one writer at a
+    time, so everything at or below the newest id is already committed and
+    nothing will turn up beneath it later. A ts watermark would miss a sample
+    that arrives late with an old timestamp, and step with the clock.
+
+    Each sample is read once, so a pass costs what arrived since the last one
+    rather than a scan of the whole raw window, and the watermark advances in
+    the same transaction as the sums: a crash leaves both as they were, and
+    the next pass picks up where this one would have.
     """
-    since = int(time.time()) - int(window_hours) * HOUR
+    done = _meta(conn, "rollup_folded_id") or 0
+    top = conn.execute("SELECT MAX(id) FROM samples").fetchone()[0] or 0
+    if top > done:
+        args = {"lo": done, "hi": top,
+                "horizon": _meta(conn, "raw_pruned_before") or 0}
+        where = "s.id > :lo AND s.id <= :hi"
+        conn.execute(_FOLD_HOURLY.format(where=where), args)
+        conn.execute(_FOLD_DAILY.format(where=where), args)
+        _set_meta(conn, "rollup_folded_id", top)
+    _heal_legacy(conn, top)
+
+
+def _heal_legacy(conn, top):
+    """Rebuild old-roller rows whose raw samples are all still on hand.
+
+    Only a bucket starting at or after the prune horizon qualifies: its raw
+    samples are provably intact, so recomputing it from them gives the whole
+    bucket and it can say 'full'. One starting earlier has lost samples to the
+    prune -- maybe only the ones its old row already lacked, maybe more -- and
+    is left exactly as the old roller wrote it, NULL coverage and all.
+
+    The horizon here also takes the oldest surviving sample into account,
+    because a legacy row can only come from an old server, and an old server's
+    prune never moved raw_pruned_before. Probed through the bucket index, so a
+    pass with nothing to heal costs two index seeks.
+    """
+    oldest = conn.execute("SELECT MIN(ts) FROM samples").fetchone()[0]
+    if oldest is None:
+        return
+    horizon = max(_meta(conn, "raw_pruned_before") or 0, oldest)
+    for r in conn.execute(
+            "SELECT host, bucket FROM rollups WHERE bucket >= ? AND coverage IS NULL",
+            (horizon,)).fetchall():
+        args = {"host": r["host"], "lo": r["bucket"], "hi": r["bucket"] + HOUR,
+                "top": top, "horizon": horizon}
+        where = "s.host = :host AND s.ts >= :lo AND s.ts < :hi AND s.id <= :top"
+        if conn.execute("SELECT 1 FROM samples s WHERE %s LIMIT 1" % where, args).fetchone():
+            conn.execute("DELETE FROM rollups WHERE host=? AND bucket=?",
+                         (r["host"], r["bucket"]))
+            conn.execute(_FOLD_HOURLY.format(where=where), args)
+    for r in conn.execute(
+            "SELECT host, mount, bucket FROM disk_rollups"
+            " WHERE bucket >= ? AND coverage IS NULL", (horizon,)).fetchall():
+        args = {"host": r["host"], "mount": r["mount"], "lo": r["bucket"],
+                "hi": r["bucket"] + DAY, "top": top, "horizon": horizon}
+        where = ("s.host = :host AND d.mount = :mount AND s.ts >= :lo AND s.ts < :hi"
+                 " AND s.id <= :top")
+        if conn.execute(
+                "SELECT 1 FROM samples s JOIN disks d ON d.sample_id = s.id WHERE %s"
+                " AND d.total_bytes > 0 AND d.used_bytes IS NOT NULL LIMIT 1" % where,
+                args).fetchone():
+            conn.execute("DELETE FROM disk_rollups WHERE host=? AND mount=? AND bucket=?",
+                         (r["host"], r["mount"], r["bucket"]))
+            conn.execute(_FOLD_DAILY.format(where=where), args)
+
+
+def rollup(conn, window_hours=None):
+    """Fold the samples that arrived since the last pass into their buckets.
+
+    This used to recompute every bucket in the raw window from the samples
+    still on hand and INSERT OR REPLACE the result. Fine while a bucket's
+    samples were all there; but the cutoff walks through the oldest hour and
+    day in the window, and every pass then rewrote that bucket from its
+    shrinking tail, until the last pass before the cutoff cleared it left the
+    tail behind for good. Mercury's older daily disk rows held a median of 8.5
+    samples against 1,337 for a whole day, and an hour whose peak came early
+    kept only the quiet minutes after it.
+
+    So each sample is now added to its bucket exactly once, and a bucket only
+    ever grows. The current hour still updates on every pass, a missed pass
+    just means the next one has more to fold, and prune() folds before it
+    deletes, so a sample cannot age out of raw before it has been counted.
+
+    `window_hours` is accepted and ignored: callers pass the raw window, and
+    the fold no longer needs one.
+    """
     with _DB:
-        conn.execute(
-            """INSERT OR REPLACE INTO rollups
-                 (host, bucket, samples, cpu_min, cpu_avg, cpu_max,
-                  mem_min, mem_avg, mem_max)
-               SELECT host, ts - (ts % ?), COUNT(*),
-                      MIN(cpu_pct), AVG(cpu_pct), MAX(cpu_pct),
-                      MIN(pct), AVG(pct), MAX(pct)
-                 FROM (SELECT host, ts, cpu_pct,
-                              COALESCE(mem_pct,
-                                       CASE WHEN mem_total_bytes > 0
-                                            THEN 100.0 * mem_used_bytes / mem_total_bytes
-                                       END) AS pct
-                         FROM samples WHERE ts >= ?)
-                GROUP BY host, ts - (ts % ?)""",
-            (HOUR, since, HOUR),
-        )
-        conn.execute(
-            """INSERT OR REPLACE INTO disk_rollups
-                 (host, mount, bucket, samples, pct_avg, pct_max, used_avg, total_bytes)
-               SELECT s.host, d.mount, s.ts - (s.ts % ?), COUNT(*),
-                      AVG(100.0 * d.used_bytes / d.total_bytes),
-                      MAX(100.0 * d.used_bytes / d.total_bytes),
-                      AVG(d.used_bytes), MAX(d.total_bytes)
-                 FROM samples s JOIN disks d ON d.sample_id = s.id
-                WHERE s.ts >= ? AND d.total_bytes > 0 AND d.used_bytes IS NOT NULL
-                GROUP BY s.host, d.mount, s.ts - (s.ts % ?)""",
-            (DAY, since, DAY),
-        )
+        _fold(conn)
         conn.commit()
 
 
 def rollup_series(conn, host, since):
-    """Hourly points for one host, shaped like history() so the UI can share code."""
+    """Hourly points for one host, shaped like history() so the UI can share code.
+
+    coverage rides along so a chart can tell a pre-fix bucket, which may be a
+    truncated tail, from one known to be whole. See the rollups table.
+    """
     with _DB:
         rows = conn.execute(
             """SELECT bucket AS ts, cpu_avg AS cpu_pct, mem_avg AS mem_pct,
-                      cpu_min, cpu_max, mem_min, mem_max, samples
+                      cpu_min, cpu_max, mem_min, mem_max, samples, coverage
                  FROM rollups WHERE host=? AND bucket >= ? ORDER BY bucket ASC""",
             (host, int(since)),
         ).fetchall()
@@ -799,7 +1018,8 @@ def disk_series(conn, host, since):
     """Daily per-mount points, oldest first."""
     with _DB:
         rows = conn.execute(
-            """SELECT mount, bucket AS ts, pct_avg, pct_max, used_avg, total_bytes
+            """SELECT mount, bucket AS ts, pct_avg, pct_max, used_avg, total_bytes,
+                      total_min, samples, coverage
                  FROM disk_rollups WHERE host=? AND bucket >= ? ORDER BY mount, bucket ASC""",
             (host, int(since)),
         ).fetchall()
