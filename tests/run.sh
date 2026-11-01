@@ -3588,7 +3588,7 @@ if want mcp; then
   check "stdout carries protocol and nothing else" \
         "assert d['stdout_all_json'] and d['trailing_stdout']=='', d" "$J"
   check "the fleet is counted, with a sleeping laptop as away, not stale" \
-        "assert d['fleet_total']==9 and d['laptop_status']=='away' and d['fleet_by_status'].get('away')==1 and 'stale' not in d['fleet_by_status'], d" "$J"
+        "assert d['fleet_total']==10 and d['laptop_status']=='away' and d['fleet_by_status'].get('away')==1 and 'stale' not in d['fleet_by_status'], d" "$J"
   check "and times read as local ISO, with no thresholds repeated per host" \
         "assert d['fleet_iso'][10]=='T' and d['fleet_iso'][-6] in '+-' and d['no_thresholds_per_host'], d" "$J"
   # Security counts on three hosts, held CPU on one, a full disk on another.
@@ -3610,7 +3610,15 @@ if want mcp; then
   check "patches: counts, unnamed items, and every host when none is named" \
         "assert d['patches_ls']['security']==3 and d['patches_ls']['unnamed_count']==3 and d['patches_all']==9 and d['patches_bad_host'], d" "$J"
   check "services: listed with their state, unknown host refused" \
-        "assert d['services']==[['linux-server','plex','disabled']] and d['disabled_not_a_problem'] and d['services_bad_host'], d" "$J"
+        "assert d['services']==[['linux-server','plex','disabled'],['printer','dns','pending']] and d['disabled_not_a_problem'] and d['services_bad_host'], d" "$J"
+  check "services: each says what it asks and what a pass does not prove" \
+        "f=d['svc_full']; assert f['target']=='10.0.0.60' and f['probe']=='DNS A example.com' and 'not proof' in f['checks'], f" "$J"
+  # A timestamp on a host that never reports would be the server's clock,
+  # read by an agent as a host that just checked in.
+  check "a host with no collector says so, with no last report and no readings" \
+        "b=d['printer_brief']; assert b['collector'] is False and b['status']=='unknown' and not ({'last_report','age_seconds','cpu','mem','disk','patches'} & set(b)) and 'reachability' in b, b" "$J"
+  check "and its detail is its checks, each with what it proves" \
+        "p=d['printer_detail']; assert p[0] is False and 'disk_mounts' not in p[1] and 'not proof' in p[2][0], p" "$J"
   check "bad tool, bad method, bad JSON: each its own JSON-RPC error" \
         "assert d['unknown_tool']['error']['code']==-32602 and d['unknown_method']['error']['code']==-32601 and d['parse_error']['error']['code']==-32700, d" "$J"
   check "a batch is answered for its requests only" \

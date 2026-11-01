@@ -47,6 +47,15 @@ scrub, or a disk that failed SMART, does count toward status. Patches and end
 of life are deliberately not part of status; services are not either. Acknowledged
 patches and EOL warnings were reviewed by a person and are not news.
 
+A host with "collector": false runs no collector -- a printer, a camera, a
+router -- and is on the dashboard only because a service check names it. It
+has no readings and never reports; its status is the reachability probe's
+answer (ok, down, or unknown until probed), and its checks are its substance.
+
+Each service check carries "checks": exactly what a pass proves, and what it
+does not. A tcp check passing means something accepts connections on that
+port, not that the service works. Report it in those terms.
+
 Everything here is read-only. To acknowledge or forget anything, tell the
 user to do it on the dashboard."""
 
@@ -143,13 +152,21 @@ def eol_brief(e):
     })
 
 
-def service_brief(s):
-    return _drop_none({
+def service_brief(s, full=False):
+    """A check in brief. In full -- host_detail and the services tool -- also
+    what it asks, what a pass proves, and what it found: the claim a check
+    makes is in its `checks` sentence, and an agent without it will report a
+    port that accepts connections as a service that works."""
+    out = {
         "name": s.get("name"), "kind": s.get("kind"), "id": s.get("id"),
         "state": s.get("state"), "severity": s.get("severity"),
         "detail": s.get("detail"),
         "since": iso(s.get("since")),
-    })
+    }
+    if full:
+        out.update(target=s.get("target"), probe=s.get("probe"),
+                   checks=s.get("checks"), facts=s.get("facts") or None)
+    return _drop_none(out)
 
 
 def storage_brief(sg, full=False):
@@ -201,6 +218,22 @@ def host_brief(h):
     and saying so for every host is noise."""
     status = status_of(h)
     reach = h.get("reachability") or {}
+    if h.get("source") == "services":
+        # No collector: nothing has ever reported, so there is no last report,
+        # no readings and no patch state to give -- a timestamp here would be
+        # the server's clock, and would read as a host that just checked in.
+        return _drop_none({
+            "host": h.get("host"),
+            "status": status,
+            "collector": False,
+            "down_reason": h.get("down_reason"),
+            "reachability": _drop_none({"state": reach.get("state"),
+                                        "detail": reach.get("detail"),
+                                        "address": reach.get("address")}),
+            "services": [service_brief(s) for s in h.get("services") or []
+                         if s.get("severity") != "ok" and s.get("state") != "disabled"],
+            "services_severity": h.get("services_severity"),
+        })
     disk = h.get("disk") or {}
     cpu, mem = h.get("cpu") or {}, h.get("mem") or {}
     out = {
@@ -353,6 +386,11 @@ def tool_host_detail(api, args):
     hist = d.get("history") or []
     disk_hist = d.get("disk_history") or {}
     out = host_brief(cur)
+    if cur.get("source") == "services":
+        # No collector: its checks and its state changes are all there is.
+        out["services"] = [service_brief(s, full=True) for s in cur.get("services") or []]
+        out["recent_events"] = [event_brief(e) for e in d.get("events") or []]
+        return _drop_none(out)
     out["thresholds"] = cur.get("thresholds")
     out["disk_mounts"] = []
     for m in (cur.get("disk") or {}).get("mounts") or []:
@@ -373,7 +411,7 @@ def tool_host_detail(api, args):
             "package": i.get("package"),
             "acknowledged": bool(i.get("acked_at")) or None,
         }) for i in cur["patches"]["entries"]]
-    out["services"] = [service_brief(s) for s in cur.get("services") or []]
+    out["services"] = [service_brief(s, full=True) for s in cur.get("services") or []]
     out["storage"] = storage_brief(cur.get("storage"), full=True)
     out["window"] = {"minutes": d.get("minutes"), "resolution": d.get("resolution"),
                      "disk_resolution": d.get("disk_resolution")}
@@ -414,6 +452,8 @@ def tool_patches(api, args):
             raise _unknown_host(api, host)
     out = []
     for h in hosts:
+        if h.get("source") == "services":
+            continue    # no collector, so no patch check to have run
         p = h.get("patches") or {}
         row = {"host": h.get("host"), "os": h.get("os"),
                **(patches_brief(p) or {"status": "unknown"})}
@@ -440,7 +480,7 @@ def tool_services(api, args):
     rows = []
     for h in hosts:
         for s in h.get("services") or []:
-            r = service_brief(s)
+            r = service_brief(s, full=True)
             r["host"] = h.get("host")
             r["checked"] = iso(s.get("checked_at"))
             if s.get("hardware"):
@@ -499,8 +539,10 @@ TOOLS = {
         }},
     }),
     "services": (tool_services, {
-        "description": "Every application and management-controller check (Home Assistant, "
-                       "Plex, Transmission, BMC ...) with its state, detail and hardware "
+        "description": "Every service check -- applications (Home Assistant, Plex, "
+                       "Transmission), management controllers (BMC), and generic http, "
+                       "tcp and dns checks -- with its state, detail, target, what a "
+                       "pass proves (checks), what it found (facts), and hardware "
                        "sensors where read.",
         "inputSchema": {"type": "object", "properties": {
             "host": {"type": "string", "description": "only checks attached to this host"},

@@ -59,7 +59,7 @@ an LLM agent instead of doing it by hand.
 | `truenas` | API polling for the NAS (see below) |
 | `hubitat` | polling for a Hubitat Elevation hub (see below) |
 | `unifi` | polling for a UniFi OS console and the devices it has adopted (see below) |
-| `services` | application and management-controller checks attached to existing hosts (see Service checks) |
+| `services` | application, management-controller and generic http/tcp/dns checks, attached to hosts -- or giving a host with no collector a card of its own (see Service checks) |
 
 ### Thresholds
 
@@ -1495,7 +1495,7 @@ claude mcp add netdash -- python3 /path/to/netdash/mcp/netdash-mcp.py \
 | `host_detail` | one host: every disk with its fill projection, CPU and memory over a window (min/avg/max, when the peak was), pending packages, checks, recent changes |
 | `events` | the event log, by host, kind and hours back |
 | `patches` | pending updates per host, which were acknowledged, reboot required, EOL |
-| `services` | every service check with its state, and BMC sensors where read |
+| `services` | every service check with its state, its target, what a pass proves and does not (`checks`), what it found (`facts`), and BMC sensors where read |
 
 The answers are shaped for an agent rather than copied from the API: a
 browser wants every chart point and the thresholds block on every host, and
@@ -1503,6 +1503,10 @@ an agent pays for each token it reads. Timestamps are local ISO time, not
 epoch seconds an agent then has to convert and gets wrong. A sleeping laptop
 reads as `away`, as it does on the dashboard — the API leaves that to the UI,
 and an agent rederiving it would sooner or later report one as an outage.
+A host with no collector (see Hosts with no collector) reads as
+`"collector": false` with its reachability and checks and nothing else: no
+last report, which would be the server's clock passed off as a check-in,
+and no readings or patch state it could never have had.
 
 ### Read-only, and what that does and does not mean
 
