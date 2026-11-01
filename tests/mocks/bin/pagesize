@@ -1,0 +1,2 @@
+#!/bin/sh
+echo "${MOCK_PAGESIZE:-4096}"

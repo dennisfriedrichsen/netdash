@@ -1,5 +1,5 @@
 #!/bin/sh
-# netdash collector installer for Linux and BSD hosts.
+# netdash collector installer for Linux, BSD and illumos hosts.
 # macOS hosts use the formula from dennisfriedrichsen/homebrew-tap instead.
 #
 #   sudo ./install.sh --url https://netdash.example/api/ingest --token <TOKEN>
@@ -8,6 +8,7 @@
 #
 # Linux:   Debian/Ubuntu/Raspbian, Fedora, Arch, openSUSE, Alpine, Slackware
 # BSD:     FreeBSD, MidnightBSD, DragonFly, OpenBSD, NetBSD
+# illumos: OmniOS (global zone)
 set -eu
 
 URL=""; TOKEN=""; INTERVAL=""
@@ -16,7 +17,7 @@ while [ $# -gt 0 ]; do
     --url)      URL="$2"; shift 2 ;;
     --token)    TOKEN="$2"; shift 2 ;;
     --interval) INTERVAL="$2"; shift 2 ;;
-    -h|--help)  sed -n '2,12p' "$0"; exit 0 ;;
+    -h|--help)  sed -n '2,13p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -35,6 +36,9 @@ case "$OS" in
   OpenBSD|NetBSD)
            SRC="$SRC_DIR/bsd/netdash-collector.sh";   CONF_DIR=/etc/netdash
            PSRC="$SRC_DIR/bsd/netdash-patchcheck.sh" ;;
+  # illumos's uname -s is still SunOS. Config in /etc/netdash, as on Linux.
+  SunOS)   SRC="$SRC_DIR/illumos/netdash-collector.sh"; CONF_DIR=/etc/netdash
+           PSRC="$SRC_DIR/illumos/netdash-patchcheck.sh" ;;
   Darwin)  echo "macOS: use the Homebrew formula (brew install dennisfriedrichsen/tap/netdash-collector)" >&2; exit 1 ;;
   *)       echo "unsupported OS: $OS" >&2; exit 1 ;;
 esac

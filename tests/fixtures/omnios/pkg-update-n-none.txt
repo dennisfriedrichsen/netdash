@@ -1,0 +1,9 @@
+ Startup: Refreshing catalog 'extra.omnios' ... Done
+ Startup: Refreshing catalog 'omnios' ... Done
+ Startup: Checking that pkg(7) is up to date ... Done
+Planning: Solver setup ... Done (0.790s)
+Planning: Running solver ... Done (0.129s)
+Planning: Consolidating action changes ... Done (0.001s)
+Planning: Evaluating mediators ... Done (0.000s)
+Planning: Planning completed in 0.95 seconds
+No updates available for this image.

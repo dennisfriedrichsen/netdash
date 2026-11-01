@@ -812,6 +812,118 @@ EOF
   rm -rf "$B"
 fi
 
+# ---------------------------------------------------------------- illumos ----
+if want omnios; then
+  echo "omnios (kstat, not sysctl; the release from /etc/release; global zone only)"
+  # Captured from omnios (OmniOS r151054by, bhyve guest) on 2026-11-01. The
+  # CPU counters move by MOCK_CPU_DELTA between the two reads; the rest is
+  # the capture as it stood.
+  B=$(mkbin x uname kstat pagesize zonename isainfo smbios df zfs zpool)
+  OMNI="NETDASH_MOCK_OS=SunOS NETDASH_MOCK_REL=5.11 NETDASH_MOCK_FIXDIR=omnios NETDASH_RELEASE_FILE=$FIX/omnios/release.txt"
+  # shellcheck disable=SC2086
+  J=$(run_collector "$B" illumos $OMNI NETDASH_MOCK_HOST=omnios.lan \
+      MOCK_CPU_DELTA="300000000 200000000 1500000000" MOCK_ARC=200000000) || J=''
+  check "the distribution and release from /etc/release, not SunOS 5.11" \
+        "assert d['os']=='OmniOS v11 r151054by (amd64)', d['os']" "$J"
+  check "the host is uname -n, short (hostname -s would rename the machine)" \
+        "assert d['host']=='omnios', d['host']" "$J"
+  # 0.3s user + 0.2s kernel against 1.5s idle
+  check "CPU from the cpu_nsec counters: busy is user + kernel" \
+        "assert d['cpu_pct']==25.0, d['cpu_pct']" "$J"
+  # physmem 259625 pages * 4096; less freemem 108715 pages and 200 MB of ARC
+  check "memory is physmem less free pages and the ARC" \
+        "assert (d['mem_total_bytes'],d['mem_used_bytes'])==(1063424000,418127360), d" "$J"
+  check "one disk per pool, as the root dataset's used + avail" \
+        "assert d['disks']==[{'mount':'rpool','used_bytes':6302007296,'total_bytes':20283654144}], d['disks']" "$J"
+  check "uptime from boot_time" \
+        "import time; assert 0 < d['uptime_seconds'] <= time.time()-1793535899+5, d['uptime_seconds']" "$J"
+  check "bhyve from the SMBIOS system record" \
+        "assert d['virt']=='bhyve', d['virt']" "$J"
+  check "zpool status travels whole, with the zone" \
+        "t=open('$FIX/omnios/zpool-status-p.txt').read(); assert d['zpool_status']==t.rstrip('\\n') and len(d['tz'])==5, d.get('zpool_status','')[:80]" "$J"
+  # shellcheck disable=SC2086
+  J=$(run_collector "$B" illumos $OMNI MOCK_SMBIOS=denied) || J=''
+  check "smbios unreadable (not root): virt is null, not a guess" \
+        "assert d['virt'] is None, d['virt']" "$J"
+  check "and no ARC kstat: memory is physmem less free pages" \
+        "assert d['mem_used_bytes']==1063424000-108715*4096, d" "$J"
+  check "and no CPU delta: null, not 0" \
+        "assert d['cpu_pct'] is None, d['cpu_pct']" "$J"
+  SM=$(mktemp)
+  printf '  Manufacturer: Supermicro\n  Product: Super Server\n' > "$SM"
+  # shellcheck disable=SC2086
+  J=$(run_collector "$B" illumos $OMNI MOCK_SMBIOS_FILE="$SM") || J=''
+  rm -f "$SM"
+  check "a hardware vendor in the record is bare metal" \
+        "assert d['virt']=='none', d['virt']" "$J"
+  # The patch check ran before the update's reboot and said so; the collector,
+  # a minute after booting into the new BE, must not repeat it until 03:00.
+  PS_F=$(mktemp)
+  echo '{"security":null,"other":160,"reboot_required":true,"checked_at":1793505630,"source":"ips-update","detail":"","packages":""}' > "$PS_F"
+  ln -s "$SHIMS/beadm" "$B/beadm"
+  # shellcheck disable=SC2086
+  J=$(run_collector "$B" illumos $OMNI NETDASH_PATCH_STATE="$PS_F") || J=''
+  check "reboot pending is read from beadm each run, not from the morning's file" \
+        "assert (d['patches']['reboot_required'],d['patches']['other'])==(False,160), d['patches']" "$J"
+  # shellcheck disable=SC2086
+  J=$(run_collector "$B" illumos $OMNI NETDASH_PATCH_STATE="$PS_F" MOCK_BEADM="omnios-r151054r;x;N;/;1;static;1
+omnios-r151054by;y;R;;1;static;2") || J=''
+  check "and an update's BE waiting on the next boot raises it" \
+        "assert d['patches']['reboot_required'] is True, d['patches']" "$J"
+  # The state file the host-local adapter left, spaced as Python's json.dumps
+  # spaces it. The substitution once took only the colon, leaving `false null`.
+  # shellcheck disable=SC2086
+  J=$(run_collector "$B" illumos $OMNI NETDASH_PATCH_STATE="$FIX/omnios/patches-adapter.json") || J=''
+  check "a spaced state file from the old adapter still makes valid JSON" \
+        "assert (d['patches']['reboot_required'],d['patches']['other'])==(False,160), d['patches']" "$J"
+  rm -f "$PS_F" "$B/beadm"
+  # shellcheck disable=SC2086
+  J=$(run_collector "$B" illumos $OMNI MOCK_ZONE=web) || J=''
+  check "a non-global zone refuses, rather than report the machine as itself" \
+        "assert d is None, d" "${J:-null}"
+  rm -rf "$B"
+fi
+
+if want patches-omnios; then
+  echo "patches-omnios (pkg update -n counts what an update would change; beadm says reboot)"
+  B=$(mkbin x beadm)
+  cat > "$B/pkg" <<EOF
+#!/bin/sh
+[ "\$*" = "update -n" ] || exit 1
+case "\${MOCK_PKG:-none}" in
+  none) cat "$FIX/omnios/pkg-update-n-none.txt"; exit 4 ;;
+  plan) printf '           Packages to update:  12\n      Create boot environment: Yes\nCreate backup boot environment:  No\n'; exit 0 ;;
+  *) echo "pkg: 0/1 catalogs successfully updated" >&2; exit 1 ;;
+esac
+EOF
+  chmod +x "$B/pkg"
+  pc() { env "PATH=$B:/usr/bin:/bin" NETDASH_CONF=/dev/null NETDASH_FIXTURES="$FIX" \
+         NETDASH_MOCK_FIXDIR=omnios "$@" sh "$ROOT/collectors/illumos/netdash-patchcheck.sh" --print 2>/dev/null; }
+  J=$(pc) || J=''
+  check "nothing to do (exit 4) is 0 behind, and no security claim either way" \
+        "assert (d['other'],d['security'],d['source'])==(0,None,'ips-update'), d" "$J"
+  check "the BE in use is the one it boots next: no reboot pending" \
+        "assert d['reboot_required'] is False, d" "$J"
+  # The plan's wording is pkg(1)'s; the test host had nothing pending.
+  J=$(pc MOCK_PKG=plan) || J=''
+  check "a plan's 'Packages to update' is the count" \
+        "assert d['other']==12, d" "$J"
+  # The capture's two BEs as they stood before its reboot: r151054r running,
+  # the update's r151054by activated for next boot.
+  J=$(pc MOCK_BEADM="omnios-r151054r;ad49522d-bbdc-4449-b0b4-4c5e2eb25385;N;/;102629376;static;1793504854
+omnios-r151054by;80f1b250-e31e-4b24-8e94-97479ddc3b55;R;;3960930304;static;1793506384") || J=''
+  check "an update's BE waiting on the next boot is a reboot pending" \
+        "assert d['reboot_required'] is True, d" "$J"
+  J=$(pc MOCK_PKG=fail) || J=''
+  check "a failed plan writes nothing, so the last result ages into unknown" \
+        "assert d is None, d" "${J:-null}"
+  rm -f "$B/beadm"
+  J=$(pc) || J=''
+  check "no beadm: reboot is unknown, not false" \
+        "assert d['reboot_required'] is None, d" "$J"
+  rm -rf "$B"
+fi
+
 if want patches-midnightbsd; then
   echo "patches-midnightbsd (an unreachable CVE feed is unknown, never clean)"
   # mport audit prints nothing and exits 0 when sec.midnightbsd.org is down,
@@ -1139,10 +1251,10 @@ if want patches-statefile; then
   printf '{"security":3,"other":41'                                                       > "$TMPD/truncated"
   printf 'not json at all\n'                                                              > "$TMPD/garbage"
   : > "$TMPD/empty"
-  # All three collectors carry the same read-back block. Extracting and running
+  # All four collectors carry the same read-back block. Extracting and running
   # it keeps this honest on any OS: the suite must not need a Linux /proc, a
   # FreeBSD sysctl or a Mac to check shared logic.
-  for FAM in linux bsd macos; do
+  for FAM in linux bsd macos illumos; do
     snippet() { python3 - "$@" <<'PY'
 import re,subprocess,sys,json
 root,fam,tmpd=sys.argv[1],sys.argv[2],sys.argv[3]
@@ -1167,7 +1279,7 @@ PY
 fi
 
 if want version; then
-  echo "version (seven hardcoded copies must not drift, and 0.3.10 > 0.3.9)"
+  echo "version (nine hardcoded copies must not drift, and 0.3.10 > 0.3.9)"
   snippet() { python3 - "$@" <<'PY'
 import re,sys,json,glob
 root=sys.argv[1]; sys.path.insert(0,f"{root}/server")
@@ -1190,8 +1302,8 @@ PY
   J=$(snippet "$ROOT") || J=''
   check "every collector, patch check and the MCP server matches the VERSION file" \
         "assert not d['mismatched'], d['mismatched']" "$J"
-  check "all seven carry a version at all" \
-        "assert len(d['found'])==7 and all(d['found'].values()), d['found']" "$J"
+  check "all nine carry a version at all" \
+        "assert len(d['found'])==9 and all(d['found'].values()), d['found']" "$J"
   # Compared per component, not as text: "0.3.10" sorts before "0.3.9" as a
   # string, which would mark an entire fleet outdated the first time a minor
   # number reached double digits.

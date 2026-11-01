@@ -292,6 +292,7 @@ work.
 | DragonFly | 6.4 | cron, 60s; tested against captured output, not yet run there |
 | OpenBSD | 7.9 | cron, 60s |
 | NetBSD | 11.0 | cron, 60s |
+| OmniOS | r151054 | cron, 60s; global zone only; tested against captured output, not yet run there |
 | macOS | 15 (Intel), 26 (Apple Silicon) | Homebrew + launchd, 60s |
 | TrueNAS | CORE 13.0 | server-side API poll, no collector installed |
 | FreeCORE | 15.1 | same server-side API poll as TrueNAS CORE |
@@ -336,6 +337,15 @@ does ship ZFS, and its pools are reported.
 sysctl and `df -T` column the collector reads is FreeBSD's, so it takes the
 FreeBSD path unchanged, minus jail listing.
 
+**OmniOS** (illumos) has its own collector, `collectors/illumos/`: no
+`sysctl`, so CPU, memory and boot time come from `kstat -p`: the per-CPU
+`cpu_nsec_*` counters, `physmem` and `freemem` pages less the ZFS ARC, and
+`boot_time`. `uname -sr` says `SunOS 5.11` on every illumos distribution, so the
+OS is `/etc/release`'s first line. The host name is `uname -n`, short:
+`hostname -s` there would *set* the host name to `-s`. In a non-global zone
+`kstat` answers for the whole machine, so the collector refuses to run there
+rather than report the host as the zone.
+
 **DragonFly** is FreeBSD's sysctls of 2003: the same `kern.cp_time`, `hw.physmem`
 and `vm.stats.vm.*` counters, `kern.boottime` with `nsec` where FreeBSD has
 `usec`, and `df -T`. It still has the cache queue FreeBSD 12 removed, whose
@@ -367,7 +377,7 @@ it schedules anything, so a broken host fails immediately rather than silently.
 - **Alpine / OpenRC** → root crontab every 60s, and `crond` is enabled and
   started, since it does not run by default on a minimal install and scheduling
   would otherwise silently do nothing
-- **FreeBSD / MidnightBSD / DragonFly / OpenBSD / NetBSD** → root crontab, every 60s
+- **FreeBSD / MidnightBSD / DragonFly / OpenBSD / NetBSD / OmniOS** → root crontab, every 60s
 
 It also installs `netdash-patchcheck` on a **daily schedule and at every boot**
 (`netdash-patchcheck.timer`, or root crontab entries at 03:xx and `@reboot`),
@@ -388,7 +398,7 @@ and names the right command for that package manager (`apk`, `dnf`, `pacman`,
 Updating later: `git pull && sudo ./install.sh` — it overwrites the script and
 keeps the existing config. `sudo ./uninstall.sh` removes it.
 
-Config lives at `/etc/netdash/collector.conf` (Linux, OpenBSD, NetBSD) or
+Config lives at `/etc/netdash/collector.conf` (Linux, OpenBSD, NetBSD, OmniOS) or
 `/usr/local/etc/netdash/collector.conf` (FreeBSD, MidnightBSD, DragonFly), mode 600. The collector
 searches all of those plus `/usr/pkg/etc`, so it finds its config either way.
 
@@ -527,6 +537,7 @@ fleet on it.
 | Linux containers, no systemd | `/run/.containerenv` (podman), `/.dockerenv` (docker), `container=` in pid 1's environment (LXC, nspawn) |
 | DragonFly | `sysctl -n kern.vmm_guest`; `unknown` reads as null |
 | OpenBSD / NetBSD | DMI strings via sysctl, matched against known hypervisor vendors |
+| OmniOS | `smbios -t SMB_TYPE_SYSTEM`, Manufacturer and Product matched the same way (needs root) |
 | macOS | `sysctl -n kern.hv_vmm_present` |
 
 `virt` is `"none"`, a hypervisor name (`bhyve`, `kvm`, `vmware`, …), a container
@@ -698,6 +709,7 @@ which commands are wrong in ways that fail silently — is in
 | MidnightBSD | `mport audit` (online CVE feed) + `mport list updates` | yes for packages, **unknown while the feed is down**; base not checked |
 | OpenBSD | `syspatch -c` (base) + `pkg_add -u -n` (packages) | yes, for base |
 | NetBSD | `pkg_admin audit` | yes for packages; **base has no patch mechanism** |
+| OmniOS | `pkg update -n` (a plan, not a change); reboot from `beadm` | **no — IPS has no security classification** |
 | macOS | `softwareupdate --list --no-scan`, plus `brew outdated` where Homebrew is installed | `Recommended: YES`; Homebrew is unclassified |
 | TrueNAS CORE | `update.check_available` | no, OS image only |
 

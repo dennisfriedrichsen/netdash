@@ -33,6 +33,15 @@ numbers are untouched.
 | `dragonfly/pkg-audit.txt` | DragonFly 6.4 | FreeBSD's `pkg audit` wording exactly: 17 problems in 6 packages |
 | `dragonfly/pkg-version-refresh.txt`, `freebsd/pkg-version-refresh.txt` | DragonFly 6.4; FreeBSD 15.1 pkgbase (rubidium) | `pkg version -vRL=` with nothing pending: only the catalogue refresh lines, two per repository and one more |
 | `freebsd/pkg-version-pending.txt` | FreeBSD 16 snapshot, pkgbase (freebsd16pkgbase) | `pkg version -U -vRL=` with 11 base packages behind: one line per package, nothing else |
+| `omnios/kstat-p.txt` | OmniOS r151054by (omnios, bhyve guest) | `kstat -p` lines: `cpu::sys:cpu_nsec_*` (cpu 0 whole, cpu 1 cut short by the capture), `unix:0:system_pages`, `boot_time` |
+| `omnios/df-n.txt` | OmniOS r151054by | `df -n`: `<mount> : <type>`, padded; everything but ZFS is tmpfs, lofs or a kernel pseudo-fs |
+| `omnios/zfs-list.txt` | OmniOS r151054by | `zfs list -Hp -d 0`, name/used/avail of the capture's wider listing |
+| `omnios/zpool-status-p.txt` | OmniOS r151054by | `zpool status -p`: illumos device names (`c3t0d0`), `scan: none requested` |
+| `omnios/smbios-system.txt` | OmniOS r151054by | the SMBIOS system record: bhyve is Manufacturer `FreeBSD`, Product `BHYVE` |
+| `omnios/beadm-H.txt` | OmniOS r151054by, after its update's reboot | `beadm list -H`: semicolon-separated, the running BE flagged `NR` |
+| `omnios/pkg-update-n-none.txt` | OmniOS r151054by | `pkg update -n` with nothing to do: catalogue refresh, the planner, "No updates available for this image." |
+| `omnios/patches-adapter.json` | OmniOS r151054by | the state file a host-local Python adapter wrote before this collector: `json.dumps` spacing, `"reboot_required": null` |
+| `omnios/release.txt` | OmniOS r151054by | `/etc/release`: the distribution and release on line 1, indented |
 | `freebsd/zfs-list.txt`, `netbsd/zfs-list.txt` | — | `zfs list -Hp -d 0` pool roots |
 | `freebsd/zpool-status-p.txt` | FreeBSD 15.1, OpenZFS 2.4.2 (cerium, at -0500) | `zpool status -p`: two pools, a multi-line `status:`, the scrub line's local-time date, and `repaired 0B` even under `-p` |
 | `truenas/core13/*.json` | TrueNAS CORE 13.0-U6.8 (mercury) | `/pool`, `/boot/get_state`, `/disk`, `/smart/test/results`, `/disk/smart_attributes`: the boot pool's tree is `groups`, not `topology`; tests are dated in power-on hours |

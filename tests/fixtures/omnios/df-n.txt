@@ -1,0 +1,17 @@
+/                  : zfs     
+/devices           : devfs   
+/dev               : dev     
+/system/contract   : ctfs    
+/proc              : proc    
+/etc/mnttab        : mntfs   
+/etc/svc/volatile  : tmpfs   
+/system/object     : objfs   
+/system/boot       : bootfs  
+/etc/dfs/sharetab  : sharefs 
+/lib/libc.so.1     : lofs    
+/dev/fd            : fd      
+/tmp               : tmpfs   
+/var/run           : tmpfs   
+/rpool             : zfs     
+/home              : zfs     
+/home/denny        : zfs     

@@ -1,0 +1,6 @@
+#!/bin/sh
+# Mock beadm. Only `list -H` is used. MOCK_BEADM, when set, is the listing.
+F="$NETDASH_FIXTURES/${NETDASH_MOCK_FIXDIR:-$(echo "$NETDASH_MOCK_OS" | tr 'A-Z' 'a-z')}"
+[ "$*" = "list -H" ] || exit 1
+if [ -n "${MOCK_BEADM:-}" ]; then printf '%s\n' "$MOCK_BEADM"; exit 0; fi
+exec cat "$F/beadm-H.txt"

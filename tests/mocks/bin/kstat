@@ -1,0 +1,25 @@
+#!/bin/sh
+# Mock kstat. Only `kstat -p <statistic>` is used, by the illumos collector.
+# Answers from the OS's kstat-p.txt, captured. The CPU counters are read twice
+# a second apart; the second read advances cpu 0 by MOCK_CPU_DELTA, "user
+# kernel idle" in nanoseconds, so a delta exists. MOCK_ARC answers
+# zfs:0:arcstats:size, which is absent (exit 1) without it, as with ZFS unloaded.
+F="$NETDASH_FIXTURES/${NETDASH_MOCK_FIXDIR:-$(echo "$NETDASH_MOCK_OS" | tr 'A-Z' 'a-z')}"
+[ "$1" = -p ] || exit 1
+key=$2
+case "$key" in
+  'cpu::sys:cpu_nsec_*')
+    t="$NETDASH_MOCK_TMP/kstat-cpu"
+    n=$(cat "$t" 2>/dev/null || echo 0); echo $((n+1)) > "$t"
+    exec awk -F'\t' -v n="$n" -v d="${MOCK_CPU_DELTA:-0 0 0}" '
+      BEGIN { split(d, D, " ") }
+      $1 !~ /^cpu:[0-9]+:sys:cpu_nsec_/ { next }
+      n > 0 && $1 == "cpu:0:sys:cpu_nsec_user"   { $2 += D[1] }
+      n > 0 && $1 == "cpu:0:sys:cpu_nsec_kernel" { $2 += D[2] }
+      n > 0 && $1 == "cpu:0:sys:cpu_nsec_idle"   { $2 += D[3] }
+      { printf "%s\t%.0f\n", $1, $2 }' "$F/kstat-p.txt" ;;
+  zfs:0:arcstats:size)
+    [ -n "${MOCK_ARC:-}" ] && { printf '%s\t%s\n' "$key" "$MOCK_ARC"; exit 0; }
+    echo "kstat: no matching statistics" >&2; exit 1 ;;
+  *) grep "^$key	" "$F/kstat-p.txt" || exit 1 ;;
+esac

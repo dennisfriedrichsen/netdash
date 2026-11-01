@@ -1,0 +1,12 @@
+ID    SIZE TYPE
+2     70   SMB_TYPE_SYSTEM (type 1) (system information)
+
+  Manufacturer: FreeBSD
+  Product: BHYVE
+  Version: 1.0
+  Serial Number: None
+
+  UUID: 2d6be0a8-70d4-3577-89e8-64c6baa811a0
+  Wake-Up Event: 0x6 (power switch)
+  SKU Number: None
+  Family: Virtual Machine

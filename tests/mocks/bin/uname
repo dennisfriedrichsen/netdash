@@ -5,6 +5,7 @@ case "$1" in
   -m) echo "${NETDASH_MOCK_ARCH:-amd64}" ;;
   -r) echo "${NETDASH_MOCK_REL:-0.0}" ;;
   -sr) echo "$NETDASH_MOCK_OS ${NETDASH_MOCK_REL:-0.0}" ;;
+  -p) echo "${NETDASH_MOCK_PROC:-i386}" ;;
   -n) echo "${NETDASH_MOCK_HOST:-mockhost}" ;;
   *) echo "$NETDASH_MOCK_OS ${NETDASH_MOCK_HOST:-mockhost} ${NETDASH_MOCK_REL:-0.0} ${NETDASH_MOCK_ARCH:-amd64}" ;;
 esac

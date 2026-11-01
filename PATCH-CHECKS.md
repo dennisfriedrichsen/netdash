@@ -18,7 +18,7 @@ answer the same question:
 | pending updates, classified as security | Debian, Ubuntu, Raspbian, Fedora, openSUSE Leap, Slackware, macOS |
 | installed packages with known CVEs | FreeBSD, MidnightBSD, DragonFly, NetBSD, Arch (with `arch-audit`) |
 | base-system patches pending, separate from packages | FreeBSD, OpenBSD |
-| "N packages behind", no security classification at all | Alpine, Arch (base), openSUSE Tumbleweed, OpenBSD packages |
+| "N packages behind", no security classification at all | Alpine, Arch (base), openSUSE Tumbleweed, OpenBSD packages, OmniOS |
 
 A host reporting `security: 0` therefore means something different on Alpine
 (nothing knows how to classify) than on Debian (apt looked, and there are none).
@@ -36,6 +36,11 @@ Two of these are worth stating plainly because they are gaps, not oversights:
   skips the package and still exits 0, so a down feed prints exactly what a
   clean host does. The check asks the feed directly first and reports
   security as unknown when it does not answer. Base is not checked.
+- **OmniOS's IPS has no security classification.** Security fixes ship in
+  each release's weekly updates alongside everything else, so the count is of
+  packages `pkg update -n` would change, and `security` is `null`. Not `pkg
+  list -u`: it lists any newer version in the catalogue, including ones the
+  installed `entire` incorporation will never allow.
 - **openSUSE Tumbleweed ships no patch metadata.** Patches are a Leap/SLE
   concept, so `zypper list-patches` is empty there by design — not because the
   host is current. Tumbleweed can only ever report a count.
@@ -140,6 +145,7 @@ nothing.
 | MidnightBSD | `mport list updates`; `mport audit` asks sec.midnightbsd.org per package | `mport index` | no |
 | DragonFly | `pkg audit -q` | `pkg audit -F` | unverified (pkg's periodic script, if enabled) |
 | OpenBSD | — | `syspatch -c` | no |
+| OmniOS | — | `pkg update -n` refreshes the catalogues as it plans | no |
 | NetBSD | `pkg_admin audit` | `pkg_admin fetch-pkg-vulnerabilities` | yes, if enabled |
 | macOS | read `com.apple.SoftwareUpdate.plist`; `brew outdated` | `brew update`, Homebrew only | **yes, every 6h** (Apple only) |
 | TrueNAS CORE | `update.check_available` (server-side) | n/a | n/a |
@@ -714,6 +720,7 @@ state that ranks below `security` (where there is still work to do) and above
 | openSUSE | `needs-restarting -r`, exit 1 | **verified present** |
 | FreeBSD | `freebsd-version -k` ≠ `uname -r` | unverified |
 | Slackware | newest `kernel-generic`/`kernel-huge` package ≠ `uname -r` | true only, never false |
+| OmniOS | `beadm list -H`: a BE flagged `R` (next boot) that is not also `N` (running); read fresh by the collector each minute, since illumos cron has no `@reboot` | **verified** with nothing pending |
 | Arch, Alpine, MidnightBSD, DragonFly, OpenBSD, NetBSD, macOS | none | always `null` |
 
 `null` means *"this host has no way to answer"* and never *"no reboot needed"*.

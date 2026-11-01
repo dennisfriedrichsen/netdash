@@ -1,0 +1,6 @@
+#!/bin/sh
+# Mock smbios. MOCK_SMBIOS=denied plays a non-root run, which cannot open
+# /dev/smbios; MOCK_SMBIOS_FILE names another capture.
+F="$NETDASH_FIXTURES/${NETDASH_MOCK_FIXDIR:-$(echo "$NETDASH_MOCK_OS" | tr 'A-Z' 'a-z')}"
+[ "${MOCK_SMBIOS:-}" = denied ] && { echo "smbios: failed to load SMBIOS: permission denied" >&2; exit 1; }
+exec cat "${MOCK_SMBIOS_FILE:-$F/smbios-system.txt}"
