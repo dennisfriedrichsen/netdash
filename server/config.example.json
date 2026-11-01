@@ -101,6 +101,30 @@
         "address": "10.0.0.45",
         "tls_fingerprint_sha256": "",
         "enabled": false
+      },
+      {
+        "kind": "http",
+        "host": "printer.example",
+        "url": "https://10.0.0.60/",
+        "expect_status": [200, 401],
+        "expect_body": "HP",
+        "tls_fingerprint_sha256": "",
+        "enabled": false
+      },
+      {
+        "kind": "tcp",
+        "host": "truenas.example",
+        "address": "10.0.0.45",
+        "port": 445,
+        "enabled": false
+      },
+      {
+        "kind": "dns",
+        "host": "gateway.example",
+        "server": "10.0.0.1",
+        "query": "example.com",
+        "expect": "A",
+        "enabled": false
       }
     ]
   },

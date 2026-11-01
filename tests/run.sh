@@ -2842,6 +2842,8 @@ if want render; then
   else
     echo "render (the dashboard actually draws, not merely parses)"
     J=$(node "$ROOT/tests/js/render.test.js" 2>&1) || J=''
+    check "a host with no collector draws, card and page, and says it has none" \
+          "assert d['collector_less_host_card_and_detail'] is None, d['collector_less_host_card_and_detail']" "$J"
     check "the detail view renders for a host nearing end of life" \
           "assert d['detail_eol_soon'] is None, d['detail_eol_soon']" "$J"
     check "and for one already past it" \
@@ -3471,6 +3473,31 @@ if want services; then
         "e=[x[1] for x in d['cfg']]; assert e[2]=='plex needs a url' and 'credentials' in e[3] and 'unknown kind' in e[4] and 'duplicate' in e[6] and 'address' in e[7] and 'password_file' in e[8] and '64 hex' in e[9], e" "$J"
   check "each check states its address, ports and probe, defaults included" \
         "assert d['endpoints']==[['10.0.0.133',['32400/tcp'],'GET /identity'],['ha.example',['443/tcp'],'GET /manifest.json'],['10.0.0.152',['9091/tcp'],'RPC session-stats'],['10.0.0.219',['623/udp','443/tcp'],'IPMI ping + HTTPS'],['10.0.0.220',['623/udp'],'IPMI ping + HTTPS + sensors'],['10.0.0.113',['8123/tcp'],'GET /api/config']], d['endpoints']" "$J"
+  check "http: the configured URL as given, 2xx/3xx by default, redirects not followed" \
+        "assert d['http_ok'][0]=='ok' and d['http_path']==['/printer/'] and d['http_302'][0]=='ok' and d['http_500'][0]=='fail', d" "$J"
+  check "http: expect_body must be in the page, expect_status replaces the default" \
+        "assert (d['http_body_ok'][0],d['http_body_missing'][0],d['http_200_unexpected'][0])==('ok','fail','fail'), d" "$J"
+  check "http: a 401 is auth, unless expect_status says it is the normal answer" \
+        "assert d['http_401'][0]=='auth' and 'expect_status' in d['http_401'][1] and d['http_401_expected'][0]=='ok', d" "$J"
+  # The opposite of the reachability probe, where a refusal proves the host up.
+  check "tcp: a connection accepted is ok, a refused one is a failure" \
+        "assert (d['tcp_ok'][0],d['tcp_refused'][0],d['tcp_unresolvable'][0])==('ok','fail','error'), d" "$J"
+  check "dns: an answer of the expected type is ok, with its addresses" \
+        "assert d['dns_ok'][0]=='ok' and d['dns_ok'][2]['addresses']==['10.0.0.5','10.0.0.6'] and d['dns_qtype']==['ok.test',1], d" "$J"
+  check "dns: a reply with the wrong id, or not DNS at all, is ignored" \
+        "assert d['dns_spoof_ignored'][0]==d['dns_garbage_ignored'][0]=='ok', d" "$J"
+  check "dns: NXDOMAIN, SERVFAIL, an empty answer and silence each fail" \
+        "assert [d[k][0] for k in ('dns_nx','dns_servfail','dns_empty','dns_silent')]==['fail']*4 and d['dns_silent_elapsed'] < 2.5, d" "$J"
+  check "dns: only the expected type counts, and REFUSED is auth" \
+        "assert (d['dns_cname_not_a'][0],d['dns_cname_ok'][0],d['dns_refused'][0])==('fail','ok','auth') and d['dns_aaaa_asked'][1]==28, d" "$J"
+  check "generic kinds say what is wrong with them, and take no credentials" \
+        "e=[x[1] for x in d['cfg']]; assert 'port' in e[10] and 'port' in e[11] and 'query' in e[12] and 'expect' in e[13] and 'expect_status' in e[14] and 'no credentials' in e[15] and '1-63' in e[16], e" "$J"
+  check "a tcp check is named and keyed by its port, so a host can have several" \
+        "assert d['generic_cfg']==[['http-printer','HTTP',None],['tcp-truenas-core-445','TCP 445',None],['tcp-truenas-core-22','TCP 22',None],['dns-gateway','DNS',None]], d['generic_cfg']" "$J"
+  check "generic checks state their address, ports and probe" \
+        "assert [x[:3] for x in d['generic_endpoints']]==[['10.0.0.60',['443/tcp'],'GET /status'],['10.0.0.45',['445/tcp'],'TCP connect'],['10.0.0.45',['22/tcp'],'TCP connect'],['10.0.0.1',['53/udp'],'DNS A example.com']], d['generic_endpoints']" "$J"
+  check "and each says what it does not prove" \
+        "assert all('not proof' in w for w in d['generic_what']), d['generic_what']" "$J"
   check "intervals and timeouts are clamped, and no block means no checks" \
         "assert d['cfg_clamped']==[15,30] and d['cfg_none']==[[],[],[]], d" "$J"
   check "a self-signed certificate is refused unless pinned or CA'd" \
@@ -3479,6 +3506,8 @@ if want services; then
         "t=d['tls']; assert t['skipped'] or (t['wrong_pin'][0]=='config' and 'pinned' in t['wrong_pin'][1]), t" "$J"
   check "and there is no setting that turns verification off" \
         "t=d['tls']; assert t['skipped'] or t['verify_false_ignored'][0]=='config', t" "$J"
+  check "the generic http check verifies TLS the same way" \
+        "t=d['tls']; assert t['skipped'] or (t['http_unpinned'][0]=='config' and t['http_pinned'][0]=='ok'), t" "$J"
   check "one failure is held as unknown; the second is fail; auth is shown at once" \
         "assert [x[0] for x in d['fold']]==['ok','unknown','fail','ok','auth'] and '1 of 2' in d['fold'][1][2], d['fold']" "$J"
   check "a verdict nobody has refreshed reads stale, not as its last answer" \
@@ -3495,6 +3524,12 @@ if want services; then
         "assert d['other_host']==['Home Assistant'] and d['unattached']==[], d" "$J"
   check "no token, and no token path, ever reaches the API" \
         "assert d['api_has_secret']==[False,False,False], d['api_has_secret']" "$J"
+  check "a host only a check names gets a card with no collector; a reporting one is not doubled" \
+        "assert d['svc_only_hosts']==[['plexserver','push'],['printer','services'],['typo','services']], d['svc_only_hosts']" "$J"
+  check "it is probed at its check's address, and its dot is the probe's answer" \
+        "assert d['svc_only_address']==['10.0.0.60','check'] and d['svc_only_status']==[['unknown',None,False],['ok',None,False],['down','unreachable',False]] and d['svc_only_services']==['HTTP'], d" "$J"
+  check "a misconfigured check still gets its card, showing the mistake" \
+        "assert d['svc_only_typo']==[['TCP','config']], d['svc_only_typo']" "$J"
   check "settled changes are logged; a held single failure is not" \
         "assert [e[1:3] for e in d['events']]==[['ok','fail'],['fail','ok']], d['events']" "$J"
   check "and the log seeds the next start, so a recovery is never lost" \

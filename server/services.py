@@ -1,5 +1,6 @@
-"""Application and management-controller checks, attached to hosts the fleet
-already has. Nothing is installed anywhere; this server asks, read-only.
+"""Application and management-controller checks, attached to hosts. Nothing is
+installed anywhere; this server asks, read-only. A host that runs no collector
+-- a printer, a camera -- gets a card from its checks alone; see app.py.
 
 A host being up says nothing about what it is for. hassium can push a perfect
 sample every minute while Home Assistant on it has crashed, and a card that is
@@ -54,6 +55,7 @@ import re
 import shutil
 import socket
 import ssl
+import struct
 import subprocess
 import threading
 import time
@@ -85,7 +87,16 @@ KIND_DEFAULTS = {
     "transmission": ("Transmission", 60),
     # Reachability is cheap; sensors are read on their own slower clock.
     "ipmi": ("BMC", 60),
+    # Generic: for what has no collector and no check of its own -- a
+    # printer's web page, an SMB port, the router's resolver.
+    "http": ("HTTP", 60),
+    "tcp": ("TCP", 60),
+    "dns": ("DNS", 60),
 }
+
+# Kinds that take no credentials. A username on one of these would be a
+# setting that silently does nothing, which reads as a check that logs in.
+NO_CREDENTIALS = ("http", "tcp", "dns")
 
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$")
 
@@ -125,7 +136,13 @@ def parse_config(block):
         name, interval = KIND_DEFAULTS.get(kind, (kind or "check", 60))
         c["kind"] = kind
         c["host"] = c.get("host") if isinstance(c.get("host"), str) else None
-        c["id"] = str(c.get("id") or "%s-%s" % (kind or "check", c["host"] or i))
+        auto = "%s-%s" % (kind or "check", c["host"] or i)
+        # A host has one Plex but may well have several open ports, so a tcp
+        # check is named and keyed by its port unless it says otherwise.
+        if kind == "tcp" and _port(c.get("port")):
+            auto += "-%d" % _port(c["port"])
+            name = "TCP %d" % _port(c["port"])
+        c["id"] = str(c.get("id") or auto)
         c["name"] = str(c.get("name") or name)
         c["enabled"] = c.get("enabled") is True
         for k, v in defaults.items():
@@ -153,19 +170,43 @@ def _validate(c, seen):
     if c["kind"] not in KIND_DEFAULTS:
         return "unknown kind %r (want one of %s)" % (
             c["kind"], ", ".join(sorted(KIND_DEFAULTS)))
-    if c["kind"] == "ipmi":
+    k = c["kind"]
+    if k in NO_CREDENTIALS:
+        for f in ("token_file", "username", "password_file"):
+            if c.get(f):
+                return "%s checks send no credentials; remove %s" % (k, f)
+    if k == "ipmi":
         if not c.get("address"):
             return "ipmi needs an address"
+    elif k == "tcp":
+        if not c.get("address") or not isinstance(c["address"], str):
+            return "tcp needs an address"
+        if not _port(c.get("port")):
+            return "tcp needs a port, 1-65535"
+    elif k == "dns":
+        err = _validate_dns(c)
+        if err:
+            return err
     else:
         u = c.get("url")
         if not u:
-            return "%s needs a url" % c["kind"]
+            return "%s needs a url" % k
         p = urlsplit(str(u))
         if p.scheme not in ("http", "https") or not p.hostname:
             return "url must be http:// or https:// with a host"
         # Credentials in a URL end up in the API, the logs and the browser.
         if p.username or p.password:
             return "url carries credentials; use token_file / username + password_file"
+        try:
+            p.port
+        except ValueError:
+            return "url has a bad port"
+    if k == "http":
+        if _expect_status(c.get("expect_status")) is None:
+            return "expect_status must be an HTTP status or a list of them (100-599)"
+        if c.get("expect_body") is not None and (
+                not isinstance(c["expect_body"], str) or not c["expect_body"]):
+            return "expect_body must be a non-empty string"
     pin = c.get("tls_fingerprint_sha256")
     if pin and _norm_pin(pin) is None:
         return "tls_fingerprint_sha256 must be 64 hex digits (colons allowed)"
@@ -173,6 +214,55 @@ def _validate(c, seen):
         return "username given without password_file"
     if c.get("password_file") and not c.get("username"):
         return "password_file given without username"
+    return None
+
+
+def _port(v):
+    """A TCP/UDP port number, or None. Not bool: JSON true is not port 1."""
+    if isinstance(v, bool):
+        return None
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return None
+    return n if 1 <= n <= 65535 and str(n) == str(v).strip() else None
+
+
+# What 2xx and 3xx mean together: the server answered and did not refuse.
+# Redirects are not followed, so a login page's 302 is an answer like any other.
+DEFAULT_STATUS = tuple(range(200, 400))
+
+
+def _expect_status(v):
+    """expect_status as a tuple of codes, the default when absent, or None if
+    it is not something a status line could match."""
+    if v is None:
+        return DEFAULT_STATUS
+    vals = v if isinstance(v, list) else [v]
+    out = []
+    for x in vals:
+        if isinstance(x, bool) or not isinstance(x, int) or not 100 <= x <= 599:
+            return None
+        out.append(x)
+    return tuple(out) or None
+
+
+def _validate_dns(c):
+    if not c.get("server") or not isinstance(c["server"], str):
+        return "dns needs a server"
+    # `name` is every check's label on the card, so the name to look up has
+    # a field of its own.
+    q = c.get("query")
+    if not q or not isinstance(q, str):
+        return "dns needs a query: the name to look up (name is the card's label)"
+    try:
+        dns_qname(q)
+    except ValueError as e:
+        return "dns query %r: %s" % (q, e)
+    if str(c.get("expect") or "A").upper() not in DNS_TYPES:
+        return "dns expect must be one of %s" % ", ".join(sorted(DNS_TYPES))
+    if c.get("port") is not None and not _port(c["port"]):
+        return "dns port must be 1-65535"
     return None
 
 
@@ -190,6 +280,11 @@ def endpoint(c):
         if c.get("https", True):
             ports.append("443/tcp")
         return c.get("address"), ports
+    if c["kind"] == "tcp":
+        port = _port(c.get("port"))
+        return c.get("address"), ["%d/tcp" % port] if port else []
+    if c["kind"] == "dns":
+        return c.get("server"), ["%d/udp" % (_port(c.get("port")) or DNS_PORT)]
     try:
         p = urlsplit(str(c.get("url") or ""))
         port = p.port or (443 if p.scheme == "https" else 80)
@@ -209,7 +304,25 @@ def probe(c):
         return "RPC session-stats"
     if k == "ipmi":
         return "IPMI ping + HTTPS" + (" + sensors" if c.get("username") else "")
+    if k == "http":
+        try:
+            path = urlsplit(str(c.get("url") or "")).path or "/"
+        except ValueError:
+            path = "/"
+        return "GET " + path
+    if k == "tcp":
+        return "TCP connect"
+    if k == "dns":
+        return "DNS %s %s" % (_dns_type(c), c.get("query") or "?")
     return k
+
+
+def _target(c):
+    if c["kind"] == "tcp" and c.get("address"):
+        return "%s:%s" % (c["address"], c.get("port"))
+    if c["kind"] == "dns":
+        return c.get("server")
+    return c.get("url") or c.get("address")
 
 
 def public(c):
@@ -225,7 +338,7 @@ def public(c):
     return {
         "id": c["id"], "kind": c["kind"], "name": c["name"], "host": c["host"],
         "role": "bmc" if c["kind"] == "ipmi" else "app",
-        "target": c.get("url") or c.get("address"),
+        "target": _target(c),
         "address": address,
         "ports": ports,
         "probe": probe(c),
@@ -542,6 +655,195 @@ def check_transmission(c, memo):
     return OK, detail, facts
 
 
+# ---------- generic: http, tcp, dns ----------
+#
+# For what has no collector and no check of its own. Each proves less than the
+# specific kinds above -- something answered, as configured -- and says so.
+
+def check_http(c, memo):
+    """One GET of the configured URL, redirects not followed. The status must
+    be one of expect_status (default 2xx/3xx) and, if expect_body is given,
+    the first MAX_BODY bytes must contain it."""
+    r = http_request(c, "GET", str(c["url"]))
+    want = _expect_status(c.get("expect_status"))
+    facts = {"status": r.status}
+    if r.status not in want:
+        if r.status in (401, 403):
+            # The server is there and wants credentials this check never sends.
+            # Whether that is its normal answer is for config to say.
+            raise Outcome(AUTH, "HTTP %d -- add %d to expect_status if that is "
+                                "this page's normal answer" % (r.status, r.status), facts)
+        raise Outcome(FAIL, "HTTP %d, expected %s" % (r.status, _status_words(want)), facts)
+    body = c.get("expect_body")
+    if body and body not in r.text():
+        raise Outcome(FAIL, "HTTP %d, but the page does not contain %r" % (r.status, body),
+                      facts)
+    return OK, "HTTP %d" % r.status + (" with %r" % body if body else ""), facts
+
+
+def _status_words(codes):
+    if codes == DEFAULT_STATUS:
+        return "2xx or 3xx"
+    return ", ".join(str(x) for x in codes)
+
+
+def check_tcp(c, memo):
+    """A TCP connection is accepted, and nothing is sent on it. Unlike the
+    reachability probe, where a refusal proves the host is up, a refusal here
+    is the failure: the question is whether something is listening."""
+    port = _port(c["port"])
+    where = "%s:%d" % (c["address"], port)
+    t = c["timeout_seconds"]
+    try:
+        s = socket.create_connection((c["address"], port), timeout=t)
+    except Exception as e:
+        raise _net_error(e, where, t)
+    s.close()
+    return OK, "port %d/tcp accepts connections" % port, {}
+
+
+# ---------- DNS ----------
+#
+# A query built by hand, standard library only: one question, recursion
+# desired, over UDP. The reply is parsed only as far as the answer section's
+# types -- addresses are reported, but whether they are the right ones is not
+# this check's claim.
+
+DNS_PORT = 53
+DNS_TYPES = {"A": 1, "NS": 2, "CNAME": 5, "SOA": 6, "PTR": 12, "MX": 15,
+             "TXT": 16, "AAAA": 28, "SRV": 33}
+_RCODES = {1: "FORMERR", 2: "SERVFAIL", 3: "NXDOMAIN", 4: "NOTIMP", 5: "REFUSED"}
+
+
+def _dns_type(c):
+    return str(c.get("expect") or "A").upper()
+
+
+def dns_qname(name):
+    """A name in DNS wire format. Raises ValueError for one that cannot be."""
+    name = name.rstrip(".")
+    try:
+        raw = name.encode("ascii")
+    except UnicodeError:
+        try:
+            raw = name.encode("idna")
+        except UnicodeError:
+            raise ValueError("not a valid domain name")
+    labels = raw.split(b".") if raw else []
+    if any(not 0 < len(x) < 64 for x in labels):
+        raise ValueError("labels must be 1-63 characters")
+    out = b"".join(bytes([len(x)]) + x for x in labels) + b"\0"
+    if len(out) > 255:
+        raise ValueError("longer than 255 bytes")
+    return out
+
+
+def dns_query(qid, name, qtype):
+    # id, flags (RD), one question, no answers / authority / additional
+    return (struct.pack(">HHHHHH", qid, 0x0100, 1, 0, 0, 0)
+            + dns_qname(name) + struct.pack(">HH", qtype, 1))
+
+
+def _skip_name(data, i):
+    """Index just past the name at i. A compression pointer ends a name."""
+    for _ in range(128):
+        n = data[i]
+        if n == 0:
+            return i + 1
+        if n & 0xC0 == 0xC0:
+            return i + 2
+        if n & 0xC0:
+            raise ValueError("bad label")
+        i += 1 + n
+    raise ValueError("name too long")
+
+
+def parse_dns_reply(data, qid):
+    """(rcode, truncated, [(type, rdata)]) for a reply to query qid, or None
+    for anything that is not one."""
+    try:
+        rid, flags, qd, an = struct.unpack(">HHHH", data[:8])
+        if rid != qid or not flags & 0x8000:
+            return None
+        i = 12
+        for _ in range(qd):
+            i = _skip_name(data, i) + 4
+        answers = []
+        for _ in range(an):
+            i = _skip_name(data, i)
+            rtype, _cls, _ttl, rdlen = struct.unpack(">HHIH", data[i:i + 10])
+            i += 10
+            rdata = data[i:i + rdlen]
+            if len(rdata) != rdlen:
+                raise ValueError("short record")
+            answers.append((rtype, rdata))
+            i += rdlen
+    except (struct.error, IndexError, ValueError):
+        return None
+    return flags & 0x000F, bool(flags & 0x0200), answers
+
+
+def check_dns(c, memo):
+    """One query to the configured server. An answer of the expected type is
+    ok; NXDOMAIN, SERVFAIL, an empty answer and silence are failures."""
+    server, qname, qtype = c["server"], c["query"], _dns_type(c)
+    port = _port(c.get("port")) or DNS_PORT
+    where = "%s:%d" % (server, port)
+    t = c["timeout_seconds"]
+    deadline = time.monotonic() + t
+    qid = random.randrange(65536)
+    try:
+        s = socket.socket(socket.AF_INET6 if ":" in server else socket.AF_INET,
+                          socket.SOCK_DGRAM)
+    except OSError as e:
+        raise Outcome(ERROR, "cannot open a UDP socket: %s" % e)
+    try:
+        # Connected, so the kernel drops datagrams from anyone but the server.
+        s.settimeout(t)
+        s.connect((server, port))
+        s.send(dns_query(qid, qname, DNS_TYPES[qtype]))
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise socket.timeout()
+            s.settimeout(left)
+            reply = parse_dns_reply(s.recv(4096), qid)
+            if reply is not None:
+                break
+            # Not a reply to this query: a late answer to an earlier round,
+            # or noise. Keep listening until the deadline.
+    except Exception as e:
+        raise _net_error(e, where, t)
+    finally:
+        s.close()
+    rcode, truncated, answers = reply
+    if rcode == 5:
+        raise Outcome(AUTH, "%s refused the query (REFUSED) -- it does not answer "
+                            "this server" % where)
+    if rcode:
+        raise Outcome(FAIL, "%s %s for %s" % (
+            _RCODES.get(rcode, "rcode %d" % rcode), qtype, qname))
+    got = [rd for ty, rd in answers if ty == DNS_TYPES[qtype]]
+    facts = {}
+    if qtype == "A":
+        facts["addresses"] = [socket.inet_ntop(socket.AF_INET, rd)
+                              for rd in got if len(rd) == 4][:8]
+    elif qtype == "AAAA":
+        facts["addresses"] = [socket.inet_ntop(socket.AF_INET6, rd)
+                              for rd in got if len(rd) == 16][:8]
+    if not got:
+        if truncated:
+            raise Outcome(ERROR, "reply from %s was truncated and this check does "
+                                 "not retry over TCP" % where)
+        raise Outcome(FAIL, "no %s record for %s (answered, but empty)" % (qtype, qname))
+    detail = "%s %s answered" % (qtype, qname)
+    if facts.get("addresses"):
+        detail += ": " + ", ".join(facts["addresses"][:3])
+    else:
+        detail += " (%d record%s)" % (len(got), "" if len(got) == 1 else "s")
+    return OK, detail, facts
+
+
 # ---------- IPMI ----------
 #
 # Two separate questions with two separate answers, and the second may stay
@@ -847,7 +1149,8 @@ def check_ipmi(c, memo, now=None):
 
 
 KINDS = {"home_assistant": check_home_assistant, "plex": check_plex,
-         "transmission": check_transmission, "ipmi": check_ipmi}
+         "transmission": check_transmission, "ipmi": check_ipmi,
+         "http": check_http, "tcp": check_tcp, "dns": check_dns}
 
 
 def what(c):
@@ -867,6 +1170,19 @@ def what(c):
         return ("management controller answers (IPMI 623/udp, HTTPS)"
                 + ("; sensors via IPMI" if c.get("username") else
                    "; sensors not read -- no credentials"))
+    if k == "http":
+        want = _expect_status(c.get("expect_status")) or DEFAULT_STATUS
+        return ("GET %s answers HTTP %s%s -- not proof that the application "
+                "behind it works" % (c.get("url"), _status_words(want),
+                                     " with %r in the page" % c["expect_body"]
+                                     if c.get("expect_body") else ""))
+    if k == "tcp":
+        return ("something accepts connections on %s/tcp -- not proof that it "
+                "is the service you expect, or that it works" % c.get("port"))
+    if k == "dns":
+        return ("%s answers a query for the %s record of %s -- not proof the answer is right, "
+                "or that other names resolve" % (c.get("server"), _dns_type(c),
+                                                  c.get("query")))
     return k
 
 
