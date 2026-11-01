@@ -59,7 +59,7 @@ an LLM agent instead of doing it by hand.
 | `truenas` | API polling for the NAS (see below) |
 | `hubitat` | polling for a Hubitat Elevation hub (see below) |
 | `unifi` | polling for a UniFi OS console and the devices it has adopted (see below) |
-| `services` | application and management-controller checks attached to existing hosts (see Service checks) |
+| `services` | application, management-controller and generic http/tcp/dns checks, attached to hosts -- or giving a host with no collector a card of its own (see Service checks) |
 
 ### Thresholds
 
@@ -1100,14 +1100,36 @@ this server.
     { "kind": "transmission", "host": "transmission", "enabled": true,
       "url": "http://10.0.0.152:9091" },
     { "kind": "ipmi", "host": "mercury", "enabled": true, "address": "10.0.0.219",
-      "tls_fingerprint_sha256": "1A:24:99:54:E1:93:7F:10:...:40:33" }
+      "tls_fingerprint_sha256": "1A:24:99:54:E1:93:7F:10:...:40:33" },
+    { "kind": "http", "host": "printer", "enabled": true, "url": "https://10.0.0.60/",
+      "expect_status": [200, 401], "expect_body": "HP",
+      "tls_fingerprint_sha256": "..." },
+    { "kind": "tcp", "host": "truenas-core", "enabled": true,
+      "address": "10.0.0.45", "port": 445 },
+    { "kind": "dns", "host": "gateway", "enabled": true,
+      "server": "10.0.0.1", "query": "example.com", "expect": "A" }
   ]
 }
 ```
 
-`host` is the name the host already has on the dashboard; the check appears on
-that card and nowhere else. It is not a new host. A check whose host has never
-reported is said once at startup and shows nowhere until the host does.
+`host` is the name the host has on the dashboard; the check appears on that
+card and nowhere else.
+
+### Hosts with no collector
+
+A printer, a camera or a switch will never run a collector. A check whose
+`host` has never reported gives that host a card of its own, marked **no
+collector**: no CPU, memory, disk or patch readings, just its checks. Its dot
+is the reachability probe's answer, aimed at the address its first check goes
+to (or `hosts.<name>.address`, which wins): **up** when the probe answers,
+**down** when it does not, unknown until it has been probed. The checks stay
+their own axis as everywhere else -- a printer with a dead web page is not a
+printer that is off. Probes need reachability enabled; without it the dot
+stays unknown.
+
+The day a collector does report under that name, its samples take over the
+card. Removing the checks from config removes the card; there is nothing to
+forget.
 
 ### What each check proves -- and does not
 
@@ -1122,6 +1144,38 @@ download making progress.
 | `plex` | `GET /identity` | Plex Media Server answers with its MediaContainer | libraries are mounted, or anything plays |
 | `transmission` | RPC `session-stats` (a read) | the daemon answers its RPC | any torrent is making progress |
 | `ipmi` | IPMI Get Channel Auth Capabilities on 623/udp, plus HTTPS `GET /` | the management controller is alive | anything about the OS -- that is the host's own status |
+| `http` | `GET <url>`, redirects not followed | the status is in `expect_status` (default any 2xx or 3xx) and, if given, the page contains `expect_body` | the application behind the page works, or that the page is the one you meant -- use `expect_body` to narrow that |
+| `tcp` | a TCP connect to `address`:`port`; nothing is sent | something is listening and accepts connections | that it is the service you expect, or that it works -- an SMB port that accepts is not a share that mounts |
+| `dns` | one UDP query to `server` for `query`, type `expect` (default `A`) | the server answered with at least one record of that type | the answer is the right one, or that any other name resolves |
+
+The generic three are for what has nothing better. Each proves less than the
+specific kinds, and the card says so in the same words.
+
+* **http**: a 401 or 403 that `expect_status` does not list is **auth**
+  (amber), not a failure -- the server is there and wants credentials this
+  check never sends. If that is the page's normal answer, list it:
+  `"expect_status": [200, 401]`. Any other status outside the list is a
+  failure. `expect_body` is a plain substring, searched in the first 256 KB.
+  TLS follows the rules below: pin with `tls_fingerprint_sha256` or give a
+  `ca_file`; there is no way to skip verification.
+* **tcp**: unlike the reachability probe, where a refused connection proves
+  the host is up, here **refused is a failure**: the question is whether the
+  service is listening. A name that does not resolve is this server's error.
+  Named `TCP <port>` with id `tcp-<host>-<port>` by default, so one host can
+  have several.
+* **dns**: built by hand from the standard library -- one question, recursion
+  desired, over UDP, the reply matched by id and source. NXDOMAIN, SERVFAIL,
+  an empty answer and silence are failures; REFUSED is **auth** (the server
+  will not answer this one). An answer is not followed through CNAMEs: asking
+  for `A` and getting only a CNAME is a failure, so ask a recursive resolver.
+  The lookup is `query`, not `name` -- `name` is every check's label on the
+  card. `expect` is one of A, AAAA, CNAME, MX, NS, PTR, SOA, SRV, TXT;
+  `port` defaults to 53. A truncated reply with no usable record reads as
+  cannot check: this check does not retry over TCP.
+
+None of the three takes credentials, and one given a `username`,
+`password_file` or `token_file` is refused as misconfigured rather than
+silently not logging in.
 
 The Transmission jail shares cerium's address, 10.0.0.152, and the check uses
 it; it is attached to the `transmission` host so it shows on the jail's card.
@@ -1441,7 +1495,7 @@ claude mcp add netdash -- python3 /path/to/netdash/mcp/netdash-mcp.py \
 | `host_detail` | one host: every disk with its fill projection, CPU and memory over a window (min/avg/max, when the peak was), pending packages, checks, recent changes |
 | `events` | the event log, by host, kind and hours back |
 | `patches` | pending updates per host, which were acknowledged, reboot required, EOL |
-| `services` | every service check with its state, and BMC sensors where read |
+| `services` | every service check with its state, its target, what a pass proves and does not (`checks`), what it found (`facts`), and BMC sensors where read |
 
 The answers are shaped for an agent rather than copied from the API: a
 browser wants every chart point and the thresholds block on every host, and
@@ -1449,6 +1503,10 @@ an agent pays for each token it reads. Timestamps are local ISO time, not
 epoch seconds an agent then has to convert and gets wrong. A sleeping laptop
 reads as `away`, as it does on the dashboard — the API leaves that to the UI,
 and an agent rederiving it would sooner or later report one as an outage.
+A host with no collector (see Hosts with no collector) reads as
+`"collector": false` with its reachability and checks and nothing else: no
+last report, which would be the server's clock passed off as a check-in,
+and no readings or patch state it could never have had.
 
 ### Read-only, and what that does and does not mean
 

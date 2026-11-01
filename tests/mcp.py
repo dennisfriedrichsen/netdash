@@ -21,7 +21,11 @@ cfg["eol"] = {"enabled": False}             # endoflife.date is the network
 cfg["reachability"] = {"enabled": False}
 # Disabled, so nothing is ever polled, but still listed with its state.
 cfg["services"] = {"checks": [{"kind": "plex", "host": "linux-server",
-                               "url": "http://127.0.0.1:9", "enabled": False}]}
+                               "url": "http://127.0.0.1:9", "enabled": False},
+                              # A printer: no collector, on the dashboard
+                              # only because this check names it.
+                              {"kind": "dns", "host": "printer", "server": "10.0.0.60",
+                               "query": "example.com", "enabled": True}]}
 for k in ("truenas", "hubitat", "unifi"):
     cfg.pop(k, None)
 # A laptop allowed to sleep: silent, and not a problem.
@@ -181,6 +185,10 @@ err, svc = s.tool("services")
 out["services"] = [(r["host"], r["kind"], r["state"]) for r in svc["services"]]
 out["disabled_not_a_problem"] = "services" not in byname["linux-server"]
 out["services_bad_host"] = s.tool("services", host="nope")[0]
+out["svc_full"] = [r for r in svc["services"] if r["kind"] == "dns"][0]
+out["printer_brief"] = byname["printer"]
+err, pd = s.tool("host_detail", host="printer")
+out["printer_detail"] = [err, sorted(pd), [x.get("checks") for x in pd["services"]]]
 
 out["unknown_tool"] = s.rpc("tools/call", {"name": "forget_host", "arguments": {}})
 out["unknown_method"] = s.rpc("resources/list")

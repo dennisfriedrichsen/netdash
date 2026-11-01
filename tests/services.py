@@ -256,6 +256,140 @@ out["unresolvable"] = run(check("plex", url="http://no-such-host.invalid:32400")
 ROUTES["/identity"] = lambda h: (200, {}, b"<MediaContainer " + b"x" * (2 * services.MAX_BODY))
 out["huge"] = run(check("plex"))
 
+# ---------- generic: http ----------
+
+ROUTES["/printer/"] = lambda h: (200, {"Content-Type": "text/html"},
+                                 b"<html><title>HP LaserJet</title></html>")
+LOG.clear()
+out["http_ok"] = run(check("http", url=BASE + "/printer/"))
+out["http_path"] = [p for _, p, _ in LOG]
+out["http_body_ok"] = run(check("http", url=BASE + "/printer/", expect_body="HP"))
+out["http_body_missing"] = run(check("http", url=BASE + "/printer/", expect_body="Canon"))
+ROUTES["/login"] = lambda h: (302, {"Location": "/elsewhere"}, b"")
+out["http_302"] = run(check("http", url=BASE + "/login"))
+ROUTES["/locked"] = lambda h: (401, {}, b"Unauthorized")
+out["http_401"] = run(check("http", url=BASE + "/locked"))
+out["http_401_expected"] = run(check("http", url=BASE + "/locked", expect_status=[200, 401]))
+ROUTES["/broken"] = lambda h: (500, {}, b"oops")
+out["http_500"] = run(check("http", url=BASE + "/broken"))
+out["http_200_unexpected"] = run(check("http", url=BASE + "/printer/", expect_status=204))
+
+# ---------- generic: tcp ----------
+
+ls = socket.socket()
+ls.bind(("127.0.0.1", 0))
+ls.listen(4)
+out["tcp_ok"] = run(check("tcp", address="127.0.0.1", port=ls.getsockname()[1]))
+ls.close()
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+gone = s.getsockname()[1]
+s.close()
+# Refused is a failure here, where to the reachability probe it is a host up.
+out["tcp_refused"] = run(check("tcp", address="127.0.0.1", port=gone))
+out["tcp_unresolvable"] = run(check("tcp", address="no-such-host.invalid", port=445))
+
+# ---------- generic: dns ----------
+
+import struct
+
+DNS_SEEN = []
+
+
+def dns_answer(q, rcode=0, records=(), qid=None):
+    qid_, = struct.unpack(">H", q[:2])
+    i = 12
+    while q[i]:
+        i += 1 + q[i]
+    question = q[12:i + 5]
+    flags = 0x8180 | rcode
+    body = b""
+    for rtype, rdata in records:
+        # The name as a compression pointer to the question, as servers send it.
+        body += struct.pack(">HHHIH", 0xC00C, rtype, 1, 300, len(rdata)) + rdata
+    return struct.pack(">HHHHHH", qid_ if qid is None else qid, flags, 1,
+                       len(records), 0, 0) + question + body
+
+
+def dns_server(family=socket.AF_INET, addr="127.0.0.1"):
+    u = socket.socket(family, socket.SOCK_DGRAM)
+    u.bind((addr, 0))
+
+    def serve():
+        while True:
+            q, peer = u.recvfrom(512)
+            i, labels = 12, []
+            while q[i]:
+                labels.append(q[i + 1:i + 1 + q[i]].decode())
+                i += 1 + q[i]
+            name = ".".join(labels)
+            qtype, = struct.unpack(">H", q[i + 1:i + 3])
+            DNS_SEEN.append((name, qtype))
+            if name == "ok.test":
+                u.sendto(dns_answer(q, records=[(1, bytes([10, 0, 0, 5])),
+                                                (1, bytes([10, 0, 0, 6]))]), peer)
+            elif name == "spoof.test":
+                # A reply with the wrong id first: it must be ignored.
+                u.sendto(dns_answer(q, rcode=3, qid=(struct.unpack(">H", q[:2])[0] ^ 1)), peer)
+                u.sendto(dns_answer(q, records=[(1, bytes([10, 0, 0, 7]))]), peer)
+            elif name == "malformed.test":
+                # A zero-length A record: a type that matches, no address.
+                u.sendto(dns_answer(q, records=[(1, b"")]), peer)
+            elif name == "mixed.test":
+                u.sendto(dns_answer(q, records=[(1, b"\x0a"), (1, bytes([10, 0, 0, 9]))]), peer)
+            elif name == "nx.test":
+                u.sendto(dns_answer(q, rcode=3), peer)
+            elif name == "servfail.test":
+                u.sendto(dns_answer(q, rcode=2), peer)
+            elif name == "refused.test":
+                u.sendto(dns_answer(q, rcode=5), peer)
+            elif name == "empty.test":
+                u.sendto(dns_answer(q), peer)
+            elif name == "cname.test":
+                u.sendto(dns_answer(q, records=[(5, b"\x02ok\x04test\x00")]), peer)
+            elif name == "garbage.test":
+                u.sendto(q[:2] + b"\x81", peer)
+                u.sendto(dns_answer(q, records=[(1, bytes([10, 0, 0, 8]))]), peer)
+            # silent.test: no answer at all
+    threading.Thread(target=serve, daemon=True).start()
+    return u.getsockname()[1]
+
+
+DNS = dns_server()
+
+
+def dns(query, **kw):
+    return run(check("dns", server="127.0.0.1", port=DNS, query=query, **kw))
+
+
+out["dns_ok"] = dns("ok.test")
+out["dns_qtype"] = DNS_SEEN[-1]
+out["dns_spoof_ignored"] = dns("spoof.test")
+out["dns_garbage_ignored"] = dns("garbage.test")
+out["dns_nx"] = dns("nx.test")
+out["dns_servfail"] = dns("servfail.test")
+out["dns_refused"] = dns("refused.test")
+out["dns_empty"] = dns("empty.test")
+out["dns_cname_not_a"] = dns("cname.test")
+out["dns_cname_ok"] = dns("cname.test", expect="CNAME")
+t0 = time.monotonic()
+out["dns_silent"] = dns("silent.test")
+out["dns_silent_elapsed"] = time.monotonic() - t0
+out["dns_malformed"] = dns("malformed.test")
+out["dns_mixed"] = dns("mixed.test")
+# A resolver listening only on IPv6, named by a hostname that resolves to
+# both families: the v4 address refuses, and the v6 one must still be tried.
+try:
+    DNS6 = dns_server(socket.AF_INET6, "::1")
+    six = [a[4][0] for a in socket.getaddrinfo("localhost", DNS6, socket.AF_UNSPEC,
+                                                 socket.SOCK_DGRAM)]
+    out["dns_v6_by_name"] = (run(check("dns", server="localhost", port=DNS6,
+                                       query="ok.test", timeout_seconds=2))
+                             if "::1" in six else "skipped: localhost has no ::1")
+except OSError as e:
+    out["dns_v6_by_name"] = "skipped: %s" % e
+out["dns_aaaa_asked"] = [dns("ok.test", expect="aaaa")[0], DNS_SEEN[-1][1]]
+
 # ---------- configuration ----------
 
 cfgs = services.parse_config({"checks": [
@@ -269,6 +403,17 @@ cfgs = services.parse_config({"checks": [
     {"kind": "ipmi", "host": "f", "enabled": True},                           # no address
     {"kind": "transmission", "host": "g", "url": BASE, "username": "x", "enabled": True},
     {"kind": "ipmi", "host": "h", "address": "10.0.0.9", "tls_fingerprint_sha256": "zz",
+     "enabled": True},
+    {"kind": "tcp", "host": "j", "address": "10.0.0.45", "enabled": True},          # no port
+    {"kind": "tcp", "host": "k", "address": "10.0.0.45", "port": 70000, "enabled": True},
+    {"kind": "dns", "host": "l", "server": "10.0.0.1", "name": "example.com",
+     "enabled": True},                                                             # name, not query
+    {"kind": "dns", "host": "m", "server": "10.0.0.1", "query": "example.com",
+     "expect": "ANY", "enabled": True},
+    {"kind": "http", "host": "n", "url": BASE, "expect_status": [200, "401"], "enabled": True},
+    {"kind": "http", "host": "o", "url": BASE, "username": "u", "password_file": "/x",
+     "enabled": True},
+    {"kind": "dns", "host": "p", "server": "10.0.0.1", "query": "a" * 64 + ".com",
      "enabled": True},
     {"kind": "plex", "host": "i", "url": BASE, "interval_seconds": 1, "timeout_seconds": 999,
      "enabled": True},
@@ -294,6 +439,20 @@ eps = services.parse_config({"checks": [
 ]})
 out["endpoints"] = [[v["address"], v["ports"], v["probe"]]
                     for v in (services.public(c) for c in eps)]
+gen = services.parse_config({"checks": [
+    {"kind": "http", "host": "printer", "url": "https://10.0.0.60/status",
+     "expect_status": [200, 401], "expect_body": "HP", "enabled": True},
+    {"kind": "tcp", "host": "truenas-core", "address": "10.0.0.45", "port": 445,
+     "enabled": True},
+    {"kind": "tcp", "host": "truenas-core", "address": "10.0.0.45", "port": 22,
+     "enabled": True},
+    {"kind": "dns", "host": "gateway", "server": "10.0.0.1", "query": "example.com",
+     "expect": "A", "enabled": True},
+]})
+out["generic_cfg"] = [[c["id"], c["name"], c["config_error"]] for c in gen]
+out["generic_endpoints"] = [[v["address"], v["ports"], v["probe"], v["target"]]
+                            for v in (services.public(c) for c in gen)]
+out["generic_what"] = [services.what(c) for c in gen]
 
 # ---------- TLS: pinned, CA'd, or refused -- never unverified ----------
 
@@ -326,6 +485,10 @@ else:
         tls["ca_file"] = run(check("plex", url=turl, ca_file=crt))
         # The setting that would turn verification off does not exist.
         tls["verify_false_ignored"] = run(check("plex", url=turl, verify_tls=False))
+        # The generic http check goes through the same rules.
+        tls["http_unpinned"] = run(check("http", url=turl + "/identity"))
+        tls["http_pinned"] = run(check("http", url=turl + "/identity",
+                                       tls_fingerprint_sha256=pin))
 out["tls"] = tls
 
 # ---------- folding, staleness, disabled ----------
@@ -408,6 +571,34 @@ services.run = real_run
 ev = db.recent_events(app.CONN, host="plexserver")
 out["events"] = [[e["kind"], e["from_state"], e["to_state"], e["detail"]] for e in reversed(ev)]
 out["events_seed"] = db.last_service_states(app.CONN)
+
+# A host with no collector: a card from its checks, its dot from the probe.
+app.CFG["services"] = {"checks": [
+    {"kind": "http", "host": "printer", "url": "http://10.0.0.60/", "enabled": True},
+    {"kind": "tcp", "host": "plexserver", "address": "10.0.0.133", "port": 32400,
+     "enabled": True},
+    {"kind": "tcp", "host": "camera", "address": "10.0.0.70", "port": 554,
+     "enabled": False},
+    {"kind": "tcp", "host": "typo", "address": "10.0.0.71", "enabled": True},
+]}
+db.insert_sample(app.CONN, sample("plexserver"))
+fs = app.fleet_samples(t)
+out["svc_only_hosts"] = sorted([s["host"], s.get("source")] for s in fs)
+out["svc_only_typo"] = [[v["name"], v["state"]] for v in app.summarize(
+    [s for s in fs if s["host"] == "typo"][0], t)["services"]]
+pr = [s for s in fs if s["host"] == "printer"][0]
+out["svc_only_address"] = list(app.address_for("printer", pr))
+app.REACH.pop("printer", None)
+v0 = app.summarize(pr, t)
+app.REACH["printer"] = {"state": "up", "probe": "up", "failures": 0, "via": "icmp",
+                        "detail": "answers", "checked_at": int(t)}
+v1 = app.summarize(pr, t)
+app.REACH["printer"] = {"state": "down", "probe": "down", "failures": 2, "via": "icmp",
+                        "detail": "no answer", "checked_at": int(t)}
+v2 = app.summarize(pr, t)
+out["svc_only_status"] = [[v["status"], v["down_reason"], v["stale"]] for v in (v0, v1, v2)]
+out["svc_only_services"] = [s["name"] for s in v1["services"]]
+app.REACH.pop("printer", None)
 
 # One check hanging holds up nothing else: not the API, not other checks.
 ROUTES["/manifest.json"] = hang

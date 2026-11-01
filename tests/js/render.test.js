@@ -1160,4 +1160,32 @@ check('a_storage_event_takes_the_status_palette', function () {
   if (textOf(ctx.root).indexOf('ada4 FAULTED (SERIAL-ADA4)') < 0) throw new Error(textOf(ctx.root));
 });
 
+/* A host with no collector: a printer known only from its service checks. No
+   readings, no os, no samples -- the card and the page must still draw, and
+   say why there are no numbers. */
+var PRINTER = host({ host: 'printer', os: null, source: 'services', uptime_seconds: null,
+  cpu: { pct: null, status: 'unknown' },
+  mem: { pct: null, used_bytes: null, total_bytes: null, status: 'unknown' },
+  disk: { worst_pct: null, status: 'unknown', mounts: [] },
+  patches: null, eol: null, collector_version: null, virt: null, virt_source: null,
+  is_vm: null, status: 'ok',
+  reachability: { state: 'up', detail: 'answers', via: 'icmp', failures: 0,
+                  address: '10.0.0.60', address_source: 'check', checked_at: 1788436201 },
+  services: [SVCV({ id: 'dns-printer', kind: 'dns', name: 'DNS', target: '10.0.0.60',
+    checks: '10.0.0.60 answers a query for the A record of example.com -- not proof',
+    detail: 'A example.com answered: 10.0.0.5', facts: { addresses: ['10.0.0.5'] } })],
+  services_severity: 'ok' });
+check('collector_less_host_card_and_detail', function () {
+  overview([PRINTER], '');
+  if (textOf(ctx.root).indexOf('no collector') < 0) throw new Error(textOf(ctx.root));
+  /* Nothing to install, so nothing telling you to install it. */
+  if (/netdash-patchcheck|cannot report virtualisation/.test(textOf(ctx.root))) {
+    throw new Error(textOf(ctx.root));
+  }
+  ctx.renderDetail('printer', detail(PRINTER, { history: [] }));
+  if (ctx.metaEl.textContent.indexOf('no collector') < 0) throw new Error(ctx.metaEl.textContent);
+  if (textOf(ctx.root).indexOf('resolves to 10.0.0.5') < 0) throw new Error(textOf(ctx.root));
+  if (/netdash-patchcheck/.test(textOf(ctx.root))) throw new Error(textOf(ctx.root));
+});
+
 console.log(JSON.stringify(out));

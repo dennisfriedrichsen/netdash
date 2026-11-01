@@ -252,6 +252,42 @@ def services_for(host, now):
     return out, worst
 
 
+def service_only_hosts(known, now=None):
+    """Samples standing in for the hosts that only service checks name.
+
+    A printer or a camera will never run a collector, and its checks need a
+    card to be on. So a host named by an enabled check that has never reported
+    gets one, built from config: no readings, source "services", and the
+    address its first check goes to, which the prober uses. Its dot is
+    the probe's answer and nothing else -- the checks stay their own axis here
+    as everywhere, or a printer with a dead web page would read as a printer
+    that is off.
+
+    The day a collector does report under that name, its samples take over
+    and this steps aside.
+    """
+    now = time.time() if now is None else now
+    out = {}
+    for c in service_checks():
+        h = c["host"]
+        # A check that cannot run still gets its card: there it shows as
+        # misconfigured, where otherwise the typo would be invisible.
+        if not h or not c["enabled"] or h in known or h in out:
+            continue
+        if not _GUEST_NAME.match(h):
+            continue
+        out[h] = {"host": h, "ts": now, "source": "services", "disks": [],
+                  "address": services.endpoint(c)[0]}
+    return list(out.values())
+
+
+def fleet_samples(now=None):
+    """Every host on the dashboard: those that report, then those that exist
+    only because a service check names them."""
+    samples = db.latest_per_host(CONN)
+    return samples + service_only_hosts({s["host"] for s in samples}, now)
+
+
 def service_worker(c, last_recorded=None):
     """Run one check for ever. One thread per check, so a service that hangs
     holds up nothing but itself -- and every request inside is bounded by its
@@ -428,6 +464,9 @@ def address_for(host, sample):
     ov = host_cfg(host).get("address")
     if ov:
         return ov, "config"
+    # A host with no collector is where its service check goes.
+    if sample.get("source") == "services" and sample.get("address"):
+        return sample["address"], "check"
     # A jail's host knows its address from the jail's own configuration, which
     # beats a DNS lookup that may not have caught up with a DHCP lease.
     g = guest_for(host)
@@ -975,6 +1014,12 @@ def summarize(sample, now=None):
     if (overall == "unknown" and sample.get("source") == "guest" and vouched
             and g["state"] == "running" and r and r["state"] == "up"):
         overall = "ok"
+    # A host with no collector has no readings to judge and no samples to go
+    # stale. The probe is all that speaks for the machine itself.
+    if sample.get("source") == "services":
+        down_reason = "unreachable" if expect_up and r and r["state"] == "down" else None
+        overall = ("down" if down_reason
+                   else "ok" if r and r["state"] == "up" else "unknown")
 
     svcs, svc_severity = services_for(host, now)
 
@@ -1245,9 +1290,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/overview":
             try:
-                samples = db.latest_per_host(CONN)
                 now = time.time()
-                hosts = [summarize(s, now) for s in samples]
+                hosts = [summarize(s, now) for s in fleet_samples(now)]
                 # A host is "behind" only against a version actually seen in this
                 # fleet, and only when it reported one at all -- a host that has
                 # not upgraded its collector yet reports nothing and must not be
@@ -1276,7 +1320,7 @@ class Handler(BaseHTTPRequestHandler):
             ceiling = (int(h.get("keep_rollup_days") or 0) * 1440
                        if h.get("enabled") else 0) or CFG["retention_hours"] * 60
             mins = max(5, min(mins, max(ceiling, CFG["retention_hours"] * 60)))
-            samples = [s for s in db.latest_per_host(CONN) if s["host"] == host]
+            samples = [s for s in fleet_samples() if s["host"] == host]
             if not samples:
                 return self._json(404, {"error": "unknown host"})
             # Which store answers depends on how far back the question
@@ -1472,7 +1516,7 @@ def reach_prober():
         try:
             now = time.time()
             targets = []
-            for sample in db.latest_per_host(CONN):
+            for sample in fleet_samples(now):
                 host = sample["host"]
                 if not expect_up_for(host):
                     continue
@@ -1495,7 +1539,8 @@ def reach_prober():
                     continue
                 # A jail its parent reports is always probed: its samples are
                 # fresh because the parent is, which says nothing about the jail.
-                if sample.get("source") == "guest":
+                # So is a host with no collector: there are no samples at all.
+                if sample.get("source") in ("guest", "services"):
                     targets.append((host, sample))
                     continue
                 if now - sample["ts"] < max(15, stale_after_for(host) / 2):
@@ -1518,7 +1563,7 @@ def reach_prober():
 
             # A forgotten host leaves a stale verdict behind. Nothing else
             # removes hosts now, so this is the only way an entry goes away.
-            live = {s["host"] for s in db.latest_per_host(CONN)}
+            live = {s["host"] for s in fleet_samples()}
             with REACH_LOCK:
                 for gone in set(REACH) - live:
                     del REACH[gone]
@@ -1595,7 +1640,7 @@ def event_watcher():
         last_storage = {}
     while True:
         try:
-            for sample in db.latest_per_host(CONN):
+            for sample in fleet_samples():
                 host = sample["host"]
                 view = summarize(sample)
                 storage_events(host, view.get("storage"), last_storage)
@@ -1609,7 +1654,7 @@ def event_watcher():
                     detail = view.get("down_reason") or r.get("detail")
                     db.record_event(CONN, host, "status", prev, now_state, detail)
                     last[host] = now_state
-            live = {s["host"] for s in db.latest_per_host(CONN)}
+            live = {s["host"] for s in fleet_samples()}
             for gone in set(last) - live:
                 del last[gone]
         except Exception as e:
@@ -1813,8 +1858,8 @@ def start_service_checks():
             continue
         if c["host"] not in seen:
             sys.stderr.write("services: check %s is attached to %s, which has "
-                             "never reported -- it runs, but shows nowhere until "
-                             "that host does\n" % (c["id"], c["host"]))
+                             "never reported -- it gets a card of its own, with "
+                             "no collector\n" % (c["id"], c["host"]))
         threading.Thread(target=service_worker,
                          args=(c, last.get("service:" + c["id"])),
                          daemon=True).start()
@@ -1839,7 +1884,9 @@ def main():
     # Say which, once, rather than leaving it to be discovered.
     configured = set(CFG.get("hosts") or {})
     if configured:
-        unseen = sorted(configured - set(db.known_hosts(CONN)))
+        # A host with no collector never reports, and is not a typo.
+        unseen = sorted(configured - set(db.known_hosts(CONN))
+                        - {c["host"] for c in service_checks() if c["enabled"]})
         if unseen:
             sys.stderr.write("config: per-host settings for hosts that have "
                              "never reported: %s\n" % ", ".join(unseen))

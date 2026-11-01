@@ -807,6 +807,7 @@ function eolBadge(e) {
    from. A value set in server.json is not the same claim as one the machine
    made about itself, and the difference should be visible rather than buried. */
 function virtLabel(h) {
+  if (h.source === 'services') return 'no collector';
   if (!h.virt) return 'virtualisation not reported';
   var base = h.virt === 'none' ? 'bare metal'
            : h.is_container ? h.virt + (h.parent ? ' on ' + h.parent : '')
@@ -868,12 +869,15 @@ function compactRow(h) {
   });
 
   var flags = el('span', 'cflags');
-  var p = h.patches || {};
-  var ps = patchStyle(p);
-  var pg = el('span', 'cflag', ps.glyph);
-  pg.style.color = (p.status === 'ok' || p.acknowledged) ? 'var(--muted)' : ps.css;
-  pg.title = 'Patches: ' + patchText(p) + '\n' + patchTitle(p);
-  flags.appendChild(pg);
+  /* No collector, no patch check, and nothing to nag about running one. */
+  if (h.source !== 'services') {
+    var p = h.patches || {};
+    var ps = patchStyle(p);
+    var pg = el('span', 'cflag', ps.glyph);
+    pg.style.color = (p.status === 'ok' || p.acknowledged) ? 'var(--muted)' : ps.css;
+    pg.title = 'Patches: ' + patchText(p) + '\n' + patchTitle(p);
+    flags.appendChild(pg);
+  }
 
   /* One flag for every check on the host, coloured by the worst of them and
      muted while they all answer. The title names each, so the row says which
@@ -1090,13 +1094,16 @@ function renderOverview(data, tab) {
       worst && worst.total_bytes ? fmtDiskFree(worst) +
               (h.disk.mounts.length > 1 ? '  (+' + (h.disk.mounts.length - 1) + ' more)' : '') : ''));
 
-    a.appendChild(patchRow(h.patches));
+    if (h.source !== 'services') a.appendChild(patchRow(h.patches));
     if (h.fleet) a.appendChild(fleetRow(h.fleet));
     if (h.storage) a.appendChild(storageRow(h.storage));
     liveServices(h).forEach(function (sv) { a.appendChild(serviceRow(sv)); });
 
     var why = reachText(h);
-    var sub = el('div', 'sub', (h.stale ? 'last seen ' : 'updated ') + fmtAge(h.age_seconds) +
+    // A host with no collector has never reported, so there is no "updated"
+    // to give: only the service checks it is on the dashboard for.
+    var sub = el('div', 'sub', h.source === 'services' ? 'no collector · service checks only' :
+      (h.stale ? 'last seen ' : 'updated ') + fmtAge(h.age_seconds) +
       // Any source but 'push' is an appliance this server polled, rather than
       // a host that installed a collector and reported in.
       (h.source === 'guest' ? ' · via ' + (h.parent || 'its host')
@@ -1468,6 +1475,7 @@ function servicesPanel(c) {
       fx.push(f.torrentCount + ' torrent' + (f.torrentCount === 1 ? '' : 's') + ', ' +
               (f.activeTorrentCount || 0) + ' active, ' + (f.pausedTorrentCount || 0) + ' paused');
     }
+    if (f.addresses && f.addresses.length) fx.push('resolves to ' + f.addresses.join(', '));
     if (f.reach) {
       Object.keys(f.reach).forEach(function (k) { fx.push(k.toUpperCase() + ': ' + f.reach[k]); });
     }
@@ -1551,9 +1559,12 @@ function renderDetail(host, data, range) {
   var c = data.current, s = hostStyle(c);
   range = range || '24h';
   titleEl.textContent = host;
-  metaEl.textContent = (c.os || 'unknown os') + ' · ' + fmtUptime(c.uptime_seconds) +
-    ' · ' + (c.stale ? 'last seen ' : 'updated ') + fmtAge(c.age_seconds) +
-    (c.collector_version ? ' · collector v' + c.collector_version : '');
+  metaEl.textContent = c.source === 'services'
+    ? 'no collector · known from its service checks' +
+      (c.reachability && c.reachability.address ? ' · ' + c.reachability.address : '')
+    : (c.os || 'unknown os') + ' · ' + fmtUptime(c.uptime_seconds) +
+      ' · ' + (c.stale ? 'last seen ' : 'updated ') + fmtAge(c.age_seconds) +
+      (c.collector_version ? ' · collector v' + c.collector_version : '');
 
   var frag = document.createDocumentFragment();
 
@@ -1778,7 +1789,7 @@ function renderDetail(host, data, range) {
     p4.appendChild(el('div', 'sub',
       'No patch check has run on this host yet — run netdash-patchcheck.'));
   }
-  panels.appendChild(p4);
+  if (c.source !== 'services') panels.appendChild(p4);
 
   /* The adopted fleet, in full. The overview card carries only a count; this
      is where you come to find out which device and how it is doing. Offline
@@ -2096,7 +2107,10 @@ function renderTabs(data, active) {
     a.appendChild(el('span', 'tabn', String(n)));
     nav.appendChild(a);
   });
-  var unknown = data.hosts.filter(function (h) { return h.is_vm === null; }).length;
+  /* A host with no collector was never going to say: nothing to re-run. */
+  var unknown = data.hosts.filter(function (h) {
+    return h.is_vm === null && h.source !== 'services';
+  }).length;
   if (unknown) {
     var note = el('span', 'tabnote', unknown + ' cannot report virtualisation');
     note.title = 'These appear only under All. Re-run install.sh to collect it.';
