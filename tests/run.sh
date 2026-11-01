@@ -783,7 +783,7 @@ case "\$*" in
   "audit -F -q"|"update -q") exit 0 ;;
   audit) cat "$FIX/\$NETDASH_PKG_FIX/pkg-audit.txt"; exit 1 ;;
   "version -vRL=") cat "$FIX/\$NETDASH_PKG_FIX/pkg-version-refresh.txt" ;;
-  "version -U -vRL=") ;;
+  "version -U -vRL=") [ -z "\$NETDASH_PKG_PENDING" ] || cat "$FIX/freebsd/pkg-version-pending.txt" ;;
   *) exit 1 ;;
 esac
 EOF
@@ -802,6 +802,13 @@ EOF
       sh "$ROOT/collectors/bsd/netdash-patchcheck.sh" --print 2>/dev/null) || J=''
   check "nor on FreeBSD, whose three repositories read as 7 behind" \
         "assert (d['security'],d['other'])==(9,0), d" "$J"
+  # With -U and real updates pending, one line per package: freebsd16pkgbase
+  # (FreeBSD 16 snapshot, pkgbase) on 2026-11-01, eleven base packages behind.
+  J=$(env "PATH=$B:/usr/bin:/bin" NETDASH_CONF=/dev/null NETDASH_FIXTURES="$FIX" \
+      NETDASH_PKG_FIX=freebsd NETDASH_PKG_PENDING=1 NETDASH_MOCK_OS=FreeBSD NETDASH_MOCK_REL=16.0-CURRENT \
+      sh "$ROOT/collectors/bsd/netdash-patchcheck.sh" --print 2>/dev/null) || J=''
+  check "with -U and updates pending, each package line is one behind" \
+        "assert d['other']==11, d" "$J"
   rm -rf "$B"
 fi
 
