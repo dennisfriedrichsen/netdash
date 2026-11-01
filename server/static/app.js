@@ -665,6 +665,14 @@ var OS_ICONS = {
               ['path', { d: 'M11.1 8.6C8.6 5.9 4.6 5 2.7 6.3 3.3 8.5 7.4 9.6 11.1 8.6z' }],
               ['path', { d: 'M12.9 10.7C15.9 10.1 19.6 11 20.7 12.9 18.9 14.2 15.3 13.3 12.9 10.7z' }],
               ['path', { d: 'M11.1 10.7C8.1 10.1 4.4 11 3.3 12.9 5.1 14.2 8.7 13.3 11.1 10.7z' }]],
+  /* OmniOS, an illumos distribution: a sun, for the SunOS that uname -s
+     still answers and the light illumos is named for. Eight short rays round
+     a solid disc -- solid so it is not the Ubuntu ring or the question mark's
+     circle at 19px. */
+  omnios: [['circle', { cx: 12, cy: 12, r: 4.4 }],
+           ['path', { d: 'M12 2.6v2.6M12 18.8v2.6M2.6 12h2.6M18.8 12h2.6' +
+                         'M5.35 5.35l1.85 1.85M16.8 16.8l1.85 1.85M5.35 18.65l1.85-1.85M16.8 7.2l1.85-1.85',
+                      fill: 'none', 'stroke-width': 1.7 }]],
   /* A rack gateway seen head on: body, two link LEDs, and the uplink arcs
      above it. The arcs are what separate it from the NAS glyph below, which is
      otherwise also a stack of boxes with lights on. */
@@ -732,6 +740,9 @@ function osFamily(os) {
   /* uname -s says "DragonFly", with no "BSD" in it, so it has to be named. */
   if (s.indexOf('dragonfly') > -1) return 'dragonfly';
   if (s.indexOf('bsd') > -1) return 'bsd';
+  /* The collector reports the distribution, "OmniOS v11 r151054r", not
+     uname -s's SunOS. */
+  if (s.indexOf('omnios') > -1) return 'omnios';
   /* 'suse' and 'slackware' are here because their PRETTY_NAMEs carry no
      'Linux' -- "openSUSE Tumbleweed", "Slackware 15.0 x86_64" -- so each fell
      through to the question mark. */
@@ -908,7 +919,7 @@ function compactRow(h) {
 var OS_GROUPS = {
   apple: 'macOS', nas: 'TrueNAS', debian: 'Debian', ubuntu: 'Ubuntu',
   raspberry: 'Raspberry Pi OS', openbsd: 'OpenBSD', netbsd: 'NetBSD',
-  dragonfly: 'DragonFly BSD', midnightbsd: 'MidnightBSD',
+  dragonfly: 'DragonFly BSD', midnightbsd: 'MidnightBSD', omnios: 'OmniOS',
   gateway: 'UniFi', hub: 'Hubitat', unknown: 'Unknown OS'
 };
 

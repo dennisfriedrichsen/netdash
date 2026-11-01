@@ -136,11 +136,12 @@ check('all_tab_groups_by_os_when_asked', function () {
             host({ host: 'deb2', os: 'Debian 13' }),
             host({ host: 'mystery', os: null }),
             host({ host: 'suse', os: 'openSUSE Tumbleweed' }),
-            host({ host: 'slack', os: 'Slackware 15.0 x86_64 (x86_64)' })];
+            host({ host: 'slack', os: 'Slackware 15.0 x86_64 (x86_64)' }),
+            host({ host: 'omnios', os: 'OmniOS v11 r151054r' })];
   var labels = ctx.osGroups(hs).map(function (g) {
     return g.label + ':' + g.hosts.map(function (h) { return h.host; }).join('+');
   }).join(' ');
-  if (labels !== 'Arch:arch Debian:deb1+deb2 FreeBSD:fbsd openSUSE:suse Slackware:slack Unknown OS:mystery') {
+  if (labels !== 'Arch:arch Debian:deb1+deb2 FreeBSD:fbsd OmniOS:omnios openSUSE:suse Slackware:slack Unknown OS:mystery') {
     throw new Error(labels);
   }
   var saved = ctx.localStorage.getItem;
@@ -149,8 +150,8 @@ check('all_tab_groups_by_os_when_asked', function () {
     if (countClass(top()[1], 'cgroup')) throw new Error('grouped without being asked');
     ctx.localStorage.getItem = function (k) { return k === 'netdash-group' ? 'os' : null; };
     overview(hs, '');
-    if (countClass(top()[1], 'cgroup') !== 6) throw new Error('expected 6 group headings');
-    if (countClass(top()[1], 'crow') !== 7) throw new Error('a host went missing');
+    if (countClass(top()[1], 'cgroup') !== 7) throw new Error('expected 7 group headings');
+    if (countClass(top()[1], 'crow') !== 8) throw new Error('a host went missing');
     if (textOf(top()[0]).indexOf('By OS') < 0) throw new Error('no toggle on the All tab');
     overview(hs, 'vms');
     if (textOf(top()[0]).indexOf('By OS') >= 0) throw new Error('toggle leaked onto VMs');
@@ -645,7 +646,7 @@ check('appliances_get_their_own_icons', function () {
               ['Debian GNU/Linux 13', 'debian'],
               ['Slackware 15.0 x86_64 (x86_64)', 'linux'],
               ['FreeBSD 15.1', 'bsd'], ['DragonFly 6.4-RELEASE (x86_64)', 'dragonfly'],
-              ['MidnightBSD 4.0 (amd64)', 'midnightbsd'],
+              ['MidnightBSD 4.0 (amd64)', 'midnightbsd'], ['OmniOS v11 r151054r', 'omnios'],
               ['', 'unknown']];
   want.forEach(function (c) {
     var got = ctx.osFamily(c[0]);
@@ -661,7 +662,7 @@ check('an_appliance_icon_actually_draws_shapes', function () {
      a snowman, and dropping any of them is a silent regression. */
   [['UniFi OS 5.1.31', 4], ['Hubitat C-8 Pro 2.5.1.174', 3],
    ['Alpine Linux 3.24', 9], ['DragonFly 6.4-RELEASE (x86_64)', 6],
-   ['MidnightBSD 4.0 (amd64)', 2]].forEach(function (c) {
+   ['MidnightBSD 4.0 (amd64)', 2], ['OmniOS v11 r151054r', 2]].forEach(function (c) {
     var svg = ctx.osIcon(c[0]);
     var shapes = (svg.children || []).filter(function (x) {
       return x.tagName !== '#comment';
