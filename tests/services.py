@@ -311,9 +311,9 @@ def dns_answer(q, rcode=0, records=(), qid=None):
                        len(records), 0, 0) + question + body
 
 
-def dns_server():
-    u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    u.bind(("127.0.0.1", 0))
+def dns_server(family=socket.AF_INET, addr="127.0.0.1"):
+    u = socket.socket(family, socket.SOCK_DGRAM)
+    u.bind((addr, 0))
 
     def serve():
         while True:
@@ -332,6 +332,11 @@ def dns_server():
                 # A reply with the wrong id first: it must be ignored.
                 u.sendto(dns_answer(q, rcode=3, qid=(struct.unpack(">H", q[:2])[0] ^ 1)), peer)
                 u.sendto(dns_answer(q, records=[(1, bytes([10, 0, 0, 7]))]), peer)
+            elif name == "malformed.test":
+                # A zero-length A record: a type that matches, no address.
+                u.sendto(dns_answer(q, records=[(1, b"")]), peer)
+            elif name == "mixed.test":
+                u.sendto(dns_answer(q, records=[(1, b"\x0a"), (1, bytes([10, 0, 0, 9]))]), peer)
             elif name == "nx.test":
                 u.sendto(dns_answer(q, rcode=3), peer)
             elif name == "servfail.test":
@@ -370,6 +375,19 @@ out["dns_cname_ok"] = dns("cname.test", expect="CNAME")
 t0 = time.monotonic()
 out["dns_silent"] = dns("silent.test")
 out["dns_silent_elapsed"] = time.monotonic() - t0
+out["dns_malformed"] = dns("malformed.test")
+out["dns_mixed"] = dns("mixed.test")
+# A resolver listening only on IPv6, named by a hostname that resolves to
+# both families: the v4 address refuses, and the v6 one must still be tried.
+try:
+    DNS6 = dns_server(socket.AF_INET6, "::1")
+    six = [a[4][0] for a in socket.getaddrinfo("localhost", DNS6, socket.AF_UNSPEC,
+                                                 socket.SOCK_DGRAM)]
+    out["dns_v6_by_name"] = (run(check("dns", server="localhost", port=DNS6,
+                                       query="ok.test", timeout_seconds=2))
+                             if "::1" in six else "skipped: localhost has no ::1")
+except OSError as e:
+    out["dns_v6_by_name"] = "skipped: %s" % e
 out["dns_aaaa_asked"] = [dns("ok.test", expect="aaaa")[0], DNS_SEEN[-1][1]]
 
 # ---------- configuration ----------

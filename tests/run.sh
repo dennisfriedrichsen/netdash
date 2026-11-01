@@ -3488,6 +3488,10 @@ if want services; then
         "assert d['dns_spoof_ignored'][0]==d['dns_garbage_ignored'][0]=='ok', d" "$J"
   check "dns: NXDOMAIN, SERVFAIL, an empty answer and silence each fail" \
         "assert [d[k][0] for k in ('dns_nx','dns_servfail','dns_empty','dns_silent')]==['fail']*4 and d['dns_silent_elapsed'] < 2.5, d" "$J"
+  check "dns: an address record with no address in it is not an answer" \
+        "assert d['dns_malformed'][0]=='fail' and 'malformed' in d['dns_malformed'][1] and d['dns_mixed'][0]=='ok' and d['dns_mixed'][2]['addresses']==['10.0.0.9'], d" "$J"
+  check "dns: a server named by hostname is tried on every family it has" \
+        "v=d['dns_v6_by_name']; assert (isinstance(v,str) and v.startswith('skipped')) or v[0]=='ok', v" "$J"
   check "dns: only the expected type counts, and REFUSED is auth" \
         "assert (d['dns_cname_not_a'][0],d['dns_cname_ok'][0],d['dns_refused'][0])==('fail','ok','auth') and d['dns_aaaa_asked'][1]==28, d" "$J"
   check "generic kinds say what is wrong with them, and take no credentials" \

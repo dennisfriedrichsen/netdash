@@ -783,6 +783,32 @@ def parse_dns_reply(data, qid):
     return flags & 0x000F, bool(flags & 0x0200), answers
 
 
+def _dns_exchange(family, stype, proto, sa, query, qid, deadline):
+    """Send the query to one address and wait, until deadline, for the reply
+    that answers it. Raises the socket error otherwise."""
+    try:
+        s = socket.socket(family, stype, proto)
+    except OSError as e:
+        raise Outcome(ERROR, "cannot open a UDP socket: %s" % e)
+    try:
+        # Connected, so the kernel drops datagrams from anyone but the server.
+        s.settimeout(max(0.01, deadline - time.monotonic()))
+        s.connect(sa)
+        s.send(query)
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise socket.timeout()
+            s.settimeout(left)
+            reply = parse_dns_reply(s.recv(4096), qid)
+            if reply is not None:
+                return reply
+            # Not a reply to this query: a late answer to an earlier round,
+            # or noise. Keep listening until the deadline.
+    finally:
+        s.close()
+
+
 def check_dns(c, memo):
     """One query to the configured server. An answer of the expected type is
     ok; NXDOMAIN, SERVFAIL, an empty answer and silence are failures."""
@@ -792,30 +818,28 @@ def check_dns(c, memo):
     t = c["timeout_seconds"]
     deadline = time.monotonic() + t
     qid = random.randrange(65536)
+    query = dns_query(qid, qname, DNS_TYPES[qtype])
+    # Whatever families the name has: a resolver named in config may have
+    # only an AAAA record, or listen only on IPv6.
     try:
-        s = socket.socket(socket.AF_INET6 if ":" in server else socket.AF_INET,
-                          socket.SOCK_DGRAM)
-    except OSError as e:
-        raise Outcome(ERROR, "cannot open a UDP socket: %s" % e)
-    try:
-        # Connected, so the kernel drops datagrams from anyone but the server.
-        s.settimeout(t)
-        s.connect((server, port))
-        s.send(dns_query(qid, qname, DNS_TYPES[qtype]))
-        while True:
-            left = deadline - time.monotonic()
-            if left <= 0:
-                raise socket.timeout()
-            s.settimeout(left)
-            reply = parse_dns_reply(s.recv(4096), qid)
-            if reply is not None:
-                break
-            # Not a reply to this query: a late answer to an earlier round,
-            # or noise. Keep listening until the deadline.
+        addrs = socket.getaddrinfo(server, port, socket.AF_UNSPEC, socket.SOCK_DGRAM)
     except Exception as e:
         raise _net_error(e, where, t)
-    finally:
-        s.close()
+    reply, err = None, None
+    for i, (family, stype, proto, _cn, sa) in enumerate(addrs):
+        # Each address gets a fair share of what is left, so a dead first
+        # one cannot use up the whole timeout before the second is tried.
+        share = (deadline - time.monotonic()) / (len(addrs) - i)
+        try:
+            reply = _dns_exchange(family, stype, proto, sa, query, qid,
+                                  time.monotonic() + share)
+            break
+        except Exception as e:
+            err = e
+    if reply is None:
+        if isinstance(err, Outcome):
+            raise err
+        raise _net_error(err or socket.timeout(), where, t)
     rcode, truncated, answers = reply
     if rcode == 5:
         raise Outcome(AUTH, "%s refused the query (REFUSED) -- it does not answer "
@@ -825,12 +849,17 @@ def check_dns(c, memo):
             _RCODES.get(rcode, "rcode %d" % rcode), qtype, qname))
     got = [rd for ty, rd in answers if ty == DNS_TYPES[qtype]]
     facts = {}
-    if qtype == "A":
-        facts["addresses"] = [socket.inet_ntop(socket.AF_INET, rd)
-                              for rd in got if len(rd) == 4][:8]
-    elif qtype == "AAAA":
-        facts["addresses"] = [socket.inet_ntop(socket.AF_INET6, rd)
-                              for rd in got if len(rd) == 16][:8]
+    # An address record is only an answer if it holds an address. A malformed
+    # one must not count as the resolver working.
+    fam = {"A": (socket.AF_INET, 4), "AAAA": (socket.AF_INET6, 16)}.get(qtype)
+    if fam:
+        bad = len(got)
+        got = [rd for rd in got if len(rd) == fam[1]]
+        bad -= len(got)
+        facts["addresses"] = [socket.inet_ntop(fam[0], rd) for rd in got][:8]
+        if bad and not got:
+            raise Outcome(FAIL, "%s for %s answered with %d malformed %s record%s"
+                          % (where, qname, bad, qtype, "" if bad == 1 else "s"))
     if not got:
         if truncated:
             raise Outcome(ERROR, "reply from %s was truncated and this check does "
