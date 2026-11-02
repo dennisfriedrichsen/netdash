@@ -1036,7 +1036,8 @@ def rollup_series(conn, host, since):
     with _DB:
         rows = conn.execute(
             """SELECT bucket AS ts, cpu_avg AS cpu_pct, mem_avg AS mem_pct,
-                      cpu_min, cpu_max, mem_min, mem_max, samples, coverage
+                      cpu_min, cpu_max, mem_min, mem_max, samples, cpu_n, mem_n,
+                      coverage
                  FROM rollups WHERE host=? AND bucket >= ? ORDER BY bucket ASC""",
             (host, int(since)),
         ).fetchall()
@@ -1192,9 +1193,13 @@ def record_event(conn, host, kind, from_state, to_state, detail=None, ts=None):
         conn.commit()
 
 
-def recent_events(conn, host=None, limit=100, since=None, kind=None):
+def recent_events(conn, host=None, limit=100, since=None, kind=None, before=None):
     """Newest first. `kind` matches itself and everything under it, so
-    "service" finds every "service:<id>" without the caller knowing the ids."""
+    "service" finds every "service:<id>" without the caller knowing the ids.
+
+    `before` is a (ts, id) cursor: only events after it in this order, i.e.
+    the next page after an event already seen. ts alone would skip or repeat
+    the events sharing a second with the page's last one."""
     with _DB:
         q = "SELECT * FROM events WHERE 1=1"
         args = []
@@ -1209,6 +1214,9 @@ def recent_events(conn, host=None, limit=100, since=None, kind=None):
             # a wildcard.
             q += " AND (kind=? OR substr(kind, 1, ?)=?)"
             args += [kind, len(kind) + 1, kind + ":"]
+        if before:
+            q += " AND (ts < ? OR (ts = ? AND id < ?))"
+            args += [int(before[0]), int(before[0]), int(before[1])]
         q += " ORDER BY ts DESC, id DESC LIMIT ?"
         args.append(int(limit))
         return [dict(r) for r in conn.execute(q, args)]

@@ -47,6 +47,23 @@ scrub, or a disk that failed SMART, does count toward status. Patches and end
 of life are deliberately not part of status; services are not either. Acknowledged
 patches and EOL warnings were reviewed by a person and are not news.
 
+An appliance -- a UniFi console -- reports the devices it manages under
+"members". Their faults (an access point offline, one over its CPU or memory
+threshold) are deliberately not part of the console's status: the console
+itself can be healthy while an AP is down. They do count toward attention.
+
+problems_only, and each host's "attention" list, cover status, unacknowledged
+security patches, reboots, end of life, failing service checks and appliance
+members. They leave out ordinary (non-security) updates, a patch check whose
+answer is unknown or old, and an outdated collector: "nothing needs attention"
+is not "nothing to maintain". An away or stopped host is not a problem, but
+patch and end-of-life findings it last reported still count.
+
+History is summarised, never complete by assumption: host_detail says what
+resolution answered, how much of the window it covers, and how its averages
+are weighted. Hourly rollups give the hour a peak fell in, not its minute;
+daily disk points are each day's peak, not its reading at a moment.
+
 A host with "collector": false runs no collector -- a printer, a camera, a
 router -- and is on the dashboard only because a service check names it. It
 has no readings and never reports; its status is the reachability probe's
@@ -70,6 +87,10 @@ class NotFound(ToolError):
 
 class UnknownTool(Exception):
     """tools/call named a tool we do not have."""
+
+
+class InvalidParams(Exception):
+    """tools/call arguments that are not even an object."""
 
 
 # ---------- the netdash API ----------
@@ -135,6 +156,10 @@ def patches_brief(p):
         "other": p.get("other"),
         "reboot_required": p.get("reboot_required"),
         "checked": iso(p.get("checked_at")),
+        "source": p.get("source"),
+        # Why an unknown is unknown: a check from before the last reboot reads
+        # otherwise as a check that never ran.
+        "predates_boot": p.get("predates_boot") or None,
         "acknowledged": p.get("acknowledged") or None,
         "detail": p.get("detail") or None,
     })
@@ -194,8 +219,47 @@ def storage_brief(sg, full=False):
         if full or d.get("severity") == "critical"]
     if not full and sg.get("status") == "ok":
         return None
+    # In brief, `smart` is only the failed disks -- which disk, by serial, is
+    # the thing a person has to go and pull.
     return _drop_none({"status": sg.get("status"), "pools": pools,
-                       "smart_failed": sg.get("failing"), "smart": smart if full else None})
+                       "smart_failed": sg.get("failing"), "smart": smart})
+
+
+_BAD = ("warning", "critical")
+
+
+def members_brief(f, full=False):
+    """An appliance's managed devices. Counted in brief, with the offline and
+    over-threshold ones named; every member in full. Kept apart from the
+    console's own status, as the API keeps it: see INSTRUCTIONS."""
+    if not f:
+        return None
+    members = f.get("members") or []
+    unhealthy = [_drop_none({
+        "name": m.get("name"),
+        "cpu_pct": m.get("cpu_pct") if m.get("cpu_status") in _BAD else None,
+        "cpu_status": m.get("cpu_status") if m.get("cpu_status") in _BAD else None,
+        "mem_pct": m.get("mem_pct") if m.get("mem_status") in _BAD else None,
+        "mem_status": m.get("mem_status") if m.get("mem_status") in _BAD else None,
+    }) for m in members
+        if m.get("online") and (m.get("cpu_status") in _BAD or m.get("mem_status") in _BAD)]
+    out = {
+        "total": f.get("total"), "online": f.get("online"),
+        "offline": f.get("offline") or None,
+        "offline_names": f.get("offline_names") or None,
+        "over_threshold": unhealthy,
+        "firmware_updatable": f.get("updatable") or None,
+    }
+    if full:
+        out["members"] = [_drop_none({
+            "name": m.get("name"), "model": m.get("model"), "state": m.get("state"),
+            "online": m.get("online"),
+            "cpu_pct": _pct(m.get("cpu_pct")), "cpu_status": m.get("cpu_status"),
+            "mem_pct": _pct(m.get("mem_pct")), "mem_status": m.get("mem_status"),
+            "uptime_seconds": m.get("uptime_seconds"), "firmware": m.get("firmware"),
+            "firmware_updatable": m.get("firmware_updatable"),
+        }) for m in members]
+    return _drop_none(out)
 
 
 def status_of(h):
@@ -233,6 +297,7 @@ def host_brief(h):
             "services": [service_brief(s) for s in h.get("services") or []
                          if s.get("severity") != "ok" and s.get("state") != "disabled"],
             "services_severity": h.get("services_severity"),
+            "attention": attention_reasons(h),
         })
     disk = h.get("disk") or {}
     cpu, mem = h.get("cpu") or {}, h.get("mem") or {}
@@ -263,6 +328,8 @@ def host_brief(h):
         "services": [service_brief(s) for s in h.get("services") or []
                      if s.get("severity") != "ok" and s.get("state") != "disabled"],
         "services_severity": h.get("services_severity"),
+        "members": members_brief(h.get("fleet")),
+        "attention": attention_reasons(h),
         "virt": h.get("virt"),
         "parent": h.get("parent"),
         "collector_version": h.get("collector_version"),
@@ -271,48 +338,168 @@ def host_brief(h):
     return _drop_none(out)
 
 
-def needs_attention(h):
-    """Anything a person would want to hear about. Away and stopped are grey on
-    the dashboard for a reason, and anything a person already acknowledged is
-    not news either."""
-    if status_of(h) in ("warning", "critical", "stale", "down"):
-        return True
+def attention_reasons(h):
+    """Why a person would want to hear about this host, one phrase each.
+    Away and stopped are grey on the dashboard for a reason, and anything a
+    person already acknowledged is not news either. What is deliberately left
+    out is in INSTRUCTIONS."""
+    out = []
+    s = status_of(h)
+    if s in ("warning", "critical", "stale", "down"):
+        out.append("status " + s)
     p = h.get("patches") or {}
     if p.get("status") == "security" and not p.get("acknowledged"):
-        return True
+        out.append("security updates not acknowledged")
     if p.get("reboot_required"):
-        return True
+        out.append("reboot required")
     e = h.get("eol") or {}
     if e.get("status") in ("eol", "eol_soon") and not e.get("acknowledged"):
-        return True
-    if h.get("services_severity") in ("warning", "critical"):
-        return True
-    return False
+        out.append("end of life" if e["status"] == "eol" else "end of life soon")
+    if h.get("services_severity") in _BAD:
+        out.append("service checks " + h["services_severity"])
+    f = h.get("fleet") or {}
+    if f.get("offline"):
+        out.append("members offline: " + ", ".join(f.get("offline_names") or ["?"]))
+    hot = [m.get("name") or "?" for m in f.get("members") or []
+           if m.get("online") and (m.get("cpu_status") in _BAD or m.get("mem_status") in _BAD)]
+    if hot:
+        out.append("members over threshold: " + ", ".join(hot))
+    return out
 
 
-def series_stats(points, key, lo_key=None, hi_key=None):
-    """min/avg/max over a window. In hourly rollups `key` is the hour's
-    average, so the extremes come from lo_key and hi_key where a point has
-    them: a ten-minute spike to 100% is an hour averaging 25%, and the max of
-    the averages would report the spike as 25%."""
+def needs_attention(h):
+    return bool(attention_reasons(h))
+
+
+HOUR = 3600
+
+
+def series_stats(points, key, lo_key=None, hi_key=None, n_key=None, bucket=0):
+    """min/avg/max over a window, saying how much each figure can be trusted.
+
+    Raw points (bucket=0) are readings: the peak has an exact time, and avg is
+    the mean of the readings. Hourly rollups (bucket=3600) are summaries:
+    `key` is the hour's average, so the extremes come from lo_key and hi_key
+    -- a ten-minute spike to 100% is an hour averaging 25%, and the max of the
+    averages would report it as 25% -- and the peak is known only to the hour,
+    given as the interval it fell in. avg is weighted by each hour's count of
+    readings (n_key) so it means what the raw mean means; legacy rollups have
+    no count, and then every hour weighs the same, and the answer says so."""
     vals = []
     for p in points:
         v = p.get(key)
         if v is None:
             continue
         lo, hi = p.get(lo_key) if lo_key else None, p.get(hi_key) if hi_key else None
-        vals.append((p["ts"], v, v if lo is None else lo, v if hi is None else hi))
+        vals.append((p["ts"], v, v if lo is None else lo, v if hi is None else hi,
+                     p.get(n_key) if n_key else None))
     if not vals:
         return None
     peak = max(vals, key=lambda v: v[3])
-    return {
+    out = {
         "min": round(min(v[2] for v in vals), 1),
-        "avg": round(sum(v[1] for v in vals) / len(vals), 1),
         "max": round(peak[3], 1),
-        "max_at": iso(peak[0]),
         "last": round(vals[-1][1], 1),
         "points": len(vals),
     }
+    if not bucket:
+        out["avg"] = round(sum(v[1] for v in vals) / len(vals), 1)
+        out["averaging"] = "mean of readings"
+        out["max_at"] = iso(peak[0])
+        return out
+    weights = [v[4] for v in vals]
+    if all(isinstance(w, int) and w > 0 for w in weights):
+        out["avg"] = round(sum(v[1] * w for v, w in zip(vals, weights)) / sum(weights), 1)
+        out["averaging"] = "mean of readings, weighted by readings per hour"
+        out["readings"] = sum(weights)
+    else:
+        out["avg"] = round(sum(v[1] for v in vals) / len(vals), 1)
+        out["averaging"] = ("mean of hourly averages, each hour weighted equally "
+                            "(some hours predate per-hour reading counts)")
+    out["max_within"] = {"from": iso(peak[0]), "to": iso(peak[0] + bucket)}
+    return out
+
+
+def history_quality(hist, resolution, minutes, now):
+    """How much of the asked-for window the CPU and memory history covers.
+
+    Hourly: buckets present against the hours in the window, and each one's
+    coverage -- 'full', 'partial' (folded after some of its readings were
+    pruned) or unknown (written by an old server whose roller could keep just
+    the tail of an hour). Raw: the span the readings cover and the silences in
+    it. `complete` is true only when nothing above says otherwise."""
+    start = now - minutes * 60
+    if not hist:
+        return {"resolution": resolution, "points": 0, "complete": False,
+                "warning": "no history in this window"}
+    out = {"resolution": resolution, "points": len(hist),
+           "observed_from": iso(hist[0]["ts"])}
+    warn = []
+    if resolution == "hourly":
+        expected = now // HOUR - start // HOUR + 1
+        cov = {}
+        for p in hist:
+            c = p.get("coverage") or "unknown"
+            cov[c] = cov.get(c, 0) + 1
+        out.update(observed_to=iso(min(hist[-1]["ts"] + HOUR, now)),
+                   hours_expected=expected, coverage=cov,
+                   readings=sum(p.get("samples") or 0 for p in hist))
+        if len(hist) < expected:
+            warn.append("%d of %d hours have no data" % (expected - len(hist), expected))
+        if cov.get("partial"):
+            warn.append("partial hours (some readings pruned before they were "
+                        "rolled up): %d" % cov["partial"])
+        if cov.get("unknown"):
+            warn.append("hours that predate coverage tracking and may hold only "
+                        "part of their readings: %d" % cov["unknown"])
+    else:
+        ts = [p["ts"] for p in hist]
+        gaps = sorted(b - a for a, b in zip(ts, ts[1:]))
+        typical = gaps[len(gaps) // 2] if gaps else None
+        limit = max(300, 3 * (typical or 60))
+        silent = [(a, b) for a, b in zip(ts, ts[1:]) if b - a > limit]
+        out.update(observed_to=iso(ts[-1]), interval_seconds=typical)
+        if ts[0] - start > limit:
+            warn.append("readings start %d minutes into the window" % ((ts[0] - start) // 60))
+        if silent:
+            out["gaps"] = [{"from": iso(a), "to": iso(b)} for a, b in silent[:10]]
+            warn.append("silences longer than %d seconds: %d" % (limit, len(silent)))
+    out["complete"] = not warn
+    if warn:
+        out["warning"] = "; ".join(warn)
+    return out
+
+
+def disk_change(points, meta):
+    """How a mount moved over the window, said in terms of what the points are.
+
+    Raw points are readings, so last minus first is the change between two
+    moments, and when they were. Bucketed points -- raw or daily -- are each
+    bucket's peak, and the difference of two peaks says nothing certain about
+    the readings at either end; it is given as peak-to-peak, by name, with the
+    buckets it spans."""
+    pts = [p for p in points if p.get("pct") is not None]
+    if len(pts) < 2:
+        return {}
+    a, b = pts[0], pts[-1]
+    out = {}
+    if not meta.get("aggregate"):
+        out.update(change_pct_points=round(b["pct"] - a["pct"], 2),
+                   change_from=iso(a["ts"]), change_to=iso(b["ts"]))
+    else:
+        out.update(peak_change_pct_points=round(b["pct"] - a["pct"], 2),
+                   first_peak={"bucket_start": iso(a["ts"]), "pct": round(a["pct"], 2)},
+                   last_peak={"bucket_start": iso(b["ts"]), "pct": round(b["pct"], 2)})
+    if any(p.get("capacity_changed") for p in pts):
+        out["capacity_changed"] = True
+    cov = {}
+    for p in pts:
+        c = p.get("coverage", "full") or "unknown"
+        if c != "full":
+            cov[c] = cov.get(c, 0) + 1
+    if cov:
+        out["points_not_full"] = cov
+    return out
 
 
 def downsample(points, n):
@@ -332,15 +519,38 @@ def event_brief(e):
 
 # ---------- tools ----------
 
+_TYPES = {
+    # bool is an int in Python, and true must not become one hour.
+    "integer": ("a whole number",
+                lambda v: (isinstance(v, int) and not isinstance(v, bool))
+                or (isinstance(v, float) and v.is_integer())),
+    "boolean": ("true or false", lambda v: isinstance(v, bool)),
+    "string": ("a string", lambda v: isinstance(v, str)),
+}
+
+
+def check_args(name, args):
+    """Hold the arguments to the schema the tool advertised. A client may not,
+    and a guess -- 1.9 hours read as 1, "false" read as true -- answers a
+    question the agent did not ask. null is the same as leaving it out."""
+    if not isinstance(args, dict):
+        raise InvalidParams("arguments must be an object, got %s" % json.dumps(args))
+    props = TOOLS[name][1]["inputSchema"]["properties"]
+    unknown = sorted(set(args) - set(props))
+    if unknown:
+        raise ToolError("%s takes no argument %s; it takes: %s"
+                        % (name, ", ".join(unknown), ", ".join(sorted(props)) or "none"))
+    for k, v in args.items():
+        what, ok = _TYPES[props[k]["type"]]
+        if v is not None and not ok(v):
+            raise ToolError("%s must be %s, got %s" % (k, what, json.dumps(v)))
+    return {k: v for k, v in args.items() if v is not None}
+
+
 def _int(args, key, default, lo, hi):
-    v = args.get(key, default)
-    if v is None:
-        return default
-    try:
-        v = int(v)
-    except (TypeError, ValueError):
-        raise ToolError("%s must be a whole number" % key)
-    return max(lo, min(v, hi))
+    """Clamped to [lo, hi]; the tool reports the value it used."""
+    v = args.get(key)
+    return default if v is None else max(lo, min(int(v), hi))
 
 
 def _host_names(api):
@@ -392,18 +602,14 @@ def tool_host_detail(api, args):
         out["recent_events"] = [event_brief(e) for e in d.get("events") or []]
         return _drop_none(out)
     out["thresholds"] = cur.get("thresholds")
+    disk_meta = d.get("disk_meta") or {}
     out["disk_mounts"] = []
     for m in (cur.get("disk") or {}).get("mounts") or []:
-        # How far the mount moved over the window, in percentage points: the
-        # question behind "is this disk filling" that the projection answers
-        # only over days.
-        pcts = [p["pct"] for p in disk_hist.get(m.get("mount")) or []
-                if p.get("pct") is not None]
         out["disk_mounts"].append(_drop_none({
             "mount": m.get("mount"), "pct": _pct(m.get("pct")), "status": m.get("status"),
             "used_bytes": m.get("used_bytes"), "total_bytes": m.get("total_bytes"),
             "projection": m.get("projection"),
-            "change_pct_points": round(pcts[-1] - pcts[0], 2) if len(pcts) > 1 else None,
+            **disk_change(disk_hist.get(m.get("mount")) or [], disk_meta),
         }))
     out["patches"] = patches_brief(cur.get("patches"))
     if cur.get("patches", {}).get("entries"):
@@ -413,10 +619,28 @@ def tool_host_detail(api, args):
         }) for i in cur["patches"]["entries"]]
     out["services"] = [service_brief(s, full=True) for s in cur.get("services") or []]
     out["storage"] = storage_brief(cur.get("storage"), full=True)
-    out["window"] = {"minutes": d.get("minutes"), "resolution": d.get("resolution"),
-                     "disk_resolution": d.get("disk_resolution")}
-    out["cpu_history"] = series_stats(hist, "cpu_pct", "cpu_min", "cpu_max")
-    out["mem_history"] = series_stats(hist, "mem_pct", "mem_min", "mem_max")
+    out["members"] = members_brief(cur.get("fleet"), full=True)
+    resolution = d.get("resolution")
+    bucket = HOUR if resolution == "hourly" else 0
+    now = int(d.get("now") or time.time())
+    out["window"] = _drop_none({
+        "minutes": d.get("minutes"),
+        # The server clamps to what it retains; say so rather than answer a
+        # different question than the one asked.
+        "minutes_requested": minutes if minutes != d.get("minutes") else None,
+        "resolution": resolution,
+        "history": history_quality(hist, resolution, d.get("minutes") or minutes, now),
+        "disk": _drop_none({
+            "resolution": d.get("disk_resolution"),
+            "bucket_seconds": disk_meta.get("bucket_seconds"),
+            "points_are": ("the peak reading of each bucket"
+                           if disk_meta.get("aggregate") == "max" else "readings"),
+            "source": disk_meta.get("source"),
+            "gap_seconds": disk_meta.get("gap_seconds"),
+        }),
+    })
+    out["cpu_history"] = series_stats(hist, "cpu_pct", "cpu_min", "cpu_max", "cpu_n", bucket)
+    out["mem_history"] = series_stats(hist, "mem_pct", "mem_min", "mem_max", "mem_n", bucket)
     if args.get("include_series"):
         out["series"] = [[iso(p["ts"]),
                           None if p.get("cpu_pct") is None else round(p["cpu_pct"], 1),
@@ -431,16 +655,38 @@ def tool_events(api, args):
     hours = _int(args, "hours", 24, 1, 24 * 400)
     limit = _int(args, "limit", 100, 1, 500)
     since = int(time.time()) - hours * 3600
-    d = api.get("/api/events", host=args.get("host") or None,
-                kind=args.get("kind") or None, since=since, limit=limit)
+    host = args.get("host") or None
+    q = dict(host=host, kind=args.get("kind") or None, since=since)
+    before = args.get("cursor") or None
+    # One more than asked for says whether there is more, rather than a full
+    # page being taken to mean so. At the API's ceiling of 500, a second
+    # one-row look past the page does the same.
+    d = api.get("/api/events", limit=min(limit + 1, 500), before=before, **q)
     evs = d.get("events") or []
-    return {
+    has_more = len(evs) > limit
+    evs = evs[:limit]
+    if limit >= 500 and len(evs) == limit:
+        last = evs[-1]
+        has_more = bool(api.get("/api/events", limit=1, before="%d:%d" % (
+            last["ts"], last["id"]), **q).get("events"))
+    out = {
         "as_of": iso(d.get("now")),
         "since": iso(since),
+        "hours": hours,
+        "hours_requested": args["hours"] if args.get("hours") not in (None, hours) else None,
+        "limit": limit,
         "count": len(evs),
-        "truncated": len(evs) >= limit or None,
+        "has_more": has_more,
+        "next_cursor": "%d:%d" % (evs[-1]["ts"], evs[-1]["id"]) if has_more else None,
         "events": [event_brief(e) for e in evs],
     }
+    if host and not evs and not before and host not in _host_names(api):
+        # Not an error: a host removed from the dashboard keeps its history,
+        # and this is how one would ask for it. But an empty answer for a
+        # misspelt name must not read as a quiet host.
+        out["note"] = ("no host named %r is on the dashboard now -- removed, or "
+                       "misspelt. Known hosts: %s" % (host, ", ".join(_host_names(api))))
+    return _drop_none(out)
 
 
 def tool_patches(api, args):
@@ -494,22 +740,27 @@ _RO = {"readOnlyHint": True, "openWorldHint": False}
 TOOLS = {
     "fleet_status": (tool_fleet_status, {
         "description": "Every host's current status: resources, reachability, patches, "
-                       "end of life and service checks, with counts by status. "
+                       "end of life, service checks and an appliance's managed devices, "
+                       "with counts by status and, per host, why it needs attention. "
                        "Set problems_only to list just the hosts that need attention.",
-        "inputSchema": {"type": "object", "properties": {
+        "inputSchema": {"type": "object", "additionalProperties": False, "properties": {
             "problems_only": {"type": "boolean", "default": False,
                               "description": "only hosts that need attention"},
         }},
     }),
     "host_detail": (tool_host_detail, {
-        "description": "One host in depth: every disk with its fill projection, CPU and "
-                       "memory over a window (min/avg/max and when the peak was), "
-                       "pending packages, service checks, and its recent state changes.",
-        "inputSchema": {"type": "object", "required": ["host"], "properties": {
+        "description": "One host in depth: every disk with its fill projection and how it "
+                       "moved over the window, CPU and memory over the window (min/avg/max, "
+                       "the peak's time -- exact for raw readings, the hour it fell in for "
+                       "rollups -- and how the average is weighted), how complete that "
+                       "history is, an appliance's managed devices, pending packages, "
+                       "service checks, and its recent state changes.",
+        "inputSchema": {"type": "object", "additionalProperties": False, "required": ["host"], "properties": {
             "host": {"type": "string", "description": "host name as netdash shows it"},
             "minutes": {"type": "integer", "default": 60, "minimum": 5,
                         "description": "how far back; beyond the raw retention the "
-                                       "server answers with hourly rollups"},
+                                       "server answers with hourly rollups, and it is "
+                                       "clamped to what the server keeps"},
             "include_series": {"type": "boolean", "default": False,
                                "description": "also return up to 120 CPU/memory points"},
         }},
@@ -517,8 +768,10 @@ TOOLS = {
     "events": (tool_events, {
         "description": "The state-change log: hosts going down, stale, warning or back to "
                        "ok, service checks failing or recovering, and ZFS pools, scrubs "
-                       "and SMART tests changing severity. Newest first.",
-        "inputSchema": {"type": "object", "properties": {
+                       "and SMART tests changing severity. Newest first. hours is clamped "
+                       "to 1..9600 and limit to 1..500; has_more says whether "
+                       "older matching events exist, and next_cursor fetches them.",
+        "inputSchema": {"type": "object", "additionalProperties": False, "properties": {
             "host": {"type": "string", "description": "only this host"},
             "hours": {"type": "integer", "default": 24, "minimum": 1,
                       "description": "how far back"},
@@ -528,13 +781,16 @@ TOOLS = {
                                     "for pool, scrub and SMART changes, 'host' "
                                     "for hosts removed from the dashboard"},
             "limit": {"type": "integer", "default": 100, "minimum": 1, "maximum": 500},
+            "cursor": {"type": "string",
+                       "description": "next_cursor from a previous answer, for the "
+                                      "page after it; keep the other arguments the same"},
         }},
     }),
     "patches": (tool_patches, {
         "description": "Pending updates per host: security and other counts, the named "
                        "security packages and whether a person acknowledged each, reboot "
                        "required, and the OS release's end-of-life state.",
-        "inputSchema": {"type": "object", "properties": {
+        "inputSchema": {"type": "object", "additionalProperties": False, "properties": {
             "host": {"type": "string", "description": "only this host"},
         }},
     }),
@@ -544,7 +800,7 @@ TOOLS = {
                        "tcp and dns checks -- with its state, detail, target, what a "
                        "pass proves (checks), what it found (facts), and hardware "
                        "sensors where read.",
-        "inputSchema": {"type": "object", "properties": {
+        "inputSchema": {"type": "object", "additionalProperties": False, "properties": {
             "host": {"type": "string", "description": "only checks attached to this host"},
         }},
     }),
@@ -561,7 +817,7 @@ def call_tool(api, name, args):
     if name not in TOOLS:
         raise UnknownTool(name)
     try:
-        result = TOOLS[name][0](api, args or {})
+        result = TOOLS[name][0](api, check_args(name, {} if args is None else args))
         return {"content": [{"type": "text", "text": json.dumps(result, indent=1)}],
                 "isError": False}
     except ToolError as e:
@@ -596,6 +852,8 @@ def handle(api, msg):
                                               params.get("arguments")))
             except UnknownTool:
                 return _error(mid, -32602, "unknown tool: %s" % params.get("name"))
+            except InvalidParams as e:
+                return _error(mid, -32602, str(e))
         return _error(mid, -32601, "method not found: %s" % method)
     except Exception as e:
         # A bug here must cost one answer, not the session: the agent's client

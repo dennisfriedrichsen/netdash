@@ -175,6 +175,27 @@ err, ev = s.tool("events", hours=72, host="pi-armv7")
 out["ev_host"] = sorted({e["host"] for e in ev["events"]})
 out["ev_bad_hours"] = s.tool("events", hours="lots")
 
+# A full page is not proof of more: has_more is, and the cursor fetches it.
+err, p1 = s.tool("events", hours=72, host="pi-armv7", limit=2)
+err, p2 = s.tool("events", hours=72, host="pi-armv7", limit=1)
+err, p3 = s.tool("events", hours=72, host="pi-armv7", limit=1, cursor=p2.get("next_cursor"))
+out["ev_pages"] = [p1["count"], p1["has_more"], "next_cursor" in p1,
+                   p2["count"], p2["has_more"], p3["count"], p3["has_more"],
+                   p2["events"][0]["detail"] != p3["events"][0]["detail"]]
+err, ev = s.tool("events", hours=72, host="no-such-host")
+out["ev_unknown_host"] = [err, ev["count"], "pi-armv7" in ev.get("note", "")]
+
+# Held to the advertised schema: nothing is coerced into a different question.
+out["bad_args"] = [s.tool("events", hours=1.9)[0], s.tool("events", hours=True)[0],
+                   s.tool("fleet_status", problems_only="false")[0],
+                   s.tool("events", hour=3)[0], s.tool("events", hours=2.0)[0]]
+out["bad_args_text"] = s.tool("events", hours=True)[1]
+out["args_not_object"] = s.rpc("tools/call", {"name": "events", "arguments": [1]})
+err, ev = s.tool("events", hours=99999)
+out["ev_clamped"] = [ev["hours"], ev["hours_requested"]]
+out["pi_window"] = pi["window"]
+out["pi_attention"] = byname["pi-armv7"].get("attention")
+
 err, pat = s.tool("patches", host="linux-server")
 out["patches_ls"] = pat["hosts"][0]
 err, pat = s.tool("patches")
@@ -229,6 +250,15 @@ out["api_host"] = sorted({e["host"] for e in json.load(
     urlopen(URL + "/api/events?host=pi-armv7"))["events"]})
 out["api_since"] = len(json.load(
     urlopen(URL + "/api/events?since=%d" % (NOW - 3600)))["events"])
+evs = json.load(urlopen(URL + "/api/events?host=pi-armv7"))["events"]
+nxt = json.load(urlopen(URL + "/api/events?host=pi-armv7&before=%d:%d"
+                        % (evs[0]["ts"], evs[0]["id"])))["events"]
+out["api_before"] = [e["id"] for e in nxt] == [e["id"] for e in evs[1:]]
+try:
+    urlopen(URL + "/api/events?before=soon")
+    out["api_bad_before"] = 200
+except HTTPError as e:
+    out["api_bad_before"] = e.code
 try:
     urlopen(URL + "/api/events?since=yesterday")
     out["api_bad_since"] = 200
@@ -252,8 +282,60 @@ spec.loader.exec_module(m)
 hourly = [{"ts": NOW - 7200, "cpu_pct": 5.0, "cpu_min": 2.0, "cpu_max": 9.0},
           {"ts": NOW - 3600, "cpu_pct": 25.0, "cpu_min": 4.0, "cpu_max": 100.0},
           {"ts": NOW, "cpu_pct": 6.0, "cpu_min": 3.0, "cpu_max": 8.0}]
-st = m.series_stats(hourly, "cpu_pct", "cpu_min", "cpu_max")
-out["hourly_stats"] = [st["min"], st["avg"], st["max"], st["max_at"] == m.iso(NOW - 3600)]
+st = m.series_stats(hourly, "cpu_pct", "cpu_min", "cpu_max", "cpu_n", 3600)
+out["hourly_stats"] = [st["min"], st["avg"], st["max"],
+                       st["max_within"] == {"from": m.iso(NOW - 3600), "to": m.iso(NOW)},
+                       "max_at" in st, "equally" in st["averaging"]]
+# One hour of a single 100% reading, one of 59 zeros: the readings average
+# 1.7, the hours 50. With per-hour counts it is the readings' mean.
+two = [{"ts": NOW - 7200, "cpu_pct": 100.0, "cpu_n": 1},
+       {"ts": NOW - 3600, "cpu_pct": 0.0, "cpu_n": 59}]
+st = m.series_stats(two, "cpu_pct", None, None, "cpu_n", 3600)
+out["weighted_avg"] = [st["avg"], st["readings"], "weighted by readings" in st["averaging"]]
+
+q = m.history_quality([dict(p, coverage=c, samples=60) for p, c in
+                       zip(hourly, ["full", "partial", None])], "hourly", 6 * 60, NOW)
+out["hourly_quality"] = [q["complete"], q["coverage"], q["hours_expected"], q["warning"]]
+rq = m.history_quality([{"ts": NOW - 3600 + 60 * i} for i in range(61)], "raw", 60, NOW)
+gq = m.history_quality([{"ts": NOW - 3600 + 60 * i} for i in range(61) if not 20 < i < 40],
+                       "raw", 60, NOW)
+out["raw_quality"] = [rq["complete"], rq["interval_seconds"], gq["complete"], len(gq["gaps"])]
+
+# Two daily peaks of 90 and 80 say nothing about the readings at either end.
+peaks = [{"ts": NOW - 86400, "pct": 90.0, "coverage": None},
+         {"ts": NOW, "pct": 80.0, "coverage": "partial", "capacity_changed": True}]
+dc = m.disk_change(peaks, {"aggregate": "max"})
+out["disk_peaks"] = ["change_pct_points" in dc, dc["peak_change_pct_points"],
+                     dc["capacity_changed"], dc["points_not_full"]]
+dc = m.disk_change([{"ts": NOW - 60, "pct": 10.0}, {"ts": NOW, "pct": 20.0}], {"aggregate": None})
+out["disk_raw"] = [dc["change_pct_points"], dc["change_to"] == m.iso(NOW)]
+
+# A healthy console with an AP offline and another running hot.
+ctl = {"host": "fixture-controller", "status": "ok", "ts": NOW,
+       "fleet": {"total": 3, "online": 2, "offline": 1,
+                 "offline_names": ["fixture-ap-offline"], "updatable": 1,
+                 "members": [
+                     {"name": "fixture-ap-offline", "online": False, "state": "OFFLINE",
+                      "cpu_status": "unknown", "mem_status": "unknown"},
+                     {"name": "fixture-ap-hot", "online": True, "cpu_pct": 97.0,
+                      "cpu_status": "critical", "mem_pct": 20.0, "mem_status": "ok"},
+                     {"name": "fixture-ap-fine", "online": True, "cpu_pct": 3.0,
+                      "cpu_status": "ok", "mem_pct": 20.0, "mem_status": "ok",
+                      "firmware_updatable": True}]}}
+b = m.host_brief(ctl)
+out["members"] = [m.needs_attention(ctl), b["status"], b["members"]["offline_names"],
+                  b["members"]["over_threshold"], b["attention"],
+                  len(m.members_brief(ctl["fleet"], full=True)["members"])]
+ok_ctl = dict(ctl, fleet={"total": 1, "online": 1, "offline": 0, "offline_names": [],
+                          "members": [{"name": "a", "online": True, "cpu_status": "ok",
+                                       "mem_status": "ok"}]})
+out["members_ok"] = [m.needs_attention(ok_ctl), m.host_brief(ok_ctl)["members"]]
+
+# The failed disk by name and serial, not just a count.
+sb = m.storage_brief({"status": "critical", "failing": 1, "pools": [], "smart": [
+    {"disk": "ada1", "serial": "S1", "status": "FAILED", "severity": "critical"},
+    {"disk": "ada2", "serial": "S2", "status": "PASSED", "severity": "ok"}]})
+out["smart_brief"] = sb["smart"]
 raw = [{"ts": NOW - 60, "cpu_pct": 10.0}, {"ts": NOW, "cpu_pct": 30.0}]
 st = m.series_stats(raw, "cpu_pct", "cpu_min", "cpu_max")
 out["raw_stats"] = [st["min"], st["avg"], st["max"]]

@@ -1377,10 +1377,19 @@ class Handler(BaseHTTPRequestHandler):
                 since = int((q.get("since") or ["0"])[0]) or None
             except ValueError:
                 return self._json(400, {"error": "since must be a unix timestamp"})
+            # before=<ts>:<id>, the last event of the previous page.
+            before = (q.get("before") or [""])[0] or None
+            if before:
+                try:
+                    before = tuple(int(x) for x in before.split(":"))
+                    assert len(before) == 2
+                except (ValueError, AssertionError):
+                    return self._json(400, {"error": "before must be <ts>:<id>"})
             try:
                 events = db.recent_events(CONN, host=(q.get("host") or [None])[0],
                                           limit=limit, since=since,
-                                          kind=(q.get("kind") or [None])[0])
+                                          kind=(q.get("kind") or [None])[0],
+                                          before=before)
             except Exception as e:
                 return self._fail(500, "events", e)
             return self._json(200, {"now": int(time.time()), "events": events})

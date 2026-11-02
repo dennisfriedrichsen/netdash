@@ -1491,9 +1491,9 @@ claude mcp add netdash -- python3 /path/to/netdash/mcp/netdash-mcp.py \
 
 | tool | answers |
 |---|---|
-| `fleet_status` | every host's status, resources, reachability, patches, EOL and failing checks; `problems_only` for just what needs attention |
-| `host_detail` | one host: every disk with its fill projection, CPU and memory over a window (min/avg/max, when the peak was), pending packages, checks, recent changes |
-| `events` | the event log, by host, kind and hours back |
+| `fleet_status` | every host's status, resources, reachability, patches, EOL, failing checks and an appliance's managed devices, with why each host needs attention; `problems_only` for just those |
+| `host_detail` | one host: every disk with its fill projection, CPU and memory over a window (min/avg/max, when the peak was), how complete that history is, an appliance's members, pending packages, checks, recent changes |
+| `events` | the event log, by host, kind and hours back, with `has_more` and a cursor for the next page |
 | `patches` | pending updates per host, which were acknowledged, reboot required, EOL |
 | `services` | every service check with its state, its target, what a pass proves and does not (`checks`), what it found (`facts`), and BMC sensors where read |
 
@@ -1507,6 +1507,22 @@ A host with no collector (see Hosts with no collector) reads as
 `"collector": false` with its reachability and checks and nothing else: no
 last report, which would be the server's clock passed off as a check-in,
 and no readings or patch state it could never have had.
+
+History says what it is. Raw readings give a peak's exact time; hourly
+rollups give the hour it fell in, and an average weighted by each hour's
+readings (or, for hours rolled up before those were counted, each hour
+equally, and the answer says which). Each window reports how much of it the
+data covers — missing hours, hours rolled up after some readings were
+pruned, and legacy hours that may be only a tail — and `complete` is true
+only when none of that applies. A disk's daily points are each day's peak, so
+the change between the first and last is given as `peak_change_pct_points`,
+not as growth.
+
+A UniFi console's offline or over-threshold devices are listed under
+`members` and in the host's `attention` reasons, but not in its `status`,
+which stays the console's own health, as on the dashboard. Arguments are
+held to the tool's schema: `hours: 1.9`, `hours: true` or
+`problems_only: "false"` is an error, not a guess.
 
 ### Read-only, and what that does and does not mean
 

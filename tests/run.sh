@@ -3629,7 +3629,39 @@ if want mcp; then
         "assert d['no_scheme'][0]==2 and d['no_scheme'][1] and d['no_scheme'][2]=='', d['no_scheme']" "$J"
   # A ten-minute spike is an hour averaging 25%; the max of the averages hid it.
   check "over hourly rollups the peak is the hour's max, not its average" \
-        "assert d['hourly_stats']==[2.0,12.0,100.0,True] and d['raw_stats']==[10.0,20.0,30.0], d" "$J"
+        "assert d['hourly_stats'][:3]==[2.0,12.0,100.0] and d['raw_stats']==[10.0,20.0,30.0], d" "$J"
+  # An hourly bucket's ts is its start, not the moment of its peak.
+  check "over rollups the peak is the hour it fell in, not an exact time" \
+        "h=d['hourly_stats']; assert h[3] is True and h[4] is False, h" "$J"
+  check "the average is the readings' mean where per-hour counts allow, and says so" \
+        "assert d['weighted_avg']==[1.7,60,True] and d['hourly_stats'][5] is True, d" "$J"
+  check "hourly history reports missing, partial and legacy hours as incomplete" \
+        "q=d['hourly_quality']; assert q[0] is False and q[1]=={'full':1,'partial':1,'unknown':1} and q[2]==7 and '4 of 7' in q[3] and 'predate' in q[3], q" "$J"
+  check "raw history reports its interval, and a silence makes it incomplete" \
+        "assert d['raw_quality']==[True,60,False,1], d['raw_quality']" "$J"
+  check "host_detail says what resolution answered and how complete it is" \
+        "w=d['pi_window']; assert w['resolution']=='raw' and 'complete' in w['history'] and w['disk']['points_are'] in ('readings','the peak reading of each bucket'), w" "$J"
+  # Peaks of 90 and 80 fit readings that went from 10 to 20.
+  check "disk change over bucket peaks is named peak-to-peak, with its caveats" \
+        "assert d['disk_peaks']==[False,-10.0,True,{'unknown':1,'partial':1}] and d['disk_raw']==[10.0,True], d" "$J"
+  check "an offline or hot appliance member is named, and needs attention" \
+        "x=d['members']; assert x[0] is True and x[1]=='ok' and x[2]==['fixture-ap-offline'] and x[3]==[{'name':'fixture-ap-hot','cpu_pct':97.0,'cpu_status':'critical'}] and x[4]==['members offline: fixture-ap-offline','members over threshold: fixture-ap-hot'] and x[5]==3, x" "$J"
+  check "and a console whose members are all well does not" \
+        "assert d['members_ok']==[False,{'total':1,'online':1}], d['members_ok']" "$J"
+  check "each host in the fleet says why it needs attention" \
+        "assert d['pi_attention'] and d['pi_attention'][0]=='status warning', d['pi_attention']" "$J"
+  check "a failed SMART disk is named in the brief, a passing one is not" \
+        "assert d['smart_brief']==[{'disk':'ada1','serial':'S1','status':'FAILED'}], d['smart_brief']" "$J"
+  check "events: has_more is proven, not a full page, and the cursor pages on" \
+        "assert d['ev_pages']==[2,False,False,1,True,1,False,True], d['ev_pages']" "$J"
+  check "events: an unknown host is empty, with a note naming the known ones" \
+        "assert d['ev_unknown_host']==[False,0,True], d['ev_unknown_host']" "$J"
+  check "arguments are held to the schema: no 1.9 hours, no true hours, no 'false' flag" \
+        "assert d['bad_args']==[True,True,True,True,False] and 'whole number' in d['bad_args_text'], d" "$J"
+  check "arguments that are not an object are invalid params" \
+        "assert d['args_not_object']['error']['code']==-32602, d['args_not_object']" "$J"
+  check "a clamped window says what it used and what was asked" \
+        "assert d['ev_clamped']==[9600,99999], d['ev_clamped']" "$J"
   check "a KeyError inside a tool is an internal error, logged, not 'unknown tool'" \
         "assert d['inner_keyerror']==[-32603,True], d['inner_keyerror']" "$J"
   check "netdash unreachable is a tool error that says so, and the session lives" \
@@ -3639,6 +3671,8 @@ if want mcp; then
         "assert d['api_kind_service']==['service:plex-linux-server'] and d['api_kind_exact']==['servicex'], d" "$J"
   check "/api/events: host and since filter, and a junk since is a 400" \
         "assert d['api_host']==['pi-armv7'] and d['api_since']==3 and d['api_bad_since']==400, d" "$J"
+  check "/api/events: before=<ts>:<id> is the page after that event; junk is a 400" \
+        "assert d['api_before'] is True and d['api_bad_before']==400, d" "$J"
 fi
 
 if want ipmi; then
