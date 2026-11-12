@@ -344,6 +344,48 @@ CREATE TABLE IF NOT EXISTS storage (
     pools  TEXT,
     smart  TEXT
 );
+
+-- UPS readings, one row per successful NUT poll and none for a failed one: a
+-- gap here is a gap, and must never read back as a zero charge or a healthy
+-- battery. Kept apart from `samples` because a UPS is not a host -- it has no
+-- CPU, memory or disks, and a host row would invent them. Every reading is
+-- nullable for the same reason as everywhere else: a UPS that does not report
+-- output voltage has not reported 0 V.
+CREATE TABLE IF NOT EXISTS ups_samples (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ups         TEXT    NOT NULL,
+    ts          INTEGER NOT NULL,
+    status      TEXT,
+    power       TEXT    NOT NULL,
+    charge      REAL,
+    runtime     INTEGER,
+    load        REAL,
+    input_v     REAL,
+    output_v    REAL,
+    battery_v   REAL,
+    temperature REAL,
+    realpower   REAL
+);
+CREATE INDEX IF NOT EXISTS idx_ups_samples ON ups_samples(ups, ts);
+CREATE INDEX IF NOT EXISTS idx_ups_samples_ts ON ups_samples(ts);
+
+-- Hourly UPS history past the raw window, folded once per sample the way
+-- `rollups` is (see _fold): sums and counts, so a bucket merges exactly however
+-- many passes it took. on_battery is how many of the hour's readings were on
+-- battery -- with `samples` it says how much of the hour was observed and how
+-- much of that was an outage, without claiming the minutes nobody read.
+CREATE TABLE IF NOT EXISTS ups_rollups (
+    ups         TEXT    NOT NULL,
+    bucket      INTEGER NOT NULL,
+    samples     INTEGER NOT NULL,
+    on_battery  INTEGER NOT NULL,
+    charge_min  REAL, charge_max  REAL, charge_sum  REAL, charge_n  INTEGER,
+    runtime_min REAL, runtime_max REAL, runtime_sum REAL, runtime_n INTEGER,
+    load_min    REAL, load_max    REAL, load_sum    REAL, load_n    INTEGER,
+    input_min   REAL, input_max   REAL, input_sum   REAL, input_n   INTEGER,
+    PRIMARY KEY (ups, bucket)
+);
+CREATE INDEX IF NOT EXISTS idx_ups_rollups_bucket ON ups_rollups(bucket);
 """
 
 
@@ -783,6 +825,7 @@ def prune(conn, retention_hours, rollup_days=None, event_days=None, fold=True):
             (cutoff,),
         )
         conn.execute("DELETE FROM samples WHERE ts < ?", (cutoff,))
+        conn.execute("DELETE FROM ups_samples WHERE ts < ?", (cutoff,))
         # An ack for a host netdash no longer watches is not "still silencing
         # something", it is a leftover -- and if the name is ever reused, one
         # that would misapply to whatever that new host reports. Keyed on the
@@ -834,6 +877,7 @@ def prune(conn, retention_hours, rollup_days=None, event_days=None, fold=True):
             rcut = int(time.time()) - int(rollup_days) * 86400
             conn.execute("DELETE FROM rollups WHERE bucket < ?", (rcut,))
             conn.execute("DELETE FROM disk_rollups WHERE bucket < ?", (rcut,))
+            conn.execute("DELETE FROM ups_rollups WHERE bucket < ?", (rcut,))
         if event_days:
             conn.execute("DELETE FROM events WHERE ts < ?",
                          (int(time.time()) - int(event_days) * 86400,))
@@ -973,6 +1017,7 @@ def _fold(conn):
         conn.execute(_FOLD_DAILY.format(where=where), args)
         _set_meta(conn, "rollup_folded_id", top)
     _heal_legacy(conn, top)
+    _fold_ups(conn)
 
 
 def _heal_legacy(conn, top):
@@ -1059,6 +1104,98 @@ def rollup_series(conn, host, since):
             (host, int(since)),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+_UPS_METRICS = (("charge", "charge"), ("runtime", "runtime"), ("load", "load"),
+                ("input", "input_v"))
+
+_FOLD_UPS = """
+INSERT INTO ups_rollups (ups, bucket, samples, on_battery, %(cols)s)
+SELECT ups, ts - (ts %% %(len)d) AS bucket, COUNT(*),
+       SUM(CASE WHEN power = 'battery' THEN 1 ELSE 0 END), %(aggs)s
+  FROM ups_samples WHERE id > :lo AND id <= :hi
+ GROUP BY ups, bucket
+ON CONFLICT (ups, bucket) DO UPDATE SET
+   samples = samples + excluded.samples,
+   on_battery = on_battery + excluded.on_battery, %(merge)s
+""" % {
+    "len": HOUR,
+    "cols": ", ".join("%s_min, %s_max, %s_sum, %s_n" % (m, m, m, m) for m, _ in _UPS_METRICS),
+    "aggs": ", ".join("MIN(%s), MAX(%s), TOTAL(%s), COUNT(%s)" % (c, c, c, c)
+                      for _, c in _UPS_METRICS),
+    "merge": ",\n   ".join(
+        "%(m)s_min = min(COALESCE(%(m)s_min, excluded.%(m)s_min), "
+        "COALESCE(excluded.%(m)s_min, %(m)s_min)),\n   "
+        "%(m)s_max = max(COALESCE(%(m)s_max, excluded.%(m)s_max), "
+        "COALESCE(excluded.%(m)s_max, %(m)s_max)),\n   "
+        "%(m)s_sum = %(m)s_sum + excluded.%(m)s_sum,\n   "
+        "%(m)s_n = %(m)s_n + excluded.%(m)s_n" % {"m": m} for m, _ in _UPS_METRICS),
+}
+
+
+def _fold_ups(conn):
+    """Fold UPS readings not yet counted into their hourly buckets. Same
+    watermark scheme as _fold, on its own meta key. Caller holds _DB."""
+    done = _meta(conn, "ups_folded_id") or 0
+    top = conn.execute("SELECT MAX(id) FROM ups_samples").fetchone()[0] or 0
+    if top > done:
+        conn.execute(_FOLD_UPS, {"lo": done, "hi": top})
+        _set_meta(conn, "ups_folded_id", top)
+
+
+def insert_ups_sample(conn, ups, ts, r):
+    """One successful reading. `r` is nut.interpret()'s shape."""
+    with _DB:
+        conn.execute(
+            """INSERT INTO ups_samples (ups, ts, status, power, charge, runtime, load,
+                                        input_v, output_v, battery_v, temperature, realpower)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (ups, int(ts), r.get("status_raw"), r["power"], r.get("charge_pct"),
+             r.get("runtime_seconds"), r.get("load_pct"), r.get("input_voltage"),
+             r.get("output_voltage"), r.get("battery_voltage"),
+             r.get("temperature_c"), r.get("realpower_w")))
+        conn.commit()
+
+
+def ups_history(conn, ups, since):
+    with _DB:
+        rows = conn.execute(
+            """SELECT ts, power, status, charge, runtime, load, input_v, output_v,
+                      battery_v, temperature, realpower
+                 FROM ups_samples WHERE ups=? AND ts >= ? ORDER BY ts ASC""",
+            (ups, int(since))).fetchall()
+        return [dict(r) for r in rows]
+
+
+def ups_rollup_series(conn, ups, since):
+    """Hourly points, keyed like ups_history so a chart can share code: the
+    averages under the raw names, min and max beside them."""
+    with _DB:
+        rows = conn.execute(
+            """SELECT bucket AS ts, samples, on_battery,
+                      charge_sum / NULLIF(charge_n, 0) AS charge, charge_min, charge_max,
+                      runtime_sum / NULLIF(runtime_n, 0) AS runtime, runtime_min, runtime_max,
+                      load_sum / NULLIF(load_n, 0) AS load, load_min, load_max,
+                      input_sum / NULLIF(input_n, 0) AS input_v, input_min, input_max,
+                      charge_n, runtime_n, load_n, input_n
+                 FROM ups_rollups WHERE ups=? AND bucket >= ? ORDER BY bucket ASC""",
+            (ups, int(since))).fetchall()
+        return [dict(r) for r in rows]
+
+
+def last_ups_states(conn):
+    """The most recent to_state per (ups, "ups:..." kind), so a restart neither
+    repeats an outage already logged nor misses its recovery."""
+    with _DB:
+        rows = conn.execute(
+            """SELECT host, kind, to_state FROM events
+                WHERE id IN (SELECT MAX(id) FROM events
+                              WHERE kind LIKE 'ups:%' GROUP BY host, kind)"""
+        ).fetchall()
+        out = {}
+        for r in rows:
+            out.setdefault(r["host"], {})[r["kind"]] = r["to_state"]
+        return out
 
 
 def disk_series(conn, host, since):

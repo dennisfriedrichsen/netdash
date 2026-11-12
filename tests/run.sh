@@ -3584,7 +3584,7 @@ if want mcp; then
   check "a notification is never answered" \
         "assert d['after_notification']['id']==d['ping_id'], d" "$J"
   check "every tool is read-only, and none of them acknowledges or forgets" \
-        "assert d['tool_names']==['events','fleet_status','host_detail','patches','services'] and d['all_read_only'] and d['schemas_are_objects'], d" "$J"
+        "assert d['tool_names']==['events','fleet_status','host_detail','patches','services','ups'] and d['all_read_only'] and d['schemas_are_objects'], d" "$J"
   # The whole safety argument, measured rather than asserted: a full session
   # of every tool, and the netdash server never saw a POST.
   check "a session using every tool sends netdash no POST at all" \
@@ -3677,6 +3677,33 @@ if want mcp; then
         "assert d['api_host']==['pi-armv7'] and d['api_since']==3 and d['api_bad_since']==400, d" "$J"
   check "/api/events: before=<ts>:<id> is the page after that event; junk is a 400" \
         "assert d['api_before'] is True and d['api_bad_before']==400, d" "$J"
+fi
+
+if want ups; then
+  # A fake upsd on 127.0.0.1 and nothing else: no real UPS is ever asked. Each
+  # case in tests/ups.py (and, with node, tests/js/ups.test.js) reports under
+  # its own name, so the list here cannot drift from what actually ran; the
+  # count check catches a driver that died before reporting everything.
+  echo "ups (a UPS is read over NUT, never commanded, and is not a host)"
+  ups_cases() { # label-prefix, minimum, json
+    [ -n "$3" ] && J=$3 || J='{}'
+    check "${1}every case ran" "assert len(d) >= $2, len(d)" "$J"
+    N=0
+    printf '%s' "$J" | python3 -c 'import json,sys
+for k in json.load(sys.stdin): print(k)' > "$UPS_CASES" 2>/dev/null || :
+    while IFS= read -r k; do
+      check "$1$k" "k=list(d)[$N]; assert d[k] is None, d[k]" "$J"
+      N=$((N+1))
+    done < "$UPS_CASES"
+  }
+  UPS_CASES=$(mktemp)
+  ups_cases "" 46 "$(python3 "$ROOT/tests/ups.py" "$ROOT" 2>/dev/null || :)"
+  if command -v node >/dev/null 2>&1; then
+    ups_cases "view: " 12 "$(node "$ROOT/tests/js/ups.test.js" 2>&1 || :)"
+  else
+    echo "  (UPS view cases SKIPPED -- node not installed)"
+  fi
+  rm -f "$UPS_CASES"
 fi
 
 if want ipmi; then

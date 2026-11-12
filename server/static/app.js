@@ -978,7 +978,8 @@ function renderOverview(data, tab) {
   titleEl.textContent = 'Home network';
   var frag = document.createDocumentFragment();
 
-  if (!data.hosts.length) {
+  var upsList = data.ups || [];
+  if (!data.hosts.length && !upsList.length) {
     frag.appendChild(el('div', 'empty', 'No hosts have reported yet.'));
     root.replaceChildren(frag);
     return;
@@ -1010,6 +1011,9 @@ function renderOverview(data, tab) {
   if (bad) news.push(bad + ' need attention');
   if (svcFail) news.push(svcFail + ' service' + (svcFail === 1 ? '' : 's') + ' failing');
   if (svcWarn) news.push(svcWarn + ' service check' + (svcWarn === 1 ? ' needs' : 's need') + ' attention');
+  /* A UPS on battery leads: it is the news that every host behind it is now
+     on a clock. */
+  news = upsNews(upsList).concat(news);
   if (downCount && news.length === 1) news.push('nothing else wrong');
   metaEl.textContent = data.hosts.length + ' hosts · ' +
     (news.length ? news.join(' · ') : 'all clear') +
@@ -1021,6 +1025,11 @@ function renderOverview(data, tab) {
 
   if (tab === 'services') {
     frag.appendChild(renderServices(data));
+    root.replaceChildren(frag);
+    return;
+  }
+  if (tab === 'ups') {
+    frag.appendChild(renderUpsTab(data));
     root.replaceChildren(frag);
     return;
   }
@@ -1167,8 +1176,12 @@ function sparkline(points, colorVar, th, opts) {
 
   var t0 = points[0].ts, t1 = points[points.length - 1].ts;
   var span = Math.max(1, t1 - t0);
+  /* opts.max rescales a series that is not a percentage (a runtime in
+     seconds, a voltage). Still fixed rather than fitted, for the same reason. */
+  opts = opts || {};
+  var top = opts.max || 100;
   var x = function (p) { return ((p.ts - t0) / span) * W; };
-  var y = function (v) { return H - PAD - (Math.max(0, Math.min(100, v)) / 100) * (H - PAD * 2); };
+  var y = function (v) { return H - PAD - (Math.max(0, Math.min(top, v)) / top) * (H - PAD * 2); };
 
   function rule(v, colour, dash) {
     var l = document.createElementNS(NS, 'line');
@@ -1184,7 +1197,7 @@ function sparkline(points, colorVar, th, opts) {
 
   /* Bound the plot top and bottom so it reads as an area with a known extent
      rather than open space with a line in it. */
-  rule(100, 'var(--grid)');
+  rule(top, 'var(--grid)');
   rule(0, 'var(--baseline)');
 
   /* The thresholds, where the host has them. Dashed and drawn under the series
@@ -1914,6 +1927,459 @@ function renderDetail(host, data, range) {
   root.replaceChildren(frag);
 }
 
+/* ---------- UPS ----------
+
+   A UPS is not a host, and nothing here draws it as one: no CPU, memory,
+   disk, OS or patch rows, because it has none and a card with them would be
+   inventing them. Two axes, kept apart as the server keeps them: what the UPS
+   says about power, and whether we could ask it. A UPS we cannot read is
+   neither on battery nor fine -- its last reading is shown greyed, with its
+   age, as the last thing known.
+
+   Every string here that came from the UPS (model, firmware, flags, alarm
+   text, raw variables) is set as textContent via el(), never as markup. */
+
+var UPS_POWER = {
+  utility: { status: 'ok',       word: 'On utility power' },
+  battery: { status: 'warning',  word: 'On battery' },
+  bypass:  { status: 'warning',  word: 'On bypass — load not protected' },
+  off:     { status: 'critical', word: 'Output off' },
+  unknown: { status: 'unknown',  word: 'Power state unknown' }
+};
+var UPS_COMM = {
+  ok: 'reading normally', failing: 'poll failing', lost: 'not answering',
+  stale: 'no recent reading', pending: 'not read yet', disabled: 'disabled',
+  config: 'misconfigured'
+};
+
+function upsPower(p) { return UPS_POWER[p] || UPS_POWER.unknown; }
+
+function fmtRuntime(s) {
+  if (s === null || s === undefined) return null;
+  if (s < 120) return '≈ ' + s + ' s';
+  if (s < 7200) return '≈ ' + Math.round(s / 60) + ' min';
+  return '≈ ' + (s / 3600).toFixed(1) + ' h';
+}
+function fmtNum(v, unit, digits) {
+  return (v === null || v === undefined) ? null : v.toFixed(digits || 0) + unit;
+}
+
+/* The headline: what is feeding the load right now, or that we do not know. */
+function upsHeadline(u) {
+  if (u.fresh) return upsPower(u.power).word;
+  if (!u.enabled) return 'Disabled';
+  if (u.config_error) return 'Cannot be read';
+  if (!u.reading) return (u.comm && u.comm.state === 'pending') ? 'Not read yet' : 'No reading';
+  return 'No current reading';
+}
+
+/* Why, in one line: communication first when it is the problem, because then
+   every number on the card is old; otherwise the active alarms. */
+function upsWhy(u) {
+  var c = u.comm || {};
+  if (!u.enabled) return 'disabled in server.json';
+  if (u.config_error) return u.config_error;
+  if (!u.fresh) {
+    var r = u.reading;
+    return (c.detail || UPS_COMM[c.state] || 'no reading') +
+      (r ? ' — last reading ' + fmtAge(r.age_seconds) + ': ' +
+           upsPower(r.power).word.toLowerCase() : '');
+  }
+  var al = upsAlarms(u.reading);
+  var txt = al.map(function (a) { return a.text; }).join(' · ');
+  if (c.state === 'failing') txt = (txt ? txt + ' · ' : '') + c.detail;
+  return txt || null;
+}
+
+function upsAlarms(r) {
+  return ((r && r.alarms) || []).filter(function (a) {
+    return a.severity === 'warning' || a.severity === 'critical' || a.source === 'device';
+  });
+}
+
+function upsFlagChips(r, fresh) {
+  var box = el('div', 'upsflags');
+  ((r && r.flags) || []).forEach(function (f) {
+    var c = el('span', 'upsflag' + (f.known ? '' : ' unknownflag'), f.flag);
+    c.title = f.flag + ': ' + f.meaning;
+    if (fresh && (f.severity === 'warning' || f.severity === 'critical')) {
+      c.style.setProperty('--st', st(f.severity).css);
+      c.classList.add('bad');
+    }
+    box.appendChild(c);
+  });
+  return box;
+}
+
+/* A meter that shows nothing at all for a missing value -- an empty bar would
+   read as 0%, which a UPS that did not report charge has not said. */
+function upsMeter(name, pct, status, sub, fresh) {
+  if (pct === null || pct === undefined) {
+    var m = el('div', 'meter');
+    var lbl = el('div', 'lbl');
+    lbl.appendChild(el('span', null, name));
+    lbl.appendChild(el('span', 'val', 'not reported'));
+    m.appendChild(lbl);
+    return m;
+  }
+  var mm = meter(name, pct, fresh ? status : 'unknown', sub);
+  if (!fresh) mm.classList.add('old');
+  return mm;
+}
+
+function upsLevel(v, th, below) {
+  if (v === null || v === undefined || !th) return 'unknown';
+  if (below) return v < th.crit ? 'critical' : v < th.warn ? 'warning' : 'ok';
+  return v >= th.crit ? 'critical' : v >= th.warn ? 'warning' : 'ok';
+}
+
+function upsCard(u, now) {
+  var s = st(u.status);
+  var a = el('a', 'card upscard' + (u.fresh && u.power === 'battery' ? ' onbatt' : ''));
+  a.href = '#/ups/' + encodeURIComponent(u.id);
+  a.style.setProperty('--st', s.css);
+  var r = u.reading || {}, th = u.thresholds || {};
+
+  var row = el('div', 'row1');
+  row.appendChild(el('span', 'name', u.name));
+  var chip = el('span', 'chip');
+  chip.appendChild(el('span', 'dot'));
+  chip.appendChild(el('span', 'glyph', s.glyph));
+  chip.appendChild(el('span', null, u.status === 'stale' ? 'Stale' : s.label));
+  row.appendChild(chip);
+  a.appendChild(row);
+
+  var ident = [r.manufacturer, r.model].filter(Boolean).join(' ') || 'UPS';
+  var os = el('div', 'os', ident + (u.attached_to ? ' · powers ' + u.attached_to : ''));
+  os.title = ident + ' · ' + u.endpoint;
+  a.appendChild(os);
+
+  var pw = el('div', 'upspower' + (u.fresh ? '' : ' old'), upsHeadline(u));
+  pw.style.setProperty('--st', u.fresh ? st(upsPower(u.power).status).css : 'var(--st-none)');
+  if (u.fresh && u.power_since) pw.title = 'since ' + new Date(u.power_since * 1000).toLocaleString();
+  a.appendChild(pw);
+
+  if (u.reading) {
+    a.appendChild(upsMeter('Battery', r.charge_pct, upsLevel(r.charge_pct, th.charge, true),
+      r.runtime_seconds !== null && r.runtime_seconds !== undefined
+        ? 'runtime ' + fmtRuntime(r.runtime_seconds) + ' (UPS estimate)' : 'runtime not reported',
+      u.fresh));
+    a.appendChild(upsMeter('Load', r.load_pct, upsLevel(r.load_pct, th.load, false),
+      r.realpower_w !== null && r.realpower_w !== undefined ? fmtNum(r.realpower_w, ' W measured')
+        : (r.realpower_nominal_w ? 'rated ' + fmtNum(r.realpower_nominal_w, ' W') : ''),
+      u.fresh));
+    var bits = [fmtNum(r.input_voltage, ' V in', 1), fmtNum(r.output_voltage, ' V out', 1),
+                fmtNum(r.temperature_c, ' °C', 1)].filter(Boolean);
+    if (bits.length) a.appendChild(el('div', 'sub upsline', bits.join(' · ')));
+    a.appendChild(upsFlagChips(r, u.fresh));
+  }
+
+  var why = upsWhy(u);
+  if (why) {
+    var wl = el('div', 'sub why', why);
+    wl.style.color = u.status === 'ok' ? 'var(--muted)' : s.css;
+    a.appendChild(wl);
+  }
+  var c = u.comm || {};
+  a.appendChild(el('div', 'sub', (c.last_success ? 'read ' + fmtAge(c.age_seconds)
+    : 'never read') + ' · NUT ' + u.endpoint));
+  return a;
+}
+
+function renderUpsTab(data) {
+  var list = data.ups || [];
+  if (!list.length) {
+    return el('div', 'empty', 'No UPS configured — add a ups block to server.json ' +
+      '(see "UPS" in the README).');
+  }
+  var grid = el('div', 'grid');
+  list.forEach(function (u) { grid.appendChild(upsCard(u, data.now)); });
+  return grid;
+}
+
+/* The header's words for UPSes. Power trouble and lost contact are different
+   news, and both are news. */
+function upsNews(list) {
+  var out = [];
+  var batt = list.filter(function (u) { return u.fresh && u.power === 'battery'; }).length;
+  var off = list.filter(function (u) { return u.fresh && (u.power === 'off' || u.power === 'bypass'); }).length;
+  var alarm = list.filter(function (u) {
+    return u.fresh && u.power === 'utility' && (u.status === 'warning' || u.status === 'critical');
+  }).length;
+  var lost = list.filter(function (u) { return u.enabled && !u.fresh; }).length;
+  if (batt) out.push(batt === 1 && list.length === 1 ? 'UPS ON BATTERY' : batt + ' UPS ON BATTERY');
+  if (off) out.push(off + ' UPS not protecting its load');
+  if (alarm) out.push(alarm + ' UPS alarm' + (alarm === 1 ? '' : 's'));
+  if (lost) out.push(lost + ' UPS not reporting');
+  return out;
+}
+
+function kvRow(tbl, k, v, title) {
+  if (v === null || v === undefined || v === '') return;
+  var r = el('div', 'kvrow');
+  r.appendChild(el('span', 'k', k));
+  var vv = el('span', 'v', String(v));
+  if (title) vv.title = title;
+  r.appendChild(vv);
+  tbl.appendChild(r);
+}
+
+/* Event colours for the UPS kinds: their states are power sources and
+   communication words, not host states. */
+function upsEventStyle(ev) {
+  var k = String(ev.kind || '');
+  if (k === 'ups:power') return st(upsPower(ev.to_state).status);
+  if (k === 'ups:comm') return ev.to_state === 'lost' ? STATUS.stale : STATUS.ok;
+  return st(ev.to_state);
+}
+
+function upsRangePicker(id, active) {
+  var nav = el('div', 'ranges');
+  RANGES.forEach(function (r) {
+    var a = el('a', 'range' + (r.id === active ? ' on' : ''), r.label);
+    a.href = '#/ups/' + encodeURIComponent(id) + '/' + r.id;
+    nav.appendChild(a);
+  });
+  return nav;
+}
+
+function upsChart(title, hist, key, big, opts, caption, gap) {
+  var p = el('div', 'panel');
+  p.appendChild(el('h2', null, title));
+  var b = el('div', 'big');
+  b.appendChild(document.createTextNode(big === null || big === undefined ? '–' : big));
+  p.appendChild(b);
+  var o = { gap: gap };
+  for (var k in opts) o[k] = opts[k];
+  p.appendChild(sparkline(hist.map(function (h) { return { ts: h.ts, v: h[key] }; }),
+    o.colour || 'var(--st-ok)', o.th, o));
+  p.appendChild(caption);
+  return p;
+}
+
+function renderUpsDetail(id, data, range) {
+  var u = data.current, s = st(u.status), r = u.reading || {}, c = u.comm || {};
+  var th = u.thresholds || {};
+  range = range || '24h';
+  titleEl.textContent = u.name;
+  metaEl.textContent = 'UPS · NUT ' + u.endpoint + ' · ' +
+    (c.last_success ? 'read ' + fmtAge(c.age_seconds) : 'never read');
+
+  var frag = document.createDocumentFragment();
+  if (!u.fresh && u.enabled) {
+    var wb = el('div', 'why-banner', u.reading
+      ? 'No current reading — every value below is from ' + fmtAge(r.age_seconds) +
+        ' and is not the state now.'
+      : upsHeadline(u) + '.');
+    wb.style.setProperty('--st', s.css);
+    wb.appendChild(el('div', 'why-sub', c.detail || ''));
+    frag.appendChild(wb);
+  }
+
+  var back = el('div', 'banner');
+  var a = el('a', null, '← UPS');
+  a.href = '#/ups'; a.style.color = 'inherit';
+  back.appendChild(a);
+  var chip = el('span', 'chip');
+  chip.style.setProperty('--st', s.css);
+  chip.style.marginLeft = '14px';
+  var dot = el('span', 'dot'); dot.style.background = s.css; chip.appendChild(dot);
+  var g = el('span', 'glyph', s.glyph); g.style.color = s.css; chip.appendChild(g);
+  chip.appendChild(el('span', null, u.status === 'stale' ? 'Stale' : s.label));
+  back.appendChild(chip);
+  if (u.attached_to) {
+    var pa = el('a', 'parent', 'powers ' + u.attached_to);
+    pa.href = '#/host/' + encodeURIComponent(u.attached_to);
+    back.appendChild(pa);
+  }
+  back.appendChild(upsRangePicker(id, range));
+  frag.appendChild(back);
+
+  var panels = el('div', 'panels');
+
+  /* Power and alarms */
+  var p0 = el('div', 'panel');
+  p0.appendChild(el('h2', null, 'Power'));
+  var b0 = el('div', 'big upspower' + (u.fresh ? '' : ' old'), upsHeadline(u));
+  b0.style.setProperty('--st', u.fresh ? st(upsPower(u.power).status).css : 'var(--st-none)');
+  p0.appendChild(b0);
+  if (u.fresh && u.power_since) {
+    p0.appendChild(el('div', 'sub', 'seen this way since ' +
+      new Date(u.power_since * 1000).toLocaleString() + ' (as observed by netdash)'));
+  }
+  p0.appendChild(upsFlagChips(r, u.fresh));
+  var al = upsAlarms(u.reading);
+  if (al.length) {
+    var alog = el('div', 'events');
+    al.forEach(function (x) {
+      var row = el('div', 'ev');
+      row.style.setProperty('--st', st(x.severity).css);
+      row.appendChild(el('span', 'pdot'));
+      row.appendChild(el('span', 'evwhat', x.code));
+      row.appendChild(el('span', 'evwhy', x.text +
+        (x.source === 'threshold' ? ' (netdash threshold)' : '')));
+      alog.appendChild(row);
+    });
+    p0.appendChild(alog);
+  } else if (u.reading) {
+    p0.appendChild(el('div', 'sub', 'no alarms reported'));
+  }
+  panels.appendChild(p0);
+
+  /* Communication: the other axis */
+  var pc = el('div', 'panel');
+  pc.appendChild(el('h2', null, 'Communication'));
+  var bc = el('div', 'big', UPS_COMM[c.state] || c.state || '–');
+  bc.style.fontSize = '22px';
+  pc.appendChild(bc);
+  var kc = el('div', 'kv');
+  kvRow(kc, 'Endpoint', u.endpoint);
+  kvRow(kc, 'Last good reading', c.last_success
+    ? new Date(c.last_success * 1000).toLocaleString() + ' (' + fmtAge(c.age_seconds) + ')' : 'never');
+  kvRow(kc, 'Last attempt', c.last_attempt ? new Date(c.last_attempt * 1000).toLocaleString() : null);
+  kvRow(kc, 'Failed polls in a row', c.failures ? String(c.failures) : null);
+  kvRow(kc, 'Last error', c.error);
+  kvRow(kc, 'Polled every', u.poll_seconds + ' s; stale after ' + u.stale_after_seconds + ' s');
+  pc.appendChild(kc);
+  panels.appendChild(pc);
+
+  var hist = data.history || [];
+  var gap = Math.max(3 * (u.poll_seconds || 30), 120);
+  if (data.resolution === 'hourly') gap = 3 * 3600;
+  var col = function (v, t, below) {
+    return st(u.fresh ? upsLevel(v, t, below) : 'unknown').css;
+  };
+
+  panels.appendChild(upsChart('Battery charge', hist, 'charge',
+    fmtPct(r.charge_pct), { th: th.charge ? { warn: th.charge.warn, crit: th.charge.crit } : null,
+      colour: col(r.charge_pct, th.charge, true),
+      tip: function (p) { return p.v.toFixed(0) + '% · ' + new Date(p.ts * 1000).toLocaleString(); } },
+    chartCaption(th.charge, data.minutes || 60, data.resolution), gap));
+
+  var rtMax = 0;
+  hist.forEach(function (h) { if (h.runtime > rtMax) rtMax = h.runtime; });
+  rtMax = Math.max(rtMax, th.runtime_seconds ? th.runtime_seconds.warn * 1.2 : 600, 60);
+  var rcap = el('div', 'cap');
+  rcap.appendChild(el('span', null, spanLabel(data.minutes || 60) +
+    (data.resolution === 'hourly' ? ' · hourly avg' : '')));
+  rcap.appendChild(el('span', null, 'UPS estimate · scale 0–' + fmtRuntime(Math.round(rtMax)).replace('≈ ', '')));
+  rcap.appendChild(el('span', null, 'now'));
+  panels.appendChild(upsChart('Runtime (estimate)', hist, 'runtime',
+    fmtRuntime(r.runtime_seconds), { max: rtMax,
+      th: th.runtime_seconds ? { warn: th.runtime_seconds.warn, crit: th.runtime_seconds.crit } : null,
+      colour: col(r.runtime_seconds, th.runtime_seconds, true),
+      tip: function (p) { return fmtRuntime(Math.round(p.v)) + ' · ' + new Date(p.ts * 1000).toLocaleString(); } },
+    rcap, gap));
+
+  panels.appendChild(upsChart('Load', hist, 'load', fmtPct(r.load_pct),
+    { th: th.load, colour: col(r.load_pct, th.load, false),
+      tip: function (p) { return p.v.toFixed(0) + '% · ' + new Date(p.ts * 1000).toLocaleString(); } },
+    chartCaption(th.load, data.minutes || 60, data.resolution), gap));
+
+  var hasV = hist.some(function (h) { return h.input_v !== null && h.input_v !== undefined; });
+  if (hasV || r.input_voltage !== null && r.input_voltage !== undefined) {
+    var vcap = el('div', 'cap');
+    vcap.appendChild(el('span', null, spanLabel(data.minutes || 60)));
+    vcap.appendChild(el('span', null, 'scale 0–300 V'));
+    vcap.appendChild(el('span', null, 'now'));
+    panels.appendChild(upsChart('Input voltage', hist, 'input_v',
+      fmtNum(r.input_voltage, ' V', 1), { max: 300, colour: 'var(--text-2)',
+        tip: function (p) { return p.v.toFixed(1) + ' V · ' + new Date(p.ts * 1000).toLocaleString(); } },
+      vcap, gap));
+  }
+
+  /* Readings that only appear when the UPS supplies them */
+  var pr = el('div', 'panel');
+  pr.appendChild(el('h2', null, 'Readings'));
+  var kr = el('div', 'kv');
+  kvRow(kr, 'Input voltage', fmtNum(r.input_voltage, ' V', 1));
+  kvRow(kr, 'Input frequency', fmtNum(r.input_frequency, ' Hz', 1));
+  kvRow(kr, 'Output voltage', fmtNum(r.output_voltage, ' V', 1));
+  kvRow(kr, 'Battery voltage', r.battery_voltage !== null && r.battery_voltage !== undefined
+    ? fmtNum(r.battery_voltage, ' V', 1) +
+      (r.battery_voltage_nominal ? ' (nominal ' + fmtNum(r.battery_voltage_nominal, ' V', 1) + ')' : '')
+    : null);
+  kvRow(kr, 'Temperature', fmtNum(r.temperature_c, ' °C', 1));
+  kvRow(kr, 'Battery temperature', fmtNum(r.battery_temperature_c, ' °C', 1));
+  kvRow(kr, 'Output power (measured)', fmtNum(r.realpower_w, ' W'));
+  kvRow(kr, 'Apparent power (measured)', fmtNum(r.apparent_power_va, ' VA'));
+  kvRow(kr, 'Rated power', fmtNum(r.realpower_nominal_w, ' W'),
+        'the UPS\'s rating, not what it is drawing now');
+  kvRow(kr, 'Rated apparent power', fmtNum(r.power_nominal_va, ' VA'));
+  kvRow(kr, 'Low-battery thresholds (UPS)',
+    [fmtNum(r.charge_low_pct, '%'), r.runtime_low_seconds !== null && r.runtime_low_seconds !== undefined
+      ? fmtRuntime(r.runtime_low_seconds) : null].filter(Boolean).join(' · ') || null);
+  if (r.invalid && r.invalid.length) kvRow(kr, 'Implausible values ignored', r.invalid.join(', '));
+  if (!u.reading) kr.appendChild(el('div', 'sub', 'no reading yet'));
+  pr.appendChild(kr);
+  panels.appendChild(pr);
+
+  /* Identity and battery health, in the device's own words */
+  var pi = el('div', 'panel');
+  pi.appendChild(el('h2', null, 'Device and battery'));
+  var ki = el('div', 'kv');
+  kvRow(ki, 'Model', r.model);
+  kvRow(ki, 'Manufacturer', r.manufacturer);
+  kvRow(ki, 'Serial', r.serial);
+  kvRow(ki, 'Firmware', [r.firmware, r.firmware_aux].filter(Boolean).join(' / ') || null);
+  kvRow(ki, 'Driver', [r.driver, r.driver_version].filter(Boolean).join(' ') || null);
+  kvRow(ki, 'Beeper', r.beeper);
+  var bat = r.battery || {};
+  kvRow(ki, 'Replace battery', u.reading ? (bat.replace_flag ? 'YES — UPS reports RB' : 'not flagged') : null);
+  kvRow(ki, 'Last self-test', bat.test_result);
+  kvRow(ki, 'Battery type', bat.type);
+  kvRow(ki, 'Battery date (device-reported)', bat.reported_date ? bat.reported_date + ' — unverified' : null,
+        'battery.date as the UPS reports it. Often a factory default rather than when the battery was fitted; not checked by netdash.');
+  kvRow(ki, 'Battery mfr date (device-reported)', bat.reported_mfr_date ? bat.reported_mfr_date + ' — unverified' : null);
+  pi.appendChild(ki);
+  panels.appendChild(pi);
+
+  /* Events */
+  if (data.events && data.events.length) {
+    var pe = el('div', 'panel');
+    pe.appendChild(el('h2', null, 'Recent changes'));
+    var log = el('div', 'events');
+    data.events.slice(0, 15).forEach(function (ev) {
+      var to = upsEventStyle(ev);
+      var row = el('div', 'ev');
+      row.style.setProperty('--st', to.css);
+      row.appendChild(el('span', 'pdot'));
+      row.appendChild(el('span', 'evwhen', fmtAge(data.now - ev.ts)));
+      row.appendChild(el('span', 'evwhat', String(ev.kind).replace(/^ups:/, '') + ': ' +
+        (ev.from_state || '?') + ' → ' + ev.to_state));
+      if (ev.detail) {
+        var dt = el('span', 'evwhy', ev.detail);
+        dt.title = ev.detail;
+        row.appendChild(dt);
+      }
+      log.appendChild(row);
+    });
+    pe.appendChild(log);
+    panels.appendChild(pe);
+  }
+
+  /* Every variable upsd sent, for whatever the panels above do not name. */
+  var vars = u.vars || {};
+  var names = Object.keys(vars).sort();
+  if (names.length) {
+    var pv = el('div', 'panel');
+    pv.appendChild(el('h2', null, 'All variables (' + names.length + ')'));
+    var det = el('details', 'upsvars');
+    det.appendChild(el('summary', null, 'show raw NUT variables' + (u.fresh ? '' : ' (last reading)')));
+    var kv = el('div', 'kv');
+    names.forEach(function (n) { kvRow(kv, n, vars[n]); });
+    det.appendChild(kv);
+    pv.appendChild(det);
+    panels.appendChild(pv);
+  }
+
+  frag.appendChild(panels);
+  frag.appendChild(el('div', 'sub snote upsnote',
+    'Monitoring only: netdash reads this UPS with LIST VAR and sends it no commands. ' +
+    'Runtime is the UPS\'s own estimate.'));
+  root.replaceChildren(frag);
+}
+
 /* ---------- routing + polling ---------- */
 
 var TABS = [
@@ -1925,7 +2391,10 @@ var TABS = [
   /* Not a filter over hosts like the others: one row per service check,
      whichever host it is attached to. Its count is checks, not hosts. */
   { id: 'services', label: 'Services',
-    title: 'Every service check, one line each, worst first' }
+    title: 'Every service check, one line each, worst first' },
+  /* Not hosts either: one card per UPS read over NUT. Shown only when one is
+     configured. */
+  { id: 'ups', label: 'UPS', title: 'Uninterruptible power supplies, read over NUT' }
 ];
 
 /* How far back the detail page is looking. Kept in the hash rather than in a
@@ -1964,7 +2433,11 @@ function currentRoute() {
   if (m) return { view: 'host', host: decodeURIComponent(m[1]), range: rangeById(m[2]).id };
   m = h.match(/^#\/host\/(.+)$/);
   if (m) return { view: 'host', host: decodeURIComponent(m[1]), range: '24h' };
-  m = h.match(/^#\/(bare|vms|containers|services)$/);
+  m = h.match(/^#\/ups\/(.+?)\/([0-9]+[hdy])$/);
+  if (m) return { view: 'ups', id: decodeURIComponent(m[1]), range: rangeById(m[2]).id };
+  m = h.match(/^#\/ups\/(.+)$/);
+  if (m) return { view: 'ups', id: decodeURIComponent(m[1]), range: '24h' };
+  m = h.match(/^#\/(bare|vms|containers|services|ups)$/);
   return { view: 'overview', tab: m ? m[1] : '' };
 }
 
@@ -2099,12 +2572,14 @@ function tabHosts(hosts, tab) {
 function renderTabs(data, active) {
   var nav = el('nav', 'tabs');
   TABS.forEach(function (t) {
+    if (t.id === 'ups' && !(data.ups || []).length) return;
     var a = el('a', 'tab' + (t.id === active ? ' on' : ''));
     a.href = '#/' + t.id;
     a.title = t.title;
     a.appendChild(el('span', null, t.label));
     var n = t.id === 'services' ? allServices(data.hosts).length
-                                : tabHosts(data.hosts, t.id).length;
+          : t.id === 'ups' ? data.ups.length
+          : tabHosts(data.hosts, t.id).length;
     a.appendChild(el('span', 'tabn', String(n)));
     nav.appendChild(a);
   });
@@ -2134,6 +2609,8 @@ function tick() {
   var r = currentRoute();
   var url = r.view === 'host'
     ? '/api/host/' + encodeURIComponent(r.host) + '?minutes=' + rangeById(r.range).minutes
+    : r.view === 'ups'
+    ? '/api/ups/' + encodeURIComponent(r.id) + '?minutes=' + rangeById(r.range).minutes
     : '/api/overview';
   /* Two failures that look nothing alike and used to report identically. A
      single .catch around both the fetch and the render meant a bug in this
@@ -2152,7 +2629,9 @@ function tick() {
     .then(function (data) {
       if (data === null) return;
       try {
-        if (r.view === 'host') renderDetail(r.host, data, r.range); else renderOverview(data, r.tab);
+        if (r.view === 'host') renderDetail(r.host, data, r.range);
+        else if (r.view === 'ups') renderUpsDetail(r.id, data, r.range);
+        else renderOverview(data, r.tab);
       } catch (e) {
         if (window.console) console.error('netdash render failed', e);
         fail('The server answered, but the dashboard could not draw this view: ' +

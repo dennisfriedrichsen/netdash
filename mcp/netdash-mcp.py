@@ -73,8 +73,18 @@ Each service check carries "checks": exactly what a pass proves, and what it
 does not. A tcp check passing means something accepts connections on that
 port, not that the service works. Report it in those terms.
 
+A UPS is not a host and is never listed among hosts. The ups tool (and the
+"ups" list in fleet_status) reports each one read over Network UPS Tools:
+"power" is utility, battery, bypass, off, or unknown; "communication" is
+whether netdash could read it. When "fresh" is false the reading is old --
+power is then "unknown" and the last reading is given with its age, never as
+the state now. A field missing from a reading, or listed in "not_reported",
+was not reported by the UPS: it is not zero. Runtime is the UPS's own
+estimate. An event after a communication gap does not date the outage: its
+time is when netdash saw the change, and its detail says so.
+
 Everything here is read-only. To acknowledge or forget anything, tell the
-user to do it on the dashboard."""
+user to do it on the dashboard. netdash sends a UPS no commands at all."""
 
 
 class ToolError(Exception):
@@ -517,6 +527,131 @@ def event_brief(e):
     })
 
 
+# ---------- UPS ----------
+
+_UPS_FIELDS = (
+    # reading key, name in the answer
+    ("charge_pct", "battery_charge_pct"),
+    ("runtime_seconds", "runtime_seconds_estimate"),
+    ("load_pct", "load_pct"),
+    ("input_voltage", "input_voltage_v"),
+    ("output_voltage", "output_voltage_v"),
+    ("battery_voltage", "battery_voltage_v"),
+    ("temperature_c", "temperature_c"),
+    ("realpower_w", "measured_power_w"),
+    ("realpower_nominal_w", "rated_power_w"),
+)
+# Reported as missing by name, so an absent number cannot be read as zero.
+_UPS_CORE = ("battery_charge_pct", "runtime_seconds_estimate", "load_pct",
+             "input_voltage_v")
+
+
+def ups_brief(u, full=False):
+    c = u.get("comm") or {}
+    r = u.get("reading")
+    out = {
+        "id": u.get("id"), "name": u.get("name"), "status": u.get("status"),
+        "power": u.get("power"), "fresh": bool(u.get("fresh")),
+        # When netdash first saw this power state -- not when it began, which
+        # may have been before a restart or inside a gap in readings.
+        "power_observed_since": iso(u.get("power_since")),
+        "attached_to": u.get("attached_to"),
+        "communication": _drop_none({
+            "state": c.get("state"), "detail": c.get("detail"),
+            "last_success": iso(c.get("last_success")),
+            "seconds_since_success": c.get("age_seconds"),
+            "error_kind": c.get("error_kind") if c.get("state") != "ok" else None,
+        }),
+        "config_error": u.get("config_error"),
+    }
+    if r:
+        rd = {"as_of": iso(r.get("ts")), "age_seconds": r.get("age_seconds"),
+              "is_current": bool(u.get("fresh")), "power": r.get("power"),
+              "status_flags": [f.get("flag") for f in r.get("flags") or []],
+              "unknown_flags": [f.get("flag") for f in r.get("flags") or []
+                                if not f.get("known")]}
+        for k, name in _UPS_FIELDS:
+            if r.get(k) is not None:
+                rd[name] = r[k]
+        missing = [n for n in _UPS_CORE if n not in rd]
+        if full:
+            for k in ("model", "manufacturer", "serial", "firmware", "driver", "beeper"):
+                rd[k] = r.get(k)
+            b = r.get("battery") or {}
+            rd["battery_health"] = _drop_none({
+                "replace_battery_flag": bool(b.get("replace_flag")),
+                "last_self_test": b.get("test_result"),
+                "device_reported_battery_date": (
+                    "%s (as reported by the UPS; unverified, often a factory default)"
+                    % b["reported_date"] if b.get("reported_date") else None),
+            })
+            rd["implausible_values_ignored"] = r.get("invalid")
+        out["reading"] = _drop_none(rd)
+        # Kept even when empty: "nothing missing" is itself the answer.
+        out["reading"]["not_reported"] = missing
+        out["alarms"] = [_drop_none({"code": a.get("code"), "severity": a.get("severity"),
+                                     "text": a.get("text"), "source": a.get("source")})
+                         for a in r.get("alarms") or []]
+    return _drop_none(out)
+
+
+def ups_needs_attention(u):
+    if not u.get("enabled"):
+        return False
+    return u.get("status") != "ok" or not u.get("fresh")
+
+
+def tool_ups(api, args):
+    uid = (args.get("id") or "").strip()
+    if not uid:
+        d = api.get("/api/ups")
+        return {"as_of": iso(d.get("now")),
+                "ups": [ups_brief(u) for u in d.get("ups") or []]}
+    hours = _int(args, "hours", 24, 1, 24 * 400)
+    try:
+        d = api.get("/api/ups/" + quote(uid, safe=""), minutes=hours * 60)
+    except NotFound:
+        known = [u.get("id") for u in api.get("/api/ups").get("ups") or []]
+        raise ToolError("no UPS with id %r. Configured: %s"
+                        % (uid, ", ".join(known) or "none"))
+    out = ups_brief(d.get("current") or {}, full=True)
+    hist = d.get("history") or []
+    hourly = d.get("resolution") == "hourly"
+    bucket = HOUR if hourly else 0
+    out["window"] = _drop_none({
+        "hours": hours, "resolution": d.get("resolution"),
+        "points": len(hist),
+        "note": ("hourly rollups: averages with each hour's min and max" if hourly else
+                 "one point per successful reading; gaps are polls that failed, "
+                 "not zeros"),
+    })
+    out["history"] = _drop_none({
+        "battery_charge_pct": series_stats(hist, "charge", "charge_min" if hourly else None,
+                                           "charge_max" if hourly else None,
+                                           "charge_n" if hourly else None, bucket),
+        "runtime_seconds_estimate": series_stats(
+            hist, "runtime", "runtime_min" if hourly else None,
+            "runtime_max" if hourly else None, "runtime_n" if hourly else None, bucket),
+        "load_pct": series_stats(hist, "load", "load_min" if hourly else None,
+                                 "load_max" if hourly else None,
+                                 "load_n" if hourly else None, bucket),
+        "input_voltage_v": series_stats(hist, "input_v", "input_min" if hourly else None,
+                                        "input_max" if hourly else None,
+                                        "input_n" if hourly else None, bucket),
+        "readings_on_battery": (sum(p.get("on_battery") or 0 for p in hist) if hourly
+                                else sum(1 for p in hist if p.get("power") == "battery")),
+        "readings": (sum(p.get("samples") or 0 for p in hist) if hourly else len(hist)),
+    })
+    if args.get("include_series"):
+        out["series_columns"] = ["time", "power", "charge_pct", "runtime_s", "load_pct"]
+        out["series"] = [[iso(p["ts"]),
+                          p.get("power") or ("battery" if p.get("on_battery") else None),
+                          p.get("charge"), p.get("runtime"), p.get("load")]
+                         for p in downsample(hist, 120)]
+    out["recent_events"] = [event_brief(e) for e in d.get("events") or []]
+    return _drop_none(out)
+
+
 # ---------- tools ----------
 
 _TYPES = {
@@ -572,13 +707,16 @@ def tool_fleet_status(api, args):
         s = status_of(h)
         counts[s] = counts.get(s, 0) + 1
     shown = [h for h in hosts if needs_attention(h)] if args.get("problems_only") else hosts
+    ups = ov.get("ups") or []
+    ups_shown = [u for u in ups if ups_needs_attention(u)] if args.get("problems_only") else ups
     return {
         "as_of": iso(ov.get("now")),
         "hosts_total": len(hosts),
         "by_status": counts,
         "collector_newest": ov.get("collector_newest"),
         "hosts": [host_brief(h) for h in shown],
-        **({"note": "only hosts needing attention are listed"}
+        **({"ups": [ups_brief(u) for u in ups_shown]} if ups_shown else {}),
+        **({"note": "only hosts and UPSes needing attention are listed"}
            if args.get("problems_only") else {}),
     }
 
@@ -778,7 +916,9 @@ TOOLS = {
             "kind": {"type": "string",
                      "description": "'status' for host status, 'service' for every "
                                     "service check, 'service:<id>' for one, 'storage' "
-                                    "for pool, scrub and SMART changes, 'host' "
+                                    "for pool, scrub and SMART changes, 'ups' for "
+                                    "UPS power, communication and alarm changes "
+                                    "(host is then the UPS id), 'host' "
                                     "for hosts removed from the dashboard"},
             "limit": {"type": "integer", "default": 100, "minimum": 1, "maximum": 500},
             "cursor": {"type": "string",
@@ -802,6 +942,22 @@ TOOLS = {
                        "sensors where read.",
         "inputSchema": {"type": "object", "additionalProperties": False, "properties": {
             "host": {"type": "string", "description": "only checks attached to this host"},
+        }},
+    }),
+    "ups": (tool_ups, {
+        "description": "UPSes read over Network UPS Tools (not hosts): utility vs battery, "
+                       "charge, runtime (the UPS's estimate), load, voltages and "
+                       "temperature where reported, status flags and alarms, battery "
+                       "health, and communication health with the time of the last good "
+                       "reading. Without id, every UPS briefly; with id, one in depth with "
+                       "history over `hours` and its recent events.",
+        "inputSchema": {"type": "object", "additionalProperties": False, "properties": {
+            "id": {"type": "string", "description": "UPS id as netdash shows it"},
+            "hours": {"type": "integer", "default": 24, "minimum": 1,
+                      "description": "history window with id; beyond the raw retention "
+                                     "the server answers with hourly rollups"},
+            "include_series": {"type": "boolean", "default": False,
+                               "description": "with id, also up to 120 points"},
         }},
     }),
 }

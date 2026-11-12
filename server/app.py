@@ -6,6 +6,8 @@ Routes:
   GET  /api/overview      all hosts, latest sample + rolled-up status
   GET  /api/host/<name>   one host: latest + recent history, with its service checks
   GET  /api/events        the state-change log, filtered by host, kind and since
+  GET  /api/ups           every configured UPS, read over NUT
+  GET  /api/ups/<id>      one UPS: current reading, history and its events
   GET  /                  dashboard UI
 """
 
@@ -24,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db  # noqa: E402
 import eol  # noqa: E402
 import hubitat  # noqa: E402
+import nut  # noqa: E402
 import reach  # noqa: E402
 import services  # noqa: E402
 import truenas  # noqa: E402
@@ -334,6 +337,109 @@ def service_round(c, memo, last_recorded, now=None):
         sys.stderr.write("service %s on %s: %s -- %s\n"
                          % (c["id"], c["host"], state, new["detail"]))
     return state
+
+
+# ---------- UPS over NUT ----------
+#
+# A UPS is its own kind of thing -- see nut.py -- so it is neither a host nor
+# a service check. Live state in memory, like SVC: the last reading and the
+# last attempt, judged for freshness at read time. Every good reading also
+# goes to ups_samples for the charts, and only transitions reach the events
+# table: a power change, communication lost or regained, a device alarm
+# raised or cleared.
+UPS = {}
+UPS_LOCK = threading.Lock()
+_UPS_PARSED = {"block": None, "devices": []}
+
+
+def ups_devices():
+    """The configured UPSes, parsed once per config block."""
+    block = CFG.get("ups")
+    if _UPS_PARSED["block"] is not block:
+        _UPS_PARSED["devices"] = nut.parse_config(block)
+        _UPS_PARSED["block"] = block
+    return _UPS_PARSED["devices"]
+
+
+def ups_views(now=None, full=False):
+    now = time.time() if now is None else now
+    out = []
+    for d in ups_devices():
+        with UPS_LOCK:
+            live = dict(UPS[d["id"]]) if d["id"] in UPS else None
+        out.append(nut.view(d, live, now, full=full))
+    return out
+
+
+def ups_round(d, recorded, now=None, query=None):
+    """One poll of one UPS, folded into UPS, stored if good, and the events it
+    earns recorded. Returns the events, for tests. `query` is for tests too."""
+    now = now or time.time()
+    query = query or nut.query
+    vars_ = None
+    try:
+        vars_ = query(d["host"], d["port"], d["ups"], d["timeout_seconds"])
+        result = nut.interpret(vars_, d["thresholds"])
+    except nut.NutError as e:
+        result = e
+    with UPS_LOCK:
+        prev = UPS.get(d["id"])
+        live = nut.fold(prev, d, result, now, vars_)
+        UPS[d["id"]] = live
+    prev_read_at = (prev or {}).get("read_at")
+    if not isinstance(result, nut.NutError) and CONN is not None:
+        try:
+            db.insert_ups_sample(CONN, d["id"], now, result)
+        except Exception as e:
+            sys.stderr.write("ups %s: reading not stored: %s\n" % (d["id"], e))
+    events = nut.transitions(recorded, d, live, prev_read_at, now)
+    for kind, frm, to, detail in events:
+        if CONN is None:
+            continue
+        try:
+            db.record_event(CONN, d["id"], kind, frm, to, detail, ts=now)
+        except Exception as e:
+            sys.stderr.write("ups event %s: %s\n" % (d["id"], e))
+    return events
+
+
+def ups_worker(d, recorded):
+    """Poll one UPS for ever. Each poll is bounded by its own timeout; a worker
+    that wedges anyway shows as stale on the card, never as its last answer."""
+    time.sleep(random.uniform(0, min(5.0, d["poll_seconds"])))
+    last_err = None
+    while True:
+        try:
+            ups_round(d, recorded)
+            with UPS_LOCK:
+                err = (UPS.get(d["id"]) or {}).get("error")
+            if err and err != last_err:
+                sys.stderr.write("ups %s: %s\n" % (d["id"], err))
+            last_err = err
+        except Exception as e:  # never let the thread die quietly
+            sys.stderr.write("ups %s: %s\n" % (d["id"], e))
+        time.sleep(d["poll_seconds"])
+
+
+def start_ups_pollers():
+    devices = ups_devices()
+    if not devices:
+        return
+    try:
+        seeded = db.last_ups_states(CONN)
+    except Exception:
+        seeded = {}
+    started = []
+    for d in devices:
+        if d["config_error"]:
+            sys.stderr.write("ups: %s cannot be read: %s\n" % (d["id"], d["config_error"]))
+            continue
+        if not d["enabled"]:
+            continue
+        threading.Thread(target=ups_worker, args=(d, dict(seeded.get(d["id"]) or {})),
+                         daemon=True).start()
+        started.append("%s->%s:%s" % (d["id"], d["host"], d["port"]))
+    sys.stderr.write("ups pollers started (%s)\n" % (", ".join(started) or "none enabled"))
 
 
 def guest_for(host):
@@ -1286,6 +1392,34 @@ class Handler(BaseHTTPRequestHandler):
             return self._fail(500, "ack %s" % host, e)
         return self._json(200, summarize(sample))
 
+    def _ups_detail(self, uid, q):
+        try:
+            mins = int((q.get("minutes") or ["1440"])[0])
+        except ValueError:
+            mins = 1440
+        h = CFG.get("history") or {}
+        ceiling = (int(h.get("keep_rollup_days") or 0) * 1440
+                   if h.get("enabled") else 0) or CFG["retention_hours"] * 60
+        mins = max(5, min(mins, max(ceiling, CFG["retention_hours"] * 60)))
+        try:
+            now = time.time()
+            views = [v for v in ups_views(now, full=True) if v["id"] == uid]
+            if not views:
+                return self._json(404, {"error": "unknown ups"})
+            since = now - mins * 60
+            if mins <= CFG["retention_hours"] * 60:
+                hist, resolution = db.ups_history(CONN, uid, since), "raw"
+            else:
+                hist, resolution = db.ups_rollup_series(CONN, uid, since), "hourly"
+            return self._json(200, {
+                "now": int(now), "current": views[0], "minutes": mins,
+                "resolution": resolution, "retention_hours": CFG["retention_hours"],
+                "history": hist,
+                "events": db.recent_events(CONN, host=uid, kind="ups", limit=40),
+            })
+        except Exception as e:
+            return self._fail(500, "ups %s" % uid, e)
+
     # -- GET --
     def do_GET(self):
         u = urlparse(self.path)
@@ -1309,6 +1443,8 @@ class Handler(BaseHTTPRequestHandler):
                     "thresholds": CFG["thresholds"],
                     "collector_newest": ".".join(str(x) for x in newest) or None,
                     "hosts": hosts,
+                    # Not hosts, and never counted as hosts: see nut.py.
+                    "ups": ups_views(now),
                 })
             except Exception as e:
                 return self._fail(500, "overview", e)
@@ -1367,6 +1503,15 @@ class Handler(BaseHTTPRequestHandler):
                 "disk_meta": disk_meta,
                 "events": db.recent_events(CONN, host=host, limit=40),
             })
+
+        if path == "/api/ups":
+            try:
+                return self._json(200, {"now": int(time.time()), "ups": ups_views()})
+            except Exception as e:
+                return self._fail(500, "ups", e)
+
+        if path.startswith("/api/ups/"):
+            return self._ups_detail(path[len("/api/ups/"):], parse_qs(u.query))
 
         if path == "/api/events":
             q = parse_qs(u.query)
@@ -1933,6 +2078,8 @@ def main():
     # above holds the database lock through its first pass. Called inline,
     # that kept the dashboard off the network for over a minute per restart.
     threading.Thread(target=start_service_checks, daemon=True).start()
+
+    threading.Thread(target=start_ups_pollers, daemon=True).start()
 
     for name, module in sorted(APPLIANCES.items()):
         for cfg in appliance_configs(name):

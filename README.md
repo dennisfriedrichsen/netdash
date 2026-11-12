@@ -259,6 +259,8 @@ sudo -u netdash python3 -c "import sys, time; sys.path.insert(0, '/opt/netdash/s
 | `POST /api/host/<name>/eol/ack`, `/eol/unack` | the same for an end-of-life warning, which is one per host |
 | `POST /api/host/<name>/forget` | remove a host from the fleet, with its samples, history and acknowledgements; its events are kept |
 | `GET /api/events?host=&kind=&since=&limit=100` | the state-change log, newest first; `kind=service` also matches every `service:<id>`, `since` is a unix time |
+| `GET /api/ups` | every configured UPS: power, readings, flags, alarms, communication health |
+| `GET /api/ups/<id>?minutes=1440` | one UPS: the above plus every raw NUT variable, history (raw, or hourly past the raw window) and its events |
 | `GET /api/health` | liveness |
 
 Payload shape:
@@ -666,6 +668,9 @@ docker images do not.
   dimmed. The tab's count is checks, not hosts. On narrower screens the probe,
   checked and latency columns go first, then address, port, detail and since;
   hovering a row always gives the full story, and clicking it opens the host.
+
+- **UPS** — one card per UPS read over NUT; see [UPS](#ups). Shown only when
+  a UPS is configured, and never counted among hosts.
 
 Hosts that cannot report virtualisation appear under **All** only, with the
 count called out beside the tabs. Guessing would file them under the wrong tab;
@@ -1316,6 +1321,113 @@ Supermicro's SUM/DCMS/OOB licence).
   `curl -s http://10.0.0.133:32400/identity`; for the BMC
   `ipmitool -I lanplus -H 10.0.0.219 -U <user> -f <file> -L USER sdr elist`.
 
+## UPS
+
+A UPS is read over the [Network UPS Tools](https://networkupstools.org/)
+protocol from whatever `upsd` it is already attached to — a TrueNAS box, a
+Raspberry Pi, anything running NUT. Nothing is installed anywhere, and
+netdash never logs in.
+
+```json
+"ups": {
+  "poll_seconds": 30,
+  "timeout_seconds": 5,
+  "failures_before_lost": 2,
+  "thresholds": {
+    "charge": {"warn": 50, "crit": 20},
+    "runtime_seconds": {"warn": 600, "crit": 300},
+    "load": {"warn": 80, "crit": 95}
+  },
+  "devices": [
+    {"id": "mercury-ups", "name": "Back-UPS RS 1350MS", "host": "10.0.0.2",
+     "port": 3493, "ups": "ups", "attached_to": "mercury", "enabled": true}
+  ]
+}
+```
+
+`ups` is the UPS's name in `upsd` (the `ups@host` of `upsc ups@host`). `id`
+is what netdash calls it in URLs, events and the MCP server. `attached_to` is
+only a label — the host the UPS powers, linked from its page. Any setting may
+be given per device to override the block's. TrueNAS CORE's built-in UPS
+service listens on 3493 and answers this without any change; nothing on the
+NUT side needs configuring, and nothing is changed by being read.
+
+### Monitoring only
+
+Every poll sends one line, `LIST VAR <ups>`, and that is all netdash will
+ever send: the module checks each outgoing line against an allowlist, so no
+command, self-test, calibration, shutdown, `FSD`, outlet switch or `SET VAR`
+can be sent by a bug or a config value, and a UPS name carrying a second
+command is refused before a socket is opened. There is no place for a upsd
+username or password, and a device configured with one is refused rather than
+quietly ignored. Shutdown policy stays wherever it already is (`upsmon` on the
+machines the UPS powers), and netdash is not part of it.
+
+### What is shown
+
+- **Power**: on utility power, on battery, on bypass, or output off — read
+  from `ups.status`, which is treated as a set of tokens (`OL CHRG`, `OB LB`,
+  `OL RB OVER`…). Every token is shown; one NUT does not document is shown as
+  itself, dashed, rather than dropped.
+- **Battery charge** and **runtime**, labelled as the UPS's own estimate.
+- **Load**, as a percentage of rating.
+- **Input/output voltage, frequency, temperature, measured watts** — only
+  when the UPS reports them. `ups.realpower.nominal` is shown as the *rated*
+  power and never as consumption; nothing is derived from load × rating.
+- **Device and battery**: model, manufacturer, serial, firmware, driver,
+  beeper, the replace-battery flag, the last self-test result, and
+  `battery.date` labelled as device-reported and unverified (many UPSes report
+  a factory default there; an RS 1350MS bought this decade says 2001/09/25).
+- **Communication**: when the last good reading was taken, consecutive failed
+  polls, and the last error — told apart as network (nothing answered),
+  protocol (something answered, not with a NUT reply we trust), driver (upsd
+  answered but has no current data from the UPS: `DATA-STALE`,
+  `DRIVER-NOT-CONNECTED`) and config (`UNKNOWN-UPS`, `ACCESS-DENIED`).
+- Every raw variable, under a fold on the detail page.
+
+### Power and communication are separate
+
+A UPS netdash cannot read is not on battery, and it is not fine either. One
+failed poll is held (`failing`, still fresh); `failures_before_lost` in a row
+is `lost`. Once the last good reading is older than `stale_after_seconds`
+(default three polls) the card reads **Stale**, power reads *unknown*, and the
+last reading is shown greyed with its age — never as the state now and never
+as zeros. A UPS last seen critical (on battery and low, say) that then goes
+quiet stays **Crit**: that silence most likely means it shut down.
+
+Colour: **OK** on utility with nothing wrong; **Warn** on battery, on bypass,
+replace battery, an `ALARM`, or a reading past a warn threshold; **Crit** for
+low battery, overload, output off, forced shutdown, or past a crit threshold.
+The header leads with `UPS ON BATTERY` when one is.
+
+### History and events
+
+Each good reading is stored (`ups_samples`, raw for `retention_hours`, then
+hourly rollups for `keep_rollup_days` with min/avg/max and how many of the
+hour's readings were on battery). A failed poll stores nothing, so charts show
+gaps, not zeros. Events, under the UPS's `id` with kinds:
+
+| kind | states |
+|---|---|
+| `ups:power` | `utility`, `battery`, `bypass`, `off` |
+| `ups:comm` | `ok`, `lost` |
+| `ups:alarm:<code>` | a device alarm (`LB`, `RB`, `OVER`, `FSD`, `ups.alarm`, an unknown flag…) going `ok` → `warning`/`critical`/`unknown` and back |
+
+Each is logged when it changes and not again; restarts are seeded from the
+log, so an outage spanning a deploy is neither repeated nor loses its
+recovery. Crossing netdash's own thresholds colours the card but is not an
+event — a runtime estimate wanders across a line every few polls, and that
+is a chart, not news. After a gap with no readings, an event's time is when
+netdash saw the change, and its detail says the change happened at an
+unknown time inside the gap: the outage's start or end is not invented.
+
+### Smoke test
+
+```sh
+printf 'LIST VAR ups\n' | nc -w 3 10.0.0.2 3493
+python3 server/nut.py 10.0.0.2 ups        # the same query, parsed and judged
+```
+
 ## History
 
 Raw samples answer *what is it doing*. They are the wrong tool for *is this
@@ -1501,6 +1613,13 @@ claude mcp add netdash -- python3 /path/to/netdash/mcp/netdash-mcp.py \
 | `events` | the event log, by host, kind and hours back, with `has_more` and a cursor for the next page |
 | `patches` | pending updates per host, which were acknowledged, reboot required, EOL |
 | `services` | every service check with its state, its target, what a pass proves and does not (`checks`), what it found (`facts`), and BMC sensors where read |
+| `ups` | every UPS (or one, by `id`, with history over `hours` and its events): power source, charge, runtime estimate, load, voltages and temperature where reported, flags, alarms, battery health, freshness and communication |
+
+`fleet_status` also lists UPSes, apart from hosts, under `ups` — with
+`problems_only`, just the ones on battery, alarming or not reporting. A UPS
+reading that is not current says so (`fresh: false`, `power: "unknown"`, the
+last reading with its age), and the core readings a UPS did not report are
+named in `not_reported` rather than left out or given as zero.
 
 The answers are shaped for an agent rather than copied from the API: a
 browser wants every chart point and the thresholds block on every host, and

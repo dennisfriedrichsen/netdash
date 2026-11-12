@@ -66,6 +66,27 @@
     "fleet": true,
     "poll_seconds": 60
   },
+  "ups": {
+    "poll_seconds": 30,
+    "timeout_seconds": 5,
+    "failures_before_lost": 2,
+    "thresholds": {
+      "charge": {"warn": 50, "crit": 20},
+      "runtime_seconds": {"warn": 600, "crit": 300},
+      "load": {"warn": 80, "crit": 95}
+    },
+    "devices": [
+      {
+        "id": "mercury-ups",
+        "name": "Back-UPS RS 1350MS",
+        "host": "10.0.0.2",
+        "port": 3493,
+        "ups": "ups",
+        "attached_to": "mercury",
+        "enabled": false
+      }
+    ]
+  },
   "eol": {
     "enabled": true,
     "refresh_hours": 24,

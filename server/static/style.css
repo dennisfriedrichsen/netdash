@@ -451,3 +451,37 @@ a.srow:hover { background: var(--surface-1); }
 .forget button.link:hover { color: var(--st-crit); }
 .forget button.link:disabled { color: var(--muted); text-decoration: none; cursor: default; }
 
+
+/* ---------- UPS ----------
+   The power line is the headline: what feeds the load now. A reading that is
+   not current is greyed and says so -- never shown in the colours of a live
+   one. Flags are outlined labels, filled only when they are bad. */
+.upspower {
+  font-size: 17px; font-weight: 650; margin: 2px 0 4px;
+  color: var(--st, var(--text-1));
+}
+.panel .upspower { font-size: 28px; }
+.upspower.old, .meter.old { opacity: .55; }
+.card.onbatt { background: color-mix(in srgb, var(--st-warn) 9%, var(--surface-1)); }
+.upsflags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
+.upsflag {
+  font-size: 11px; font-weight: 700; letter-spacing: .05em;
+  border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px;
+  color: var(--text-2); font-variant-numeric: tabular-nums;
+}
+.upsflag.bad { border-color: var(--st); color: var(--st); }
+.upsflag.unknownflag { border-style: dashed; }
+.upsline { margin-top: 6px; }
+.kv { display: grid; gap: 2px; margin-top: 8px; font-size: 13px; }
+.kvrow {
+  display: flex; gap: 12px; justify-content: space-between; align-items: baseline;
+  border-bottom: 1px solid var(--border); padding: 3px 0;
+}
+.kvrow:last-child { border-bottom: none; }
+.kvrow .k { color: var(--muted); flex: none; }
+.kvrow .v {
+  color: var(--text-1); text-align: right; font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.upsvars summary { cursor: pointer; color: var(--text-2); font-size: 13px; margin-top: 6px; }
+.upsnote { padding: 0 22px 30px; margin-top: -18px; }
