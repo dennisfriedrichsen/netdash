@@ -351,6 +351,12 @@ CREATE TABLE IF NOT EXISTS storage (
 # does nothing on an existing database, so a deploy onto a live box would keep
 # the old table and every insert would fail on the unknown column.
 _ADDED_COLUMNS = {
+    # The last virt any sample reported. A host down past the retention window
+    # has no sample left to say it, and without this it fell out of every
+    # filtered tab while the All tab kept showing it red.
+    "hosts": [
+        ("virt", "TEXT"),
+    ],
     "patch_acks": [
         ("missing_since", "INTEGER"),
     ],
@@ -421,6 +427,14 @@ def _migrate_hosts(conn):
             (r["host"], r["first_seen"], r["ts"], r["os"],
              r["source"] or "push", r["peer_addr"]),
         )
+    # Hosts registered before the register remembered virt. Whatever the
+    # window still holds is the last word; a host already pruned stays unknown
+    # until it next reports, or until server.json says.
+    conn.execute(
+        """UPDATE hosts SET virt =
+             (SELECT virt FROM samples WHERE samples.host = hosts.host
+                AND virt IS NOT NULL ORDER BY ts DESC LIMIT 1)
+           WHERE virt IS NULL""")
 
 
 # The tail older collectors appended once the name list was capped: "openssl,
@@ -613,7 +627,8 @@ def connect(path):
     return conn
 
 
-def register_host(conn, host, ts, os_string=None, source="push", peer=None):
+def register_host(conn, host, ts, os_string=None, source="push", peer=None,
+                  virt=None):
     """Note that this host exists and was heard from at `ts`.
 
     Called on every ingest, and callable by hand to put back a host that was
@@ -625,14 +640,15 @@ def register_host(conn, host, ts, os_string=None, source="push", peer=None):
     a write of its own.
     """
     conn.execute(
-        """INSERT INTO hosts (host, first_seen, last_seen, os, source, peer_addr)
-             VALUES (?,?,?,?,?,?)
+        """INSERT INTO hosts (host, first_seen, last_seen, os, source, peer_addr, virt)
+             VALUES (?,?,?,?,?,?,?)
            ON CONFLICT(host) DO UPDATE SET
              last_seen = MAX(hosts.last_seen, excluded.last_seen),
              os        = COALESCE(excluded.os, hosts.os),
              source    = excluded.source,
-             peer_addr = COALESCE(excluded.peer_addr, hosts.peer_addr)""",
-        (host, int(ts), int(ts), os_string, source, peer),
+             peer_addr = COALESCE(excluded.peer_addr, hosts.peer_addr),
+             virt      = COALESCE(excluded.virt, hosts.virt)""",
+        (host, int(ts), int(ts), os_string, source, peer, virt),
     )
 
 
@@ -682,7 +698,8 @@ def insert_sample(conn, payload, source="push", peer=None):
             ),
         )
         sid = cur.lastrowid
-        register_host(conn, payload["host"], ts, payload.get("os"), source, peer)
+        register_host(conn, payload["host"], ts, payload.get("os"), source, peer,
+                      payload.get("virt"))
         # Only a sample that actually carries a check may speak for what is
         # pending. A collector whose patchcheck has never run, or has stopped
         # reporting, has told us nothing -- and wiping the list on that silence
@@ -1297,6 +1314,9 @@ def _no_sample(conn, h):
         "os": h["os"],
         "source": h["source"] or "push",
         "peer_addr": h["peer_addr"],
+        # What kind of machine it is outlives its readings: a host does not
+        # stop being a VM by being down for a month.
+        "virt": h["virt"],
         "disks": [],
         "fleet": [],
         "no_samples": True,
@@ -1439,13 +1459,10 @@ def record_guests(conn, parent, entries, ts):
 
 
 def host_row(conn, host):
-    """The register entry for one host -- its last source and last_seen -- plus
-    the virt its newest sample reported, or None if the host is unknown."""
+    """The register entry for one host -- its last source, last_seen and last
+    reported virt -- or None if the host is unknown."""
     with _DB:
-        r = conn.execute(
-            """SELECT h.*, (SELECT virt FROM samples WHERE host = h.host
-                             ORDER BY ts DESC LIMIT 1) AS virt
-                 FROM hosts h WHERE h.host=?""", (host,)).fetchone()
+        r = conn.execute("SELECT * FROM hosts WHERE host=?", (host,)).fetchone()
         return dict(r) if r else None
 
 

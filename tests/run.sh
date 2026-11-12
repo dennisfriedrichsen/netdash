@@ -3275,6 +3275,10 @@ if want guests; then
         "assert d['probe_down']==['down','unreachable'], d['probe_down']" "$J"
   check "while a stopped jail's failed probe changes nothing" \
         "assert d['stopped_probe']=='stopped', d['stopped_probe']" "$J"
+  check "a host whose samples aged out keeps its bare metal, VM or container tab" \
+        "assert d['aged_out']==[[True,False,False],[True,False,True],[True,True,False]], d['aged_out']" "$J"
+  check "and a jail with nothing of its own left is a container on its parent's word" \
+        "assert d['aged_out_guest']==[True,'parent'], d['aged_out_guest']" "$J"
   check "forgetting a jail removes its parent's record of it too" \
         "assert d['forgot'] is None, d['forgot']" "$J"
 

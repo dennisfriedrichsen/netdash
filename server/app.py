@@ -996,9 +996,12 @@ def summarize(sample, now=None):
         down_reason = "unreachable"
 
     virt_override = host_cfg(sample["host"]).get("virt")
-    virt = virt_override if virt_override else sample.get("virt")
+    virt = virt_override or sample.get("virt") or ("jail" if g else None)
+    # "parent": nothing of the jail's own is left to say, but a parent listing
+    # it among its jails says it for it.
     virt_source = ("config" if virt_override
-                   else "host" if sample.get("virt") else None)
+                   else "host" if sample.get("virt")
+                   else "parent" if g else None)
     # Patch status is deliberately NOT part of this rollup. Resource pressure is
     # live and self-clearing; pending patches sit amber for a week and train you
     # to ignore amber. It gets its own badge, and "needs attention" in the header

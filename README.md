@@ -561,8 +561,13 @@ may simply know better than. A per-host `virt` in the config settles it:
 ```
 
 Config wins over the collector, and `virt_source` in the API reports which
-answered — `"config"` or `"host"` — so a value someone typed is never
-indistinguishable from one a machine measured. The card's hover says so too.
+answered — `"config"` or `"host"`, or `"parent"` for a jail known only from its
+parent's list — so a value someone typed is never indistinguishable from one a
+machine measured. The card's hover says so too.
+
+The answer is remembered. A host that goes down keeps its place on the Bare
+metal, VMs or Containers tab, even after its samples have aged out of the
+window, rather than surviving only on All.
 
 ### Jails and containers
 

@@ -1971,7 +1971,8 @@ function currentRoute() {
 /* Hosts that cannot tell whether they are virtualised appear in no filtered
    tab. Guessing would put them in the wrong one, and a host missing
    from a list is easier to notice than one silently misfiled -- the All tab
-   shows everything and says "?" for them. */
+   shows everything and says "?" for them. Being down is not "cannot tell":
+   the server remembers the last answer, so an outage keeps its tab. */
 /* ---------- services table ----------
 
    Every check on one screen, read across: which service, on which host, at

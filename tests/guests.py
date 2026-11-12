@@ -101,6 +101,18 @@ out["probe_down"] = [v3["plexserver"]["status"], v3["plexserver"]["down_reason"]
 # ...but a stopped one is never down, whatever the probe says.
 app.REACH["jellyfin"] = dict(app.REACH["plexserver"])
 out["stopped_probe"] = v3["jellyfin"]["status"]
+# Every sample aged out of the window -- a month-long outage. Each host keeps
+# the tab it had: cerium bare metal, its jail a container, a VM a VM.
+post({"host": "vmhost", "os": "Fedora Linux 43", "virt": "bhyve"}, at=later)
+app.CONN.execute("DELETE FROM samples")
+gone = view(later + 86400 * 30)
+out["aged_out"] = [[gone[h][k] for k in ("no_samples", "is_vm", "is_container")]
+                   for h in ("cerium", "transmission.cerium", "vmhost")]
+# A jail whose samples went before the register remembered virt still has
+# its parent's word.
+app.CONN.execute("UPDATE hosts SET virt=NULL WHERE host='transmission.cerium'")
+out["aged_out_guest"] = [view(later)["transmission.cerium"][k]
+                         for k in ("is_container", "virt_source")]
 # Forgetting a jail takes its guests row with it.
 db.forget_host(app.CONN, "jellyfin")
 out["forgot"] = db.guest(app.CONN, "jellyfin")
