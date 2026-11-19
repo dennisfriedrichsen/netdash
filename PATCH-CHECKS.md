@@ -334,10 +334,38 @@ the base system already schedules. netdash reads and schedules nothing.
 **pkgbase changes the picture.** On a host where the base system is itself
 packages — `FreeBSD-runtime` and friends, which is what the test host runs —
 `freebsd-update` manages nothing, and its `fetch` would pull binary patches for
-a base it does not own. `pkg audit` and `pkg version` already cover base there.
-So pkgbase is detected with `pkg info -e FreeBSD-runtime` and the whole
-freebsd-update branch is skipped, with the source reported as
-`pkg-audit-pkgbase` to say so.
+a base it does not own. So pkgbase is detected with `pkg info -e
+FreeBSD-runtime` and the whole freebsd-update branch is skipped, with the
+source reported as `pkg-audit-pkgbase` to say so.
+
+**`pkg audit` does not cover base on pkgbase**, though it looks as if it
+should. VuXML files base advisories under the names `FreeBSD` and
+`FreeBSD-kernel` with versions like `15.1_6`; pkgbase installs
+`FreeBSD-runtime-15.1p6` and its kin, which match neither the name nor the
+version scheme. Verified on the test host on 2026-11-18: `pkg audit -q
+FreeBSD-15.1_5` is flagged, while `FreeBSD-runtime-15.1p4`,
+`FreeBSD-kernel-generic-15.1p4` and `FreeBSD-15.1p4` -- all vulnerable to
+SA-26:73, fixed in p6 -- pass clean. That same morning p7 shipped for a batch
+of advisories VuXML did not list yet, and the dashboard showed nothing.
+
+So on pkgbase the pending base upgrades are the signal, read from `pkg version
+-o`, where base packages have origins under `base/`. A `base_release_N`
+repository carries only advisories and errata for its release, so an upgrade
+there to a release-patch version (`15.1p7`) counts as **one** security item
+however many packages it touches, and those packages leave the "other" count.
+It is named for what it is, in words:
+
+```
+FreeBSD base system missing security updates: 15.1-RELEASE-p6 to 15.1-RELEASE-p7 in 65 packages (bsnmp clibs ... openssl ... ssh ... zfs zoneinfo)
+```
+
+The packages are folded into components (`openssl`, not `openssl`,
+`openssl-dev` and `openssl-lib32`), which is as much as the host can say about
+what the patch contains: the packages do not name the advisories they fix. The
+name is also the ack key, and it changes when the patch is installed and
+booted, or when a newer one ships. Errata count too, as they do with freebsd-update. Snapshot versions
+(`16.snap20261031234729`, from `base_latest` or `base_weekly`) say nothing
+about security, so a host tracking them keeps its base packages under "other".
 
 **The freebsd-update branch: detection verified on a real 14.4 host, the
 "something is actually pending" path still is not.** `command -v freebsd-update`

@@ -776,14 +776,22 @@ if want patches-dragonfly; then
   # pkg version without -U refreshes first and prints the catalogue lines,
   # captured on both platforms; with -U, on hosts with nothing pending, it
   # prints nothing.
-  B=$(mkbin x uname sysctl)
+  B=$(mkbin x uname sysctl freebsd-version)
   cat > "$B/pkg" <<EOF
 #!/bin/sh
 case "\$*" in
   "audit -F -q"|"update -q") exit 0 ;;
   audit) cat "$FIX/\$NETDASH_PKG_FIX/pkg-audit.txt"; exit 1 ;;
   "version -vRL=") cat "$FIX/\$NETDASH_PKG_FIX/pkg-version-refresh.txt" ;;
-  "version -U -vRL=") [ -z "\$NETDASH_PKG_PENDING" ] || cat "$FIX/freebsd/pkg-version-pending.txt" ;;
+  # The snapshot capture was taken without -o, so it is turned into the origin
+  # form -o prints: FreeBSD-runtime-16.snap... becomes base/FreeBSD-runtime.
+  "version -U -ovRL=")
+    case "\$NETDASH_PKG_PENDING" in
+      "") ;;
+      patch) cat "$FIX/freebsd/pkg-version-pkgbase-patch.txt" ;;
+      *) sed 's|^\([^ ]*\)-[^- ]* |base/\1 |' "$FIX/freebsd/pkg-version-pending.txt" ;;
+    esac ;;
+  "info -e FreeBSD-runtime") [ -n "\$NETDASH_PKGBASE" ] ;;
   *) exit 1 ;;
 esac
 EOF
@@ -809,6 +817,36 @@ EOF
       sh "$ROOT/collectors/bsd/netdash-patchcheck.sh" --print 2>/dev/null) || J=''
   check "with -U and updates pending, each package line is one behind" \
         "assert d['other']==11, d" "$J"
+  # The same snapshot host as pkgbase: snapshot versions say nothing about
+  # security, so its base packages stay other updates.
+  J=$(env "PATH=$B:/usr/bin:/bin" NETDASH_CONF=/dev/null NETDASH_FIXTURES="$FIX" \
+      NETDASH_PKG_FIX=freebsd NETDASH_PKG_PENDING=1 NETDASH_PKGBASE=1 NETDASH_MOCK_OS=FreeBSD \
+      NETDASH_MOCK_REL=16.0-CURRENT \
+      sh "$ROOT/collectors/bsd/netdash-patchcheck.sh" --print 2>/dev/null) || J=''
+  check "pkgbase on snapshots: base packages behind are other, not security" \
+        "assert (d['security'],d['other'],d['source'])==(9,11,'pkg-audit-pkgbase') and 'snapshots' in d['detail'], d" "$J"
+  # rubidium on 2026-11-18: 15.1-RELEASE-p6, with p7 out for advisories VuXML
+  # did not list yet. pkg audit cannot see base on pkgbase at all, so the 65
+  # pending base packages are the only sign, and they are one security item
+  # -- one patch level to install -- named so an ack is against that level.
+  J=$(env "PATH=$B:/usr/bin:/bin" NETDASH_CONF=/dev/null NETDASH_FIXTURES="$FIX" \
+      NETDASH_PKG_FIX=freebsd NETDASH_PKG_PENDING=patch NETDASH_PKGBASE=1 NETDASH_MOCK_OS=FreeBSD \
+      NETDASH_MOCK_REL=15.1-RELEASE-p6 \
+      sh "$ROOT/collectors/bsd/netdash-patchcheck.sh" --print 2>/dev/null) || J=''
+  check "pkgbase on a release: a pending base patch is one security item, out of other" \
+        "assert (d['security'],d['other'])==(10,5) and 'pkg upgrade -r' in d['detail'], d" "$J"
+  # Says what it is in words, from which release to which, how many packages
+  # and what they make up -- openssl once, not openssl, -dev and -lib32 -- and
+  # carries no ", ", which would split it into several entries on the server.
+  check "the pending patch says what it is, how big, and what it touches" \
+        "e=d['packages'].split(', ')[-1]; assert e.startswith('FreeBSD base system missing security updates: 15.1-RELEASE-p6 to 15.1-RELEASE-p7 in 65 packages (bsnmp clibs '), e; assert ' kernel-generic ' in e and ' openssl openssl-lib ' in e and e.endswith(' zoneinfo)') and 'dbg' not in e and '<' not in e, e" "$J"
+  # Nothing pending on pkgbase: base was checked, and says how.
+  J=$(env "PATH=$B:/usr/bin:/bin" NETDASH_CONF=/dev/null NETDASH_FIXTURES="$FIX" \
+      NETDASH_PKG_FIX=freebsd NETDASH_PKGBASE=1 NETDASH_MOCK_OS=FreeBSD \
+      NETDASH_MOCK_REL=15.1-RELEASE-p7 \
+      sh "$ROOT/collectors/bsd/netdash-patchcheck.sh" --print 2>/dev/null) || J=''
+  check "pkgbase with nothing pending: 0 other, base said to be checked" \
+        "assert (d['security'],d['other'])==(9,0) and 'checked by pending pkg upgrades' in d['detail'], d" "$J"
   rm -rf "$B"
 fi
 

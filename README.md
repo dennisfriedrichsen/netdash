@@ -714,7 +714,7 @@ which commands are wrong in ways that fail silently — is in
 | openSUSE Tumbleweed | `zypper list-updates` | **no — rolling, ships no patch metadata** |
 | Alpine | `apk list --upgradable` | **no — nothing on the host consumes secdb** |
 | Slackware | `slackpkg upgrade-all`, declined; ChangeLog `(* Security fix *)` | yes, from the ChangeLog |
-| FreeBSD | `pkg audit`; `freebsd-update updatesready` unless pkgbase | yes, and base separately |
+| FreeBSD | `pkg audit`; `freebsd-update updatesready`, or pending `base/` upgrades on pkgbase | yes, and base separately |
 | DragonFly | `pkg audit` | yes for packages; **base has no patch mechanism** |
 | MidnightBSD | `mport audit` (online CVE feed) + `mport list updates` | yes for packages, **unknown while the feed is down**; base not checked |
 | OpenBSD | `syspatch -c` (base) + `pkg_add -u -n` (packages) | yes, for base |

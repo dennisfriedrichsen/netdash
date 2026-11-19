@@ -33,6 +33,7 @@ numbers are untouched.
 | `dragonfly/pkg-audit.txt` | DragonFly 6.4 | FreeBSD's `pkg audit` wording exactly: 17 problems in 6 packages |
 | `dragonfly/pkg-version-refresh.txt`, `freebsd/pkg-version-refresh.txt` | DragonFly 6.4; FreeBSD 15.1 pkgbase (rubidium) | `pkg version -vRL=` with nothing pending: only the catalogue refresh lines, two per repository and one more |
 | `freebsd/pkg-version-pending.txt` | FreeBSD 16 snapshot, pkgbase (freebsd16pkgbase) | `pkg version -U -vRL=` with 11 base packages behind: one line per package, nothing else |
+| `freebsd/pkg-version-pkgbase-patch.txt` | FreeBSD 15.1-RELEASE-p6 pkgbase (rubidium), 2026-11-18 | `pkg version -U -ovRL=` with p7 out: 65 `base/` origins to 15.1p7 and 5 ports behind |
 | `omnios/kstat-p.txt` | OmniOS r151054by (omnios, bhyve guest) | `kstat -p` lines: `cpu::sys:cpu_nsec_*` (cpu 0 whole, cpu 1 cut short by the capture), `unix:0:system_pages`, `boot_time` |
 | `omnios/df-n.txt` | OmniOS r151054by | `df -n`: `<mount> : <type>`, padded; everything but ZFS is tmpfs, lofs or a kernel pseudo-fs |
 | `omnios/zfs-list.txt` | OmniOS r151054by | `zfs list -Hp -d 0`, name/used/avail of the capture's wider listing |

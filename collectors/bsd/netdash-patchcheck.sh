@@ -182,7 +182,13 @@ FreeBSD|DragonFly)
   # to close. Every FreeBSD and DragonFly host read that many packages behind
   # with nothing pending -- rubidium, with three repositories, sat at 7. `pkg update -q` above has
   # already refreshed them, and with NETDASH_PATCH_REFRESH=no nothing should.
-  OTH=$(run pkg version -U -vRL= | grep -c . || true)
+  #
+  # -o prints the origin instead of name-version, so a pkgbase package reads
+  # base/FreeBSD-runtime and the pkgbase branch below can pick base out from
+  # ports by origin, not by guessing at a FreeBSD- name prefix:
+  #   base/FreeBSD-runtime   <   needs updating (remote has 15.1p7)
+  PKGVER=$(run pkg version -U -ovRL=)
+  OTH=$(printf '%s\n' "$PKGVER" | grep -c . || true)
 
   if [ "$FETCHED" -eq 1 ]; then
     CHECKED=$NOW
@@ -196,13 +202,72 @@ FreeBSD|DragonFly)
     DET="base system not checked (DragonFly ships no binary patch mechanism)"
 
   # Base system. On a pkgbase host the base IS packages -- FreeBSD-runtime and
-  # friends -- so pkg audit and pkg version above already cover it, and
-  # freebsd-update manages nothing here. Running its fetch would download
-  # binary patches for a base it does not own, so pkgbase is detected and that
-  # whole branch skipped. (Verified: the test host runs pkgbase.)
+  # friends -- and freebsd-update manages nothing here. Running its fetch would
+  # download binary patches for a base it does not own, so pkgbase is detected
+  # and that whole branch skipped. (Verified: the test host runs pkgbase.)
+  #
+  # pkg audit does NOT cover base here, though it looks as if it should. VuXML
+  # files base advisories under the names FreeBSD and FreeBSD-kernel with
+  # versions like 15.1_6; pkgbase installs FreeBSD-runtime-15.1p6 and its kin,
+  # which match neither name nor version scheme. Verified on rubidium on
+  # 2026-11-18: `pkg audit -q FreeBSD-15.1_5` is flagged, while
+  # FreeBSD-runtime-15.1p4, FreeBSD-kernel-generic-15.1p4 and FreeBSD-15.1p4
+  # -- all vulnerable to SA-26:73, fixed in p6 -- pass clean. The same morning
+  # p7 shipped for a batch of advisories VuXML did not list yet, and the
+  # dashboard said nothing.
+  #
+  # So pending base upgrades are the signal instead, as freebsd-update's staged
+  # patch is on a traditional host. A base_release_N repository carries only
+  # security advisories and errata for that release, so an upgrade there to a
+  # release-patch version (15.1p7, or 15.1 itself) counts as ONE security item,
+  # however many packages it touches: one patch level, one action. Snapshot
+  # versions (16.snap20261031234729, from base_latest or base_weekly) carry no
+  # such meaning and stay counted as other updates.
   elif pkg info -e FreeBSD-runtime >/dev/null 2>&1; then
-    DET="pkgbase host: base system is covered by pkg, not freebsd-update"
     SRC="pkg-audit-pkgbase"
+    BASEPEND=$(printf '%s\n' "$PKGVER" | awk '$1 ~ /^base\// && /needs updating/')
+    NBASE=$(printf '%s' "$BASEPEND" | grep -c . || true)
+    # The newest release-patch version on offer: 15.1p10 sorts after 15.1p9 by
+    # its patch number, which a plain sort would get wrong.
+    BASETO=$(printf '%s\n' "$BASEPEND" \
+             | sed -n 's/.*(remote has \([0-9][0-9]*\.[0-9][0-9]*\(p[0-9][0-9]*\)\{0,1\}\))$/\1/p' \
+             | awk '{ p = $0; sub(/.*p/, "", p); if ($0 !~ /p/) p = 0
+                      if (best == "" || p + 0 > bp) { best = $0; bp = p + 0 } }
+                    END { printf "%s", best }')
+    if [ "$NBASE" -gt 0 ] && [ -n "$BASETO" ]; then
+      SEC=$((SEC + 1))
+      OTH=$((OTH - NBASE))
+      # What it touches, by component: FreeBSD-openssl, -openssl-dev and
+      # -openssl-lib32 are all openssl. The packages say nothing of which
+      # advisories they fix, and VuXML lists those late or, for pkgbase, never
+      # matches them at all (above), so the components are the most this host
+      # can say about what is in the patch. The -o column runs into the "<" on
+      # long origins (base/FreeBSD-local-unbound-dbg-lib32<), hence [ <].
+      BASEPARTS=$(printf '%s\n' "$BASEPEND" \
+                  | sed -E -e 's|^base/FreeBSD-||' -e 's/[ <].*//' \
+                           -e 's/(-dbg|-dev|-lib32|-man)+$//' \
+                  | sort -u | awk '{ printf "%s%s", (NR > 1 ? " " : ""), $0 }')
+      # The target in the same form as the running version, 15.1-RELEASE-p7
+      # rather than pkg's 15.1p7, so the two read as a pair.
+      BASECUR=$(freebsd-version)
+      case "$BASETO" in
+        *p*) BASETOREL="${BASECUR%-p*}-p${BASETO##*p}" ;;
+        *)   BASETOREL="${BASECUR%-p*}" ;;
+      esac
+      BASEREPO=$(pkg query %R FreeBSD-runtime 2>/dev/null || true)
+      DET="base system security update pending: pkg upgrade -r ${BASEREPO:-FreeBSD-base}, then reboot"
+      # Named in the package list, as the staged freebsd-update patch is, so an
+      # ack is made against this patch level. The running version only moves
+      # once it is installed and booted, and the target moves when a newer
+      # patch ships, so neither an old ack nor a half-done upgrade carries over.
+      # No ", " inside it: the server splits the list on exactly that.
+      SECPKGS=$(printf '%s%sFreeBSD base system missing security updates: %s to %s in %s packages (%s)' \
+                "$SECPKGS" "${SECPKGS:+, }" "$BASECUR" "$BASETOREL" "$NBASE" "$BASEPARTS")
+    elif [ "$NBASE" -gt 0 ]; then
+      DET="pkgbase host tracking snapshots: $NBASE base packages behind, counted as other updates, not security"
+    else
+      DET="pkgbase host: base system checked by pending pkg upgrades, not freebsd-update"
+    fi
 
   # Otherwise base is separate. updatesready needs no network and exits 2 when
   # nothing is staged, 0 when fetched updates are ready.
