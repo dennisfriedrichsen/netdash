@@ -637,6 +637,20 @@ Each jail's patch result is kept on the host, in
 `/var/db/netdash-collector/jails/<name>.json`, never written into the jail.
 Set `NETDASH_JAILS=no` in `collector.conf` to stop a host reporting its jails.
 
+The daily and boot patch check does the host first, then each running jail.
+A jail that was not up yet when it looked — the boot check often runs before
+the jail manager has started anything — or that was added or restarted since,
+is caught by the collector: when a running jail's result is missing or older
+than the jail, it runs `netdash-patchcheck --jails <name>…` in the background,
+which checks just those jails. One such check runs at a time, each jail's is
+cut off after `NETDASH_JAIL_TIMEOUT` seconds (600), and a jail whose check fails
+is retried after 2 minutes, then 4, 8 and so on up to 6 hours, starting over
+when the jail restarts. A failed check leaves the previous result, and its age,
+as it was. A jail that restarts during its check gets no result from it.
+Stopped jails are never started. The collector finds the patch check beside
+itself; set `NETDASH_PATCHCHECK` in `collector.conf` to another path, or to
+`no` to turn this off.
+
 `parent` in the config still works, and wins — for a jail whose host reports
 nothing, such as one on a Linux box:
 

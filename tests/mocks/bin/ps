@@ -1,6 +1,16 @@
 #!/bin/sh
 # Mock ps. Only `ps -ax -o <keyword>=` is used, one keyword per call; each
 # MOCK_PS_* variable is that column for every process, space-separated.
+# `ps -ax -J <jid> -o etimes=`, the host's view of one jail, is answered from
+# $MOCK_PS_JAILDIR/<jid>: the epoch each of its processes started, one per
+# line, so elapsed time grows as it really does and a case can restart that
+# jail mid-run. A jail with no file there has no processes.
+case "$*" in
+  *"-J "*)
+    jid=$(printf '%s\n' "$*" | sed 's/.*-J \([^ ]*\).*/\1/')
+    awk -v now="$(date +%s)" 'NF { print now - $1 }' "${MOCK_PS_JAILDIR:-/nonexistent}/$jid" 2>/dev/null
+    exit 0 ;;
+esac
 case "$*" in
   *%cpu*)   v=$MOCK_PS_CPU ;;
   *rss*)    v=$MOCK_PS_RSS ;;

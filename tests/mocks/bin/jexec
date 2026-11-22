@@ -1,7 +1,21 @@
 #!/bin/sh
 # Mock jexec: run the command "inside" jail $1 by telling the other mocks they
 # are in a jail. Per-jail readings come from MOCK_JAIL_<jid>_* when set.
+#
+# Only a jail the jls mock lists can be entered, as only a running jail can.
+# MOCK_JEXEC_LOG records each entry; MOCK_JEXEC_FAIL names a file holding how
+# many entries fail before they start working; MOCK_JEXEC_SLEEP delays each
+# one; MOCK_JEXEC_HOOK runs before the command, to restart a jail mid-check.
 jid=$1; shift
+jls -h jid name | sed 1d | awk -v j="$jid" '$1 == j { f = 1 } END { exit !f }' || {
+  echo "jexec: jail \"$jid\" not found" >&2; exit 1; }
+[ -n "${MOCK_JEXEC_LOG:-}" ] && echo "$jid" >> "$MOCK_JEXEC_LOG"
+if [ -n "${MOCK_JEXEC_FAIL:-}" ]; then
+  n=$(cat "$MOCK_JEXEC_FAIL" 2>/dev/null || echo 0)
+  if [ "${n:-0}" -gt 0 ]; then echo $((n - 1)) > "$MOCK_JEXEC_FAIL"; exit 1; fi
+fi
+[ -n "${MOCK_JEXEC_SLEEP:-}" ] && sleep "$MOCK_JEXEC_SLEEP"
+[ -n "${MOCK_JEXEC_HOOK:-}" ] && sh -c "$MOCK_JEXEC_HOOK"
 MOCK_JAILED=1; export MOCK_JAILED
 eval "c=\${MOCK_JAIL_${jid}_CPU:-}"; [ -n "$c" ] && MOCK_PS_CPU=$c && export MOCK_PS_CPU
 exec "$@"

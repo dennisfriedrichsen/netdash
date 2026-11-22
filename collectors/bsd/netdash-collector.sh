@@ -389,11 +389,51 @@ jail_boot() { # name -> true|false|null, from rc.conf's jail_enable/jail_list
   if [ -z "$JL" ]; then echo true; return; fi
   case " $JL " in *" $1 "*) echo true ;; *) echo false ;; esac
 }
+# A running jail's patch result is missing, or older than the jail, after a
+# boot that raced the patch check's one look at jls, or once a jail is added or
+# restarted. Noticing is cheap here -- a file read and one ps per jail -- and
+# the check itself is not, so the patch check is asked to do it, in the
+# background, for just those jails (see its "Jails, from the host"). It keeps
+# a retry note per jail, so a jail whose check keeps failing is asked about
+# every few minutes, then hours -- not every minute. NETDASH_PATCHCHECK names
+# the patch check if it is not installed beside this script; "no" turns this
+# off.
+jail_start() { # jid -> when its oldest process started, from the host's ps
+  ps -ax -J "$1" -o etimes= 2>/dev/null | awk -v now="$(date +%s)" '
+    $1+0 > m { m = $1+0 } END { if (m > 0) printf "%d", now - m }'
+}
+jail_due() { # name jid:start -> the patch check's own test, without the lock
+  jc=$(sed -n 's/.*"checked_at":\([0-9][0-9]*\).*/\1/p' "$JSTATE/$1.json" 2>/dev/null | head -1)
+  js=${2#*:}
+  if [ -n "$jc" ]; then [ -n "$js" ] && [ $((jc + 2)) -lt "$js" ] || return 1; fi
+  rg=""; rn=""; rf=""
+  [ -r "$JSTATE/$1.retry" ] && read -r rg rn rf < "$JSTATE/$1.retry" 2>/dev/null || true
+  case "$rn" in ""|*[!0-9]*) return 0 ;; esac
+  # A note from an earlier start of the jail says nothing about this one.
+  [ "${rg%%:*}" = "${2%%:*}" ] || return 0
+  ra=${rg#*:}
+  if [ -n "$ra$js" ]; then
+    [ -n "$ra" ] && [ -n "$js" ] && [ $((ra - js)) -le 2 ] && [ $((js - ra)) -le 2 ] || return 0
+  fi
+  [ "$(date +%s)" -ge "$rn" ]
+}
 JAILS=""
 if [ "$OSNAME" = FreeBSD ] && [ "$JAILED" != 1 ] && [ "${NETDASH_JAILS:-yes}" != no ] \
    && command -v jls >/dev/null 2>&1 && command -v jexec >/dev/null 2>&1; then
   SELF=$(cat "$0" 2>/dev/null || true)
   JSTATE=${NETDASH_JAIL_STATE:-/var/db/netdash-collector/jails}
+  # Never from --print, which only looks.
+  RECHECK=""
+  if [ "$MODE" != --print ]; then
+    if [ -n "${NETDASH_PATCHCHECK:-}" ]; then
+      [ "$NETDASH_PATCHCHECK" = no ] || RECHECK=$NETDASH_PATCHCHECK
+    else
+      for c in "$(dirname "$0")/netdash-patchcheck" "$(dirname "$0")/netdash-patchcheck.sh"; do
+        [ -r "$c" ] && { RECHECK=$c; break; }
+      done
+    fi
+  fi
+  DUE=""
   JTMP=$(mktemp "${TMPDIR:-/tmp}/netdash-jails.XXXXXX")
   RUNNING=" "
   jls -h jid name host.hostname 2>/dev/null | sed 1d > "$JTMP" || true
@@ -409,6 +449,9 @@ if [ "$OSNAME" = FreeBSD ] && [ "$JAILED" != 1 ] && [ "${NETDASH_JAILS:-yes}" !=
     if [ -r "$JSTATE/$JNAME.json" ]; then
       P=$(tr -d '\n' < "$JSTATE/$JNAME.json" 2>/dev/null || true)
       case "$P" in '{'*'}') JP=$P ;; esac
+    fi
+    if [ -n "$RECHECK" ] && jail_due "$JNAME" "$JID:$(jail_start "$JID")"; then
+      DUE="$DUE $JNAME"
     fi
     E=""
     [ -n "$SELF" ] && E=$(env -u ASSUME_ALWAYS_YES NETDASH_CONF=/dev/null NETDASH_JAILS=no \
@@ -442,6 +485,9 @@ if [ "$OSNAME" = FreeBSD ] && [ "$JAILED" != 1 ] && [ "${NETDASH_JAILS:-yes}" !=
     JAILS="$JAILS${JAILS:+,}{\"host\":\"$JNAME\",\"os\":$JOS,\"virt\":\"jail\",\"state\":\"stopped\",\"boot\":$JB}"
   done < "$JTMP"
   rm -f "$JTMP"
+  # Detached and silent: this runs every minute, the check takes as long as it
+  # takes, and its lock turns away a second one asked for meanwhile.
+  [ -n "$DUE" ] && /bin/sh "$RECHECK" --jails $DUE </dev/null >/dev/null 2>&1 &
   EXTRA="$EXTRA,\"jails\":[$JAILS]"
 fi
 

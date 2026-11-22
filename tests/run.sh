@@ -850,6 +850,272 @@ EOF
   rm -rf "$B"
 fi
 
+if want patches-freebsd-jails; then
+  echo "patches-freebsd-jails (a jail missed at boot is checked once it is up)"
+  # Cerium, 2026-11-22: root cron's @reboot check took its one jls snapshot at
+  # 21:36:54, the jails came up at 21:36:57, and the host's result refreshed
+  # while transmission's and plexmediasserver's stayed from before the reboot,
+  # with nothing ever going back for them. Whether that jls came back empty or
+  # the jexec failed was not kept, so both are covered: the collector, which
+  # lists the jails every minute anyway, now asks for a jail-only check when a
+  # running jail's result is missing or older than the jail.
+  T=$(mktemp -d)
+  B=$(mkbin x uname sysctl freebsd-version jls jexec ps stat hostname df zfs zpool ifconfig sysrc)
+  # FreeBSD has lockf(1) in base; elsewhere the test brings a stand-in.
+  PATH=/usr/bin:/bin command -v lockf >/dev/null 2>&1 || ln -s "$SHIMS/lockf" "$B/lockf"
+  cat > "$B/pkg" <<EOF
+#!/bin/sh
+case "\$*" in
+  "audit -F -q") [ -n "\$NETDASH_PKG_FETCH_FAIL" ] && echo "pkg: fetch failed" >&2; exit 0 ;;
+  "update -q") exit 0 ;;
+  audit) cat "$FIX/freebsd/pkg-audit.txt"; exit 1 ;;
+  "version -U -ovRL=") ;;
+  "info -e FreeBSD-runtime") exit 0 ;;
+  *) exit 1 ;;
+esac
+EOF
+  # Stands in for the patch check when the collector's request is all a case
+  # looks at.
+  printf '#!/bin/sh\necho "$*" >> "%s/requested"\n' "$T" > "$T/recorder"
+  # Nowhere to post to: curl's "could not connect", which the collector takes quietly.
+  printf '#!/bin/sh\nexit 7\n' > "$B/curl"
+  chmod +x "$B/pkg" "$T/recorder" "$B/curl"
+  mkdir -p "$T/jails" "$T/ps"
+  OLD='{"security":0,"other":0,"reboot_required":null,"checked_at":1700000000,"source":"pkg-audit-pkgbase","detail":"before the reboot","packages":""}'
+
+  pc() { # script args (split), [VAR=value ...] -> the patch check, stderr to $T/err
+    a=$1; shift
+    env "PATH=$B:/usr/bin:/bin" NETDASH_CONF=/dev/null NETDASH_FIXTURES="$FIX" \
+        NETDASH_MOCK_OS=FreeBSD NETDASH_MOCK_REL=15.1-RELEASE-p7 NETDASH_MOCK_MTIME=1690000000 \
+        NETDASH_PATCH_STATE="$T/patches.json" NETDASH_JAIL_STATE="$T/jails" \
+        MOCK_JLS_FILE="$T/jls" MOCK_PS_JAILDIR="$T/ps" MOCK_JEXEC_LOG="$T/jexec" \
+        "$@" sh "$ROOT/collectors/bsd/netdash-patchcheck.sh" $a 2>"$T/err"
+  }
+  col() { # collector args (split), [VAR=value ...] -> runs the collector, posting nowhere
+    a=$1; shift
+    env "PATH=$B:/usr/bin:/bin" NETDASH_CONF=/dev/null NETDASH_FIXTURES="$FIX" NETDASH_MOCK_TMP="$T" \
+        NETDASH_URL=http://127.0.0.1:9/ NETDASH_MOCK_OS=FreeBSD NETDASH_MOCK_REL=15.1-RELEASE-p7 \
+        MOCK_PHYSMEM=32090000000 MOCK_PAGESIZE=4096 MOCK_FREE=3000000 MOCK_INACT=1500000 \
+        MOCK_BOOTTIME="{ sec = 1787700000, usec = 0 }" NETDASH_MOCK_DF=df-k-root \
+        NETDASH_JAIL_STATE="$T/jails" NETDASH_JAIL_CONF=/nonexistent NETDASH_PATCHCHECK="$T/recorder" \
+        MOCK_JLS_FILE="$T/jls" MOCK_PS_JAILDIR="$T/ps" \
+        "$@" sh "$ROOT/collectors/bsd/netdash-collector.sh" $a >/dev/null 2>&1
+    rm -f "$T/tick"
+  }
+  requested() { # -> what the collector asked for, once the background request lands
+    n=0; while [ ! -s "$T/requested" ] && [ $n -lt 30 ]; do sleep 0.1; n=$((n + 1)); done
+    cat "$T/requested" 2>/dev/null || true; rm -f "$T/requested"
+  }
+  not_requested() { sleep 1; cat "$T/requested" 2>/dev/null || true; rm -f "$T/requested"; }
+  state() { # jail -> its result file, the retry note beside it, and when it was checked
+    python3 - "$T" "$1" <<'PY'
+import json,os,sys,time
+t,j=sys.argv[1],sys.argv[2]
+p=f"{t}/jails/{j}.json"; r=f"{t}/jails/{j}.retry"
+d={"now":int(time.time()),"exists":os.path.exists(p),
+   "raw":open(p).read() if os.path.exists(p) else None,
+   "retry":open(r).read().split() if os.path.exists(r) else None,
+   "files":sorted(f for f in os.listdir(f"{t}/jails") if not f.startswith(".")) if os.path.isdir(f"{t}/jails") else None,
+   "host":json.load(open(f"{t}/patches.json")) if os.path.exists(f"{t}/patches.json") else None,
+   "jexec":open(f"{t}/jexec").read().split() if os.path.exists(f"{t}/jexec") else [],
+   "err":open(f"{t}/err").read() if os.path.exists(f"{t}/err") else ""}
+d["checked_at"]=json.loads(d["raw"])["checked_at"] if d["raw"] else None
+print(json.dumps(d))
+PY
+  }
+  due_now() { # jail -> its retry note, brought forward to now (as if waited out)
+    [ -r "$T/jails/$1.retry" ] || return 0
+    read -r g n f < "$T/jails/$1.retry"; echo "$g 1 $f" > "$T/jails/$1.retry"
+  }
+  ago() { echo $(( $(date +%s) - $1 )); } # seconds -> the epoch that long ago
+  reset() { # running jails (jid name, one per line) -> a fresh host
+    rm -rf "$T/jails" "$T/ps" "$T/jexec" "$T/patches.json" "$T/requested" "$T/fail"
+    mkdir -p "$T/jails" "$T/ps"
+    printf '%s' "$1" > "$T/jls"
+    for jid in $(printf '%s\n' "$1" | awk 'NF { print $1 }'); do ago 600 > "$T/ps/$jid"; done
+  }
+
+  # -- The boot race: an empty jls leaves the old results; the host goes on. --
+  reset ""
+  printf '%s\n' "$OLD" > "$T/jails/transmission.json"
+  printf '%s\n' "$OLD" > "$T/jails/plexmediasserver.json"
+  pc "" || true
+  J=$(state transmission)
+  check "boot run before the jails start: the host's own result is published" \
+        "assert d['host'] and d['host']['checked_at'] >= d['now']-60, d" "$J"
+  check "and both jails' preboot results are left as they were, not refreshed or faked" \
+        "assert d['checked_at']==1700000000 and d['jexec']==[], d" "$J"
+  # The jails come up three seconds later, under jids the snapshot never saw.
+  printf '3 transmission transmission\n4 plexmediasserver plexmediasserver\n' > "$T/jls"
+  ago 600 > "$T/ps/3"; ago 600 > "$T/ps/4"
+  col ""
+  R=$(requested)
+  check "the collector sees both results predate their jails and asks for just those" \
+        "assert d=='--jails transmission plexmediasserver', d" "\"$R\""
+  # A marker in place of the host's result: a jail-only check must not touch it.
+  printf '{"marker":1}\n' > "$T/patches.json"
+  pc "--jails transmission plexmediasserver" || true
+  J=$(state transmission)
+  check "the jail-only check refreshes the late jail from inside it" \
+        "assert d['checked_at'] >= d['now']-60 and d['retry'] is None, d" "$J"
+  J=$(state plexmediasserver)
+  check "plexmediasserver too, each entered once, and the host is not re-checked" \
+        "assert d['checked_at'] >= d['now']-60 and sorted(d['jexec'])==['3','4'] and d['host']=={'marker':1}, d" "$J"
+  check "results land whole in the host-side directory, nothing temporary left behind" \
+        "assert d['files']==['plexmediasserver.json','transmission.json'], d['files']" "$J"
+  col ""
+  R=$(not_requested)
+  check "with every result newer than its jail the collector asks for nothing" \
+        "assert d=='', d" "\"$R\""
+
+  # -- The jail is up but jexec fails at first (not ready), then works. --
+  reset "3 transmission transmission"
+  printf '%s\n' "$OLD" > "$T/jails/transmission.json"
+  echo 1 > "$T/fail"
+  pc "--jails transmission" MOCK_JEXEC_FAIL="$T/fail" || true
+  J=$(state transmission)
+  check "a failed jail check keeps the old result byte for byte, checked_at and all" \
+        "assert d['raw'].strip()==json.dumps(json.loads('''$OLD'''),separators=(',',':')) and d['checked_at']==1700000000, d" "$J"
+  check "and notes a retry after two minutes, against this start of the jail" \
+        "r=d['retry']; assert r[0].startswith('3:') and r[2]=='1' and 110 <= int(r[1])-d['now'] <= 125, r" "$J"
+  col ""
+  R=$(not_requested)
+  check "the collector does not ask again before the retry is due" \
+        "assert d=='', d" "\"$R\""
+  due_now transmission
+  col ""
+  R=$(requested)
+  check "once it is due, it asks again" \
+        "assert d=='--jails transmission', d" "\"$R\""
+  pc "--jails transmission" MOCK_JEXEC_FAIL="$T/fail" || true
+  J=$(state transmission)
+  check "and the second attempt recovers: fresh result, retry note gone" \
+        "assert d['checked_at'] >= d['now']-60 and d['retry'] is None, d" "$J"
+
+  # -- No result at all: a jail added since the last daily check. --
+  reset "5 aaadw aaadw"
+  col ""
+  R=$(requested)
+  check "a running jail with no result is asked for" \
+        "assert d=='--jails aaadw', d" "\"$R\""
+  pc "--jails aaadw" || true
+  J=$(state aaadw)
+  check "and gets one" \
+        "assert d['exists'] and d['checked_at'] >= d['now']-60, d" "$J"
+
+  # -- Restarts. --
+  reset "3 transmission transmission"
+  printf '{"security":0,"other":0,"reboot_required":null,"checked_at":%s,"source":"x","detail":"","packages":""}\n' \
+    "$(( $(date +%s) - 300 ))" > "$T/jails/transmission.json"
+  col ""
+  R=$(not_requested)
+  check "a result taken since the jail started is current, and left alone" \
+        "assert d=='', d" "\"$R\""
+  # Restarted a minute ago, after that result, under the same jid; a retry
+  # note from before the restart says nothing about this start.
+  ago 60 > "$T/ps/3"
+  echo "3:1 $(( $(date +%s) + 3600 )) 4" > "$T/jails/transmission.retry"
+  col ""
+  R=$(requested)
+  check "a jail restarted since its result is asked for, whatever an older retry note says" \
+        "assert d=='--jails transmission', d" "\"$R\""
+  # Restarted DURING the check: a new jid, the same jid with a new start (jid
+  # reuse), or the jid now holding another jail. Nothing is published for any.
+  for hook in "printf '7 transmission transmission\n' > $T/jls; date +%s > $T/ps/7" \
+              "date +%s > $T/ps/3" \
+              "printf '3 aaadx aaadx\n' > $T/jls"; do
+    reset "3 transmission transmission"
+    printf '%s\n' "$OLD" > "$T/jails/transmission.json"
+    pc "--jails transmission" MOCK_JEXEC_HOOK="$hook" || true
+    J=$(state transmission)
+    check "restarted mid-check ($(printf '%s' "$hook" | cut -c1-22)...): the old result stands" \
+          "assert d['checked_at']==1700000000 and 'restarted' in d['err'], d" "$J"
+  done
+
+  # -- Two at once: one does the work, the other leaves straight away. --
+  reset "3 transmission transmission"
+  pc "--jails transmission" MOCK_JEXEC_SLEEP=3 &
+  BG=$!
+  n=0; while [ ! -s "$T/jexec" ] && [ $n -lt 50 ]; do sleep 0.1; n=$((n + 1)); done
+  S=$(date +%s)
+  env "PATH=$B:/usr/bin:/bin" NETDASH_CONF=/dev/null NETDASH_MOCK_OS=FreeBSD NETDASH_FIXTURES="$FIX" \
+      NETDASH_PATCH_STATE="$T/patches.json" NETDASH_JAIL_STATE="$T/jails" MOCK_JLS_FILE="$T/jls" MOCK_PS_JAILDIR="$T/ps" MOCK_JEXEC_LOG="$T/jexec" \
+      sh "$ROOT/collectors/bsd/netdash-patchcheck.sh" --jails transmission 2>/dev/null || true
+  E=$(( $(date +%s) - S ))
+  kill -0 $BG 2>/dev/null && STILL=1 || STILL=0
+  wait $BG || true
+  J=$(state transmission)
+  check "a second worker started mid-check returns at once, while the first carries on" \
+        "assert $E <= 1 and $STILL == 1, ($E, $STILL)" "$J"
+  check "and the jail is entered once, not twice" \
+        "assert d['jexec']==['3'] and d['checked_at'] >= d['now']-60, d" "$J"
+
+  # -- A check that hangs is cut off, and backs off. --
+  if PATH=/usr/bin:/bin command -v timeout >/dev/null 2>&1; then
+    reset "3 transmission transmission"
+    printf '%s\n' "$OLD" > "$T/jails/transmission.json"
+    S=$(date +%s)
+    pc "" MOCK_JEXEC_SLEEP=8 NETDASH_JAIL_TIMEOUT=1 || true
+    E=$(( $(date +%s) - S ))
+    J=$(state transmission)
+    check "a hung jail check is stopped at its time limit" \
+          "assert $E < 6, $E" "$J"
+    check "the host's result is published regardless, the jail's old one kept" \
+          "assert d['host']['checked_at'] >= d['now']-60 and d['checked_at']==1700000000, d" "$J"
+    due_now transmission
+    pc "--jails transmission" MOCK_JEXEC_SLEEP=8 NETDASH_JAIL_TIMEOUT=1 || true
+    J=$(state transmission)
+    check "each failure doubles the wait: four minutes after the second" \
+          "r=d['retry']; assert r[2]=='2' and 230 <= int(r[1])-d['now'] <= 245, r" "$J"
+    read -r g n f < "$T/jails/transmission.retry"; echo "$g 1 20" > "$T/jails/transmission.retry"
+    pc "--jails transmission" MOCK_JEXEC_SLEEP=8 NETDASH_JAIL_TIMEOUT=1 || true
+    J=$(state transmission)
+    check "up to a ceiling of six hours" \
+          "r=d['retry']; assert r[2]=='21' and 21590 <= int(r[1])-d['now'] <= 21605, r" "$J"
+  else
+    echo "  (timeout cases SKIPPED -- no timeout(1) here)"
+  fi
+
+  # -- A result that dates itself before the old one does not replace it. --
+  reset "3 transmission transmission"
+  printf '%s\n' "$OLD" > "$T/jails/transmission.json"
+  pc "--jails transmission" NETDASH_PKG_FETCH_FAIL=1 || true
+  J=$(state transmission)
+  check "a jail check dated by an older database than the kept result changes nothing" \
+        "assert d['checked_at']==1700000000 and d['retry'] is not None, d" "$J"
+
+  # -- Stopped and switched-off jails. --
+  reset "3 transmission transmission"
+  pc "--jails backup" || true
+  J=$(state backup)
+  check "a jail that is not running is not entered, started, or given a result" \
+        "assert d['jexec']==[] and not d['exists'], d" "$J"
+  pc "--jails transmission" NETDASH_JAILS=no || true
+  J=$(state transmission)
+  check "NETDASH_JAILS=no: a jail-only check does nothing at all" \
+        "assert d['jexec']==[] and d['files']==[], d" "$J"
+  col "" NETDASH_JAILS=no
+  R=$(not_requested)
+  check "and the collector asks for nothing" \
+        "assert d=='', d" "\"$R\""
+
+  # -- --print writes nothing and starts nothing. --
+  reset "3 transmission transmission"
+  printf '%s\n' "$OLD" > "$T/jails/transmission.json"
+  J=$(pc "--print") || J=''
+  check "patch check --print still prints the host's result" \
+        "assert d['source']=='pkg-audit-pkgbase', d" "$J"
+  J=$(state transmission)
+  check "while entering no jail and writing no file, host or jail" \
+        "assert d['jexec']==[] and d['host'] is None and d['files']==['transmission.json'] and d['checked_at']==1700000000, d" "$J"
+  col "--print"
+  R=$(not_requested)
+  check "and the collector's --print asks for no check" \
+        "assert d=='', d" "\"$R\""
+
+  rm -rf "$T" "$B"
+fi
+
 # ---------------------------------------------------------------- illumos ----
 if want omnios; then
   echo "omnios (kstat, not sysctl; the release from /etc/release; global zone only)"

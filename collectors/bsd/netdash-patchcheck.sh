@@ -9,6 +9,8 @@
 #
 #   netdash-patchcheck.sh            # check, write the state file
 #   netdash-patchcheck.sh --print    # check, print, write nothing
+#   netdash-patchcheck.sh --jails [NAME...]  # FreeBSD: just these jails (all if
+#                                    # none named); see "Jails, from the host"
 #
 # The BSDs answer different questions, and most of them cannot answer at all
 # for part of the system:
@@ -59,8 +61,7 @@ run() { "$@" 2>/dev/null || true; }
 # The collector lists this host's jails (see its "Jails, from the host"); this
 # is their patch status, checked the same way it would be from inside: THIS
 # script, run in each running jail with jexec, so the jail-aware base checks
-# apply and pkg reads the jail's own packages. Done first, so a host whose own
-# check bails out early -- no vulnerability database -- still checks its jails.
+# apply and pkg reads the jail's own packages.
 #
 # Each result is kept on the host, under a directory only root writes, keyed by
 # jail name: never inside the jail's filesystem, where the jail's root could
@@ -70,29 +71,153 @@ run() { "$@" 2>/dev/null || true; }
 # As in the collector, the script is sh -c's argument and stdin is /dev/null,
 # so pkg's bootstrap prompt in a jail without pkg reads end-of-file and
 # declines; that jail's check then fails, and it reads unknown.
-if [ "$OSNAME" = FreeBSD ] && [ "$JAILED" != 1 ] && [ "${NETDASH_JAILS:-yes}" != no ] \
-   && [ "$MODE" != "--print" ] && command -v jls >/dev/null 2>&1; then
-  JSTATE=${NETDASH_JAIL_STATE:-/var/db/netdash-collector/jails}
+#
+# Two ways in:
+#   netdash-patchcheck                 host first, then every running jail
+#   netdash-patchcheck --jails NAME..  only those jails, only where needed
+# The second is what the collector asks for, in the background, when a running
+# jail's result is missing or older than the jail. A single snapshot of jls at
+# boot was all there used to be: on Cerium the @reboot run listed the jails at
+# 21:36:54, they started at 21:36:57, and their pre-reboot results stood until
+# the next daily run. The collector lists jails every minute anyway, so it is
+# the one that notices; the work stays here.
+#
+# A jail is identified by its jid and its start -- when its oldest process
+# started, the same moment the server dates a jail's boot by -- read before
+# and after its check. A jail that stopped, restarted or gave its jid to
+# another jail in between gets nothing published: that result describes a jail
+# that is no longer there.
+#
+# A failed check leaves the previous result and its checked_at alone, to age
+# into "unknown" exactly as the host's own check does, and writes a retry note
+# beside it: two minutes, doubling to a ceiling of six hours, reset whenever
+# the jail restarts. The note is written BEFORE the attempt, so a run that
+# dies outright still holds the next one off. One check runs at a time, under
+# lockf(1); each jail's is cut off after NETDASH_JAIL_TIMEOUT seconds.
+JSTATE=${NETDASH_JAIL_STATE:-/var/db/netdash-collector/jails}
+JTIMEOUT=${NETDASH_JAIL_TIMEOUT:-600}
+JRETRY_MAX=${NETDASH_JAIL_RETRY_MAX:-21600}
+
+jails_wanted() {
+  [ "$OSNAME" = FreeBSD ] && [ "$JAILED" != 1 ] && [ "${NETDASH_JAILS:-yes}" != no ] \
+    && command -v jls >/dev/null 2>&1 && command -v jexec >/dev/null 2>&1
+}
+# jid name -> "jid:start" while that jid is that jail, nothing otherwise. The
+# start is empty for a jail with no processes yet. Read from the host's ps,
+# never from anything inside the jail.
+jail_gen() {
+  jls -h jid name 2>/dev/null | sed 1d \
+    | awk -v j="$1" -v n="$2" '$1 == j && $2 == n { f = 1 } END { exit !f }' || return 0
+  printf '%s:%s\n' "$1" "$(ps -ax -J "$1" -o etimes= 2>/dev/null | awk -v now="$(date +%s)" '
+    $1+0 > m { m = $1+0 } END { if (m > 0) printf "%d", now - m }')"
+}
+# Two readings of one start differ by etimes' rounding, a second or two.
+same_gen() {
+  [ -n "$1" ] && [ "${1%%:*}" = "${2%%:*}" ] || return 1
+  ga=${1#*:}; gb=${2#*:}
+  [ -z "$ga$gb" ] && return 0
+  [ -n "$ga" ] && [ -n "$gb" ] && [ $((ga - gb)) -le 2 ] && [ $((gb - ga)) -le 2 ]
+}
+checked_of() { sed -n 's/.*"checked_at":\([0-9][0-9]*\).*/\1/p' "$1" 2>/dev/null | head -1; }
+# name gen -> the retry note's "next failures" for this start of the jail, or
+# "0 0" when there is none for it.
+retry_of() {
+  rg=""; rn=""; rf=""
+  [ -r "$JSTATE/$1.retry" ] && read -r rg rn rf < "$JSTATE/$1.retry" 2>/dev/null || true
+  case "$rn$rf" in *[!0-9]*) rg="" ;; esac
+  if [ -n "$rn" ] && [ -n "$rf" ] && same_gen "$rg" "$2"; then echo "$rn $rf"; else echo "0 0"; fi
+}
+# name gen -> succeeds when the jail's result is missing, or older than this
+# start of the jail, and no retry for this start is still pending. The same
+# test as the collector's.
+jail_due() {
+  jc=$(checked_of "$JSTATE/$1.json"); js=${2#*:}
+  if [ -n "$jc" ]; then [ -n "$js" ] && [ $((jc + 2)) -lt "$js" ] || return 1; fi
+  set -- $(retry_of "$1" "$2")
+  [ "$(date +%s)" -ge "$1" ]
+}
+put() { # file content -> replaces file whole, or leaves it as it was
+  pt=$(mktemp "$1.XXXXXX") || return 1
+  if printf '%s\n' "$2" > "$pt" && chmod 644 "$pt" && mv -f "$pt" "$1"; then return 0; fi
+  rm -f "$pt"; return 1
+}
+check_jail() { # jid name -> checks that running jail, publishing only a sound result
+  G0=$(jail_gen "$1" "$2")
+  [ -n "$G0" ] || { echo "netdash-patchcheck: jail $2 is not running; not checked" >&2; return 0; }
+  set -- "$1" "$2" $(retry_of "$2" "$G0")
+  n=$(($4 + 1)); delay=120; i=1
+  while [ $i -lt $n ] && [ $delay -lt "$JRETRY_MAX" ]; do delay=$((delay * 2)); i=$((i + 1)); done
+  [ $delay -le "$JRETRY_MAX" ] || delay=$JRETRY_MAX
+  put "$JSTATE/$2.retry" "$G0 $(( $(date +%s) + delay )) $n" || return 0
+  TO=""
+  command -v timeout >/dev/null 2>&1 && TO="timeout -k 10 $JTIMEOUT"
+  OUT=$(env -u ASSUME_ALWAYS_YES NETDASH_CONF=/dev/null NETDASH_JAILS=no \
+        NETDASH_PATCH_REFRESH="$REFRESH" \
+        $TO jexec "$1" /bin/sh -c "$SELF" netdash-patchcheck --print </dev/null 2>/dev/null || true)
+  if ! same_gen "$G0" "$(jail_gen "$1" "$2")"; then
+    echo "netdash-patchcheck: jail $2 stopped or restarted during its check; keeping the previous result" >&2
+    return 0
+  fi
+  NEWC=""
+  case "$OUT" in '{'*'}') NEWC=$(printf '%s' "$OUT" | sed -n 's/.*"checked_at":\([0-9][0-9]*\).*/\1/p' | head -1) ;; esac
+  if [ -z "$NEWC" ]; then
+    echo "netdash-patchcheck: jail $2: no result; keeping the previous one" >&2
+    return 0
+  fi
+  # A check that could not refresh dates itself by its package database, which
+  # may be older than the result already kept. That is no newer reading.
+  OLDC=$(checked_of "$JSTATE/$2.json")
+  if [ -n "$OLDC" ] && [ "$NEWC" -lt "$OLDC" ]; then
+    echo "netdash-patchcheck: jail $2: result no newer than the one kept; keeping that" >&2
+    return 0
+  fi
+  put "$JSTATE/$2.json" "$OUT" || return 0
+  # Current only once it postdates this start of the jail; until then the
+  # retry note stands, and the collector asks again when it is due.
+  js=${G0#*:}
+  if [ -z "$js" ] || [ $((NEWC + 2)) -ge "$js" ]; then rm -f "$JSTATE/$2.retry"; fi
+}
+
+case "$MODE" in
+--jails|--jails-locked)
+  jails_wanted || exit 0
+  mkdir -p "$JSTATE" && chmod 755 "$JSTATE" || exit 1
+  # Named jails are the collector's request: none waits, a busy lock means a
+  # check is already running, and that one is left to it. The full pass is the
+  # daily and boot run's, and waits its turn for up to an hour.
+  if [ "$MODE" = --jails ]; then
+    shift
+    if [ $# -gt 0 ]; then
+      exec lockf -k -s -t 0 "$JSTATE/.lock" /bin/sh "$0" --jails-locked "$@"
+    fi
+    exec lockf -k -t 3600 "$JSTATE/.lock" /bin/sh "$0" --jails-locked
+  fi
+  shift
   SELF=$(cat "$0" 2>/dev/null || true)
-  if [ -n "$SELF" ] && mkdir -p "$JSTATE" 2>/dev/null; then
-    chmod 755 "$JSTATE" 2>/dev/null || true
+  [ -n "$SELF" ] || exit 1
+  if [ $# -gt 0 ]; then
+    for JNAME in "$@"; do
+      case "$JNAME" in ""|*[!A-Za-z0-9_.-]*) continue ;; esac
+      JID=$(jls -h jid name 2>/dev/null | sed 1d | awk -v n="$JNAME" '$2 == n { print $1; exit }')
+      [ -n "$JID" ] || continue
+      jail_due "$JNAME" "$(jail_gen "$JID" "$JNAME")" && check_jail "$JID" "$JNAME"
+    done
+  else
     jls -h jid name 2>/dev/null | sed 1d | while read -r JID JNAME; do
       case "$JNAME" in ""|*[!A-Za-z0-9_.-]*) continue ;; esac
-      OUT=$(env -u ASSUME_ALWAYS_YES NETDASH_CONF=/dev/null NETDASH_JAILS=no \
-            NETDASH_PATCH_REFRESH="$REFRESH" \
-            jexec "$JID" /bin/sh -c "$SELF" netdash-patchcheck --print </dev/null 2>/dev/null || true)
-      case "$OUT" in
-        '{'*'}')
-          printf '%s\n' "$OUT" > "$JSTATE/$JNAME.json.tmp" &&
-            mv "$JSTATE/$JNAME.json.tmp" "$JSTATE/$JNAME.json" &&
-            chmod 644 "$JSTATE/$JNAME.json" ;;
-        # A failed check leaves the previous result to age into "unknown",
-        # exactly as the host's own check does.
-        *) echo "netdash-patchcheck: jail $JNAME: no result; keeping the previous one" >&2 ;;
-      esac
+      check_jail "$JID" "$JNAME"
     done
   fi
-fi
+  exit 0
+  ;;
+--print) ;;
+*)
+  # The host's own result is published first and never waits on a jail; the
+  # jails follow as the script exits, however the host's check ended -- one
+  # that bails out early, with no vulnerability database, still checks them.
+  trap 'rc=$?; trap - EXIT; jails_wanted && /bin/sh "$0" --jails || true; exit $rc' EXIT
+  ;;
+esac
 
 # BSD stat(1), not GNU: -f %m, not -c %Y.
 mtime() { [ -e "$1" ] && stat -f %m "$1" 2>/dev/null || true; }

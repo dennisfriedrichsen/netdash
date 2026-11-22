@@ -1,7 +1,13 @@
 #!/bin/sh
 # Mock jls. Only `jls -h jid name host.hostname` (collector) and
-# `jls -h jid name` (patch check) are used: a header line, then one row per
-# running jail from MOCK_JLS ("jid name hostname", newline-separated).
-echo "jid name host.hostname"
-[ -n "${MOCK_JLS:-}" ] && printf '%s\n' "$MOCK_JLS"
+# `jls -h jid name` (patch check) are used: a header line naming the columns
+# asked for, then one row per running jail from MOCK_JLS ("jid name hostname",
+# newline-separated), cut to those columns. MOCK_JLS_FILE, when set, is read
+# instead on every call, so a case can start, stop or restart a jail between
+# two calls.
+shift
+echo "$*"
+if [ -n "${MOCK_JLS_FILE:-}" ]; then cat "$MOCK_JLS_FILE" 2>/dev/null
+elif [ -n "${MOCK_JLS:-}" ]; then printf '%s\n' "$MOCK_JLS"
+fi | awk -v n=$# 'NF { out = $1; for (i = 2; i <= n; i++) out = out " " $i; print out }'
 exit 0

@@ -1,0 +1,22 @@
+#!/bin/sh
+# Stand-in for FreeBSD's lockf(1), linked in only where the system has none:
+# `lockf [-ks] [-t seconds] file command...`. A directory beside the file is
+# the lock -- fine for a test, where nothing is killed holding it. Exits 75,
+# EX_TEMPFAIL, when the lock is not had in time, as lockf does.
+t=-1
+while :; do
+  case "$1" in
+    -t) t=$2; shift 2 ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+f=$1; shift
+w=0
+until mkdir "$f.mocklock" 2>/dev/null; do
+  [ "$t" -ge 0 ] && [ "$w" -ge "$t" ] && exit 75
+  sleep 1; w=$((w + 1))
+done
+"$@"; rc=$?
+rmdir "$f.mocklock"
+exit $rc
