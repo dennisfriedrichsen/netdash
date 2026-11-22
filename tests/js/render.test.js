@@ -1188,4 +1188,94 @@ check('collector_less_host_card_and_detail', function () {
   if (/netdash-patchcheck/.test(textOf(ctx.root))) throw new Error(textOf(ctx.root));
 });
 
+/* Reboot against acknowledgement. An ack silences reviewed packages, never the
+   reboot, so a host whose whole list is acknowledged but which is still on the
+   old kernel shows "reboot required" -- cerium read a muted "9 security" on
+   15.1-p6 with p7 installed. Anything short of a full ack stays security-first.
+   Each case is read off all three places the badge is drawn: the card's row,
+   the All tab's flag, and the big line on the detail page. */
+function patchViews(p) {
+  var card = ctx.patchRow(p);
+  var flag = findClass(ctx.compactRow(host({ patches: p })), 'cflag');
+  ctx.renderDetail('cerium', detail(host({ patches: p })));
+  var panel = null;
+  (function walk(n) {
+    if (panel || !n || typeof n !== 'object') return;
+    if (n.className === 'panel' && n.children && n.children[0] &&
+        n.children[0].textContent === 'Patch status') { panel = n; return; }
+    (n.children || []).forEach(walk);
+  })(ctx.root);
+  if (!panel) throw new Error('no Patch status panel on the detail page');
+  var big = findClass(panel, 'big');
+  return {
+    cardText: textOf(findClass(card, 'pval')).trim(), cardGlyph: textOf(findClass(card, 'pglyph')).trim(),
+    cardCss: card.style['--st'], flagGlyph: flag.textContent, flagColor: flag.style.color,
+    bigText: textOf(big).trim(), bigColor: big.style.color, panel: textOf(panel),
+    ackRows: countClass(panel, 'ackrow')
+  };
+}
+function expectViews(v, text, glyph, css, flagColor) {
+  [['card text', v.cardText, text], ['card glyph', v.cardGlyph, glyph],
+   ['card colour', v.cardCss, css], ['flag glyph', v.flagGlyph, glyph],
+   ['flag colour', v.flagColor, flagColor], ['detail text', v.bigText, text],
+   ['detail colour', v.bigColor, css]].forEach(function (c) {
+    if (c[1] !== c[2]) throw new Error(c[0] + ' is ' + JSON.stringify(c[1]) +
+                                       ', wanted ' + JSON.stringify(c[2]));
+  });
+}
+var NINE_PKGS = ['FreeBSD-kernel-generic', 'FreeBSD-runtime', 'FreeBSD-utilities',
+                 'FreeBSD-libarchive', 'FreeBSD-openssl', 'FreeBSD-ssh', 'FreeBSD-clibs',
+                 'FreeBSD-rescue', 'FreeBSD-bootloader'];
+function nine(ackedHowMany, extra) {
+  return SEC(NINE_PKGS.map(function (n, i) { return item(n, i < ackedHowMany); }),
+             merge({ unnamed_count: 0, source: 'pkg-audit-pkgbase' }, extra || {}));
+}
+check('reboot_beats_a_fully_acknowledged_security_list', function () {
+  var p = nine(9, { reboot_required: true });
+  if (!p.acknowledged || p.status !== 'security') throw new Error('fixture is not cerium');
+  var v = patchViews(p);
+  expectViews(v, 'reboot required', '⭮', 'var(--st-crit)', 'var(--st-crit)');
+  /* The list and its controls are untouched: still nine security, every one
+     still offering its way back to pending, and the bulk un-acknowledge. */
+  if (v.panel.indexOf('9 security') < 0) throw new Error('the count is gone: ' + v.panel);
+  if (v.ackRows !== 10) throw new Error('wanted 9 ack rows + bulk, got ' + v.ackRows);
+  if (v.panel.indexOf('un-acknowledge all') < 0) throw new Error('no way to un-acknowledge: ' + v.panel);
+  if (v.panel.indexOf('until this host reboots') < 0) throw new Error('reboot line gone: ' + v.panel);
+  if (ctx.patchTitle(p).indexOf('acknowledged') < 0) throw new Error('tooltip lost the ack');
+});
+check('reboot_does_not_beat_an_unacknowledged_security_list', function () {
+  var v = patchViews(nine(0, { reboot_required: true }));
+  expectViews(v, '9 security', '✕', 'var(--st-crit)', 'var(--st-crit)');
+  if (v.panel.indexOf('acknowledge all 9') < 0) throw new Error('no bulk ack: ' + v.panel);
+});
+check('reboot_does_not_beat_a_partly_acknowledged_security_list', function () {
+  var p = nine(5, { reboot_required: true });
+  if (p.acknowledged) throw new Error('fixture is fully acknowledged');
+  var v = patchViews(p);
+  expectViews(v, '9 security', '✕', 'var(--st-crit)', 'var(--st-crit)');
+  if (v.panel.indexOf('acknowledge all 4') < 0) throw new Error('no bulk ack for the 4: ' + v.panel);
+});
+check('reboot_does_not_beat_unnamed_items_that_block_the_ack', function () {
+  /* Every named package acknowledged, three more counted and unnamed: the
+     server leaves acknowledged false, and so the badge stays security. */
+  var p = SEC([item('a', true), item('b', true)],
+              { security: 5, unnamed_count: 3, reboot_required: true });
+  p.acknowledged = false;
+  var v = patchViews(p);
+  expectViews(v, '5 security', '✕', 'var(--st-crit)', 'var(--st-crit)');
+  if (v.panel.indexOf('3 further security updates') < 0) throw new Error(v.panel);
+});
+check('no_reboot_a_fully_acknowledged_list_stays_muted', function () {
+  var v = patchViews(nine(9, { reboot_required: false }));
+  expectViews(v, '9 security', '✕', 'var(--st-none)', 'var(--muted)');
+});
+check('reboot_with_nothing_pending_is_the_plain_reboot_badge', function () {
+  var v = patchViews({ status: 'reboot', security: 0, other: 0, reboot_required: true,
+                       checked_at: 1788436000, age_seconds: 200, source: 'dnf', detail: null,
+                       packages: null, entries: [], acked_count: 0, unnamed_count: 0,
+                       acknowledged: false, acked_at: null });
+  expectViews(v, 'reboot required', '⭮', 'var(--st-crit)', 'var(--st-crit)');
+  if (v.ackRows !== 0) throw new Error('a reboot grew an ack link');
+});
+
 console.log(JSON.stringify(out));

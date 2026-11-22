@@ -2118,20 +2118,20 @@ HOST = "freebsd15dot1package"
 PY312, GIF, SETUP = "python312-3.12.14", "giflib-6.1.3", "py312-setuptools-63.1.0_3"
 THREE = ", ".join([PY312, GIF, SETUP])
 
-def sample(sec, pkgs, host=HOST):
+def sample(sec, pkgs, host=HOST, reboot=False):
     return {"host":host,"ts":now,"os":"x","cpu_pct":None,"mem_used_bytes":None,
             "mem_total_bytes":None,"uptime_seconds":1,
             "patch_security":sec,"patch_other":0,"patch_checked_at":now,
-            "patch_source":"pkg-audit-pkgbase","patch_detail":None,"patch_reboot":False,
+            "patch_source":"pkg-audit-pkgbase","patch_detail":None,"patch_reboot":reboot,
             "patch_packages":pkgs,"collector_version":None,"disks":[]}
 
-def patches(sec, pkgs, host=HOST):
+def patches(sec, pkgs, host=HOST, reboot=False):
     # What insert_sample does with the reported string, without the sample:
     # the pending list is per host now, not a column on every row.
     with db._DB:
         db._set_patch_pending(app.CONN, host, pkgs)
         app.CONN.commit()
-    return app.summarize(sample(sec, pkgs, host), now)["patches"]
+    return app.summarize(sample(sec, pkgs, host, reboot), now)["patches"]
 
 def acked(p):
     return sorted(i["package"] for i in p["entries"] if i["acknowledged"])
@@ -2156,6 +2156,15 @@ db.unack_patch(app.CONN, HOST, GIF)
 after_one_unack = patches(3, THREE)
 db.unack_patch(app.CONN, HOST)
 after_unack = patches(3, THREE)
+
+# cerium: every package acknowledged, still booted on the old kernel. The
+# dashboard shows "reboot required" here, but only as presentation -- the API
+# must stay a fully acknowledged security state with the reboot still set, or
+# the ack rows keyed on status would vanish and the reboot would be lost.
+CER = "cerium"
+patches(3, THREE, CER, reboot=True)
+db.ack_patch(app.CONN, CER, [PY312, GIF, SETUP], int(now))
+cerium = patches(3, THREE, CER, reboot=True)
 
 # The six-name cap this replaces made everything past the sixth one anonymous
 # group, keyed on how many there were. Which packages fell into it was
@@ -2253,6 +2262,9 @@ print(json.dumps({
   "epoch_entries":      [i["package"] for i in epoch["entries"]],
   "after_prune":        after_prune,
   "migrated":           migrated,
+  "cerium":             [cerium["status"], cerium["security"], cerium["acknowledged"],
+                         cerium["acked_count"], cerium["unnamed_count"],
+                         cerium["reboot_required"], len(cerium["entries"])],
 }))
 PY
   }
@@ -2316,6 +2328,8 @@ PY
         "assert d['epoch_entries']==['chromium-151.0.7922.169','python312-3.12.14','gimp-2.10.38,2'], d" "$J"
   check "an old whole-host ack upgrades into the packages it was made about" \
         "assert d['migrated']==['giflib-6.1.3','py312-setuptools-63.1.0_3','python312-3.12.14'], d" "$J"
+  check "a fully acknowledged list keeps its reboot, and stays a security state" \
+        "assert d['cerium']==['security',3,True,3,0,True,3], d" "$J"
 fi
 
 if want reachability; then
@@ -2897,6 +2911,17 @@ if want render; then
     # Both ack rows on one page is what tripped the shadowing.
     check "and with a patch ack and an eol ack on the same page" \
           "assert d['detail_both_ack_rows'] is None, d['detail_both_ack_rows']" "$J"
+    # cerium: all nine acknowledged on 15.1-p6 with p7 installed, and the badge
+    # went grey. An ack silences packages, never the reboot.
+    for c in reboot_beats_a_fully_acknowledged_security_list \
+             reboot_does_not_beat_an_unacknowledged_security_list \
+             reboot_does_not_beat_a_partly_acknowledged_security_list \
+             reboot_does_not_beat_unnamed_items_that_block_the_ack \
+             no_reboot_a_fully_acknowledged_list_stays_muted \
+             reboot_with_nothing_pending_is_the_plain_reboot_badge; do
+      check "patch badge, card, flag and detail: $c" \
+            "assert d['$c'] is None, d['$c']" "$J"
+    done
     check "the All tab groups by OS when asked, unknowns last, and only the All tab offers it" \
           "assert d['all_tab_groups_by_os_when_asked'] is None, d['all_tab_groups_by_os_when_asked']" "$J"
     check "the Containers tab holds jails and containers, and Bare metal does not" \

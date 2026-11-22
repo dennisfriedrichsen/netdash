@@ -118,14 +118,36 @@ var PATCH = {
   unknown:  { css: 'var(--st-none)', glyph: '–' }
 };
 
+/* The state the badge shows, which is patch_summary's status with one
+   exception: a fully acknowledged security list on a host that still needs a
+   reboot reads 'reboot'. The ack silenced the packages, never the reboot, and
+   muting the whole badge hid it -- cerium sat at a grey "9 security" on
+   p6 with p7 installed. Display only: the status itself stays 'security', so
+   the ack rows keyed on it still render and un-acknowledging still works. A
+   partly reviewed list, or one with unnamed items, is not acknowledged and so
+   stays security-first. */
+function patchShown(p) {
+  if (!p) return 'unknown';
+  if (p.status === 'security' && p.acknowledged && p.reboot_required) return 'reboot';
+  return p.status || 'unknown';
+}
+
+/* Nothing here needs the eye: up to date, or a security list every item of
+   which has been reviewed. */
+function patchQuiet(p) {
+  var shown = patchShown(p);
+  return shown === 'ok' || (shown === 'security' && p.acknowledged);
+}
+
 /* An acknowledged security state keeps its glyph -- it is still that many
    issues in those packages, an ack does not make that untrue -- but drops to
    the same muted colour as 'unknown', since it no longer needs the eye. Only
    'security' is ever acknowledged (see patch_summary in app.py), so nothing
    else is affected. */
 function patchStyle(p) {
-  var s = PATCH[(p && p.status) || 'unknown'] || PATCH.unknown;
-  if (p && p.acknowledged) return { css: 'var(--st-none)', glyph: s.glyph };
+  var shown = patchShown(p);
+  var s = PATCH[shown] || PATCH.unknown;
+  if (shown === 'security' && p.acknowledged) return { css: 'var(--st-none)', glyph: s.glyph };
   return s;
 }
 
@@ -136,8 +158,9 @@ function byName(a, b) {
 
 function patchText(p) {
   if (!p) return 'not checked';
-  if (p.status === 'security') return p.security + ' security';
-  if (p.status === 'reboot') return 'reboot required';
+  var shown = patchShown(p);
+  if (shown === 'security') return p.security + ' security';
+  if (shown === 'reboot') return 'reboot required';
   if (p.status === 'updates') {
     var n = p.other || 0;
     return n + ' update' + (n === 1 ? '' : 's');
@@ -874,7 +897,7 @@ function compactRow(h) {
     var p = h.patches || {};
     var ps = patchStyle(p);
     var pg = el('span', 'cflag', ps.glyph);
-    pg.style.color = (p.status === 'ok' || p.acknowledged) ? 'var(--muted)' : ps.css;
+    pg.style.color = patchQuiet(p) ? 'var(--muted)' : ps.css;
     pg.title = 'Patches: ' + patchText(p) + '\n' + patchTitle(p);
     flags.appendChild(pg);
   }
