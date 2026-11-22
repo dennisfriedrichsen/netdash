@@ -931,9 +931,20 @@ PY
   reset() { # running jails (jid name, one per line) -> a fresh host
     rm -rf "$T/jails" "$T/ps" "$T/jexec" "$T/patches.json" "$T/requested" "$T/fail"
     mkdir -p "$T/jails" "$T/ps"
+    # The host's own processes, up since a boot a day ago: a jail's start read
+    # with -a would come out as this.
+    ago 86400 > "$T/ps/0"
     printf '%s' "$1" > "$T/jls"
     for jid in $(printf '%s\n' "$1" | awk 'NF { print $1 }'); do ago 600 > "$T/ps/$jid"; done
   }
+
+  # -- The ps mock selects as FreeBSD's does, so -a with -J is caught. --
+  reset "1 a a
+2 b b"
+  P=$(env "PATH=$B:/usr/bin:/bin" MOCK_PS_JAILDIR="$T/ps" ps -ax -J 1 -o jid= | sort -un | tr '\n' ' ')
+  Q=$(env "PATH=$B:/usr/bin:/bin" MOCK_PS_JAILDIR="$T/ps" ps -J 1 -o jid= | sort -un | tr '\n' ' ')
+  check "ps mock: -ax -J 1 is every process (jids 0 1 2), -J 1 alone only jail 1's" \
+        "assert d==['0 1 2 ','1 '], d" "[\"$P\",\"$Q\"]"
 
   # -- The boot race: an empty jls leaves the old results; the host goes on. --
   reset ""
@@ -1019,12 +1030,39 @@ PY
   R=$(requested)
   check "a jail restarted since its result is asked for, whatever an older retry note says" \
         "assert d=='--jails transmission', d" "\"$R\""
+  # Beside an older jail: each jail's start is its own processes', never the
+  # host's or a neighbour's, whichever jail restarts under its old jid.
+  reset "3 transmission transmission
+4 plexmediasserver plexmediasserver"
+  for j in transmission plexmediasserver; do
+    printf '{"security":0,"other":0,"reboot_required":null,"checked_at":%s,"source":"x","detail":"","packages":""}\n' \
+      "$(( $(date +%s) - 300 ))" > "$T/jails/$j.json"
+  done
+  col ""
+  R=$(not_requested)
+  check "two jails up longer than their results, beside a host up a day: nothing asked" \
+        "assert d=='', d" "\"$R\""
+  ago 60 > "$T/ps/3"
+  col ""
+  R=$(requested)
+  check "one restarted under its jid beside an older jail is asked for, and only it" \
+        "assert d=='--jails transmission', d" "\"$R\""
+  pc "--jails transmission" || true
+  J=$(state transmission)
+  check "and its check is published against that start, the neighbour left alone" \
+        "assert d['checked_at'] >= d['now']-60 and d['retry'] is None and d['jexec']==['3'], d" "$J"
+  ago 30 > "$T/ps/4"
+  col ""
+  R=$(requested)
+  check "the neighbour restarting later is its own request, not this one's" \
+        "assert d=='--jails plexmediasserver', d" "\"$R\""
   # Restarted DURING the check: a new jid, the same jid with a new start (jid
   # reuse), or the jid now holding another jail. Nothing is published for any.
   for hook in "printf '7 transmission transmission\n' > $T/jls; date +%s > $T/ps/7" \
               "date +%s > $T/ps/3" \
               "printf '3 aaadx aaadx\n' > $T/jls"; do
-    reset "3 transmission transmission"
+    reset "3 transmission transmission
+4 plexmediasserver plexmediasserver"
     printf '%s\n' "$OLD" > "$T/jails/transmission.json"
     pc "--jails transmission" MOCK_JEXEC_HOOK="$hook" || true
     J=$(state transmission)

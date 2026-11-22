@@ -398,8 +398,10 @@ jail_boot() { # name -> true|false|null, from rc.conf's jail_enable/jail_list
 # every few minutes, then hours -- not every minute. NETDASH_PATCHCHECK names
 # the patch check if it is not installed beside this script; "no" turns this
 # off.
+# -J alone selects only that jail's processes; with -a or -A, ps(1) adds them
+# to every process on the host and in every other jail, so neither is given.
 jail_start() { # jid -> when its oldest process started, from the host's ps
-  ps -ax -J "$1" -o etimes= 2>/dev/null | awk -v now="$(date +%s)" '
+  ps -x -J "$1" -o etimes= 2>/dev/null | awk -v now="$(date +%s)" '
     $1+0 > m { m = $1+0 } END { if (m > 0) printf "%d", now - m }'
 }
 jail_due() { # name jid:start -> the patch check's own test, without the lock

@@ -1,14 +1,30 @@
 #!/bin/sh
 # Mock ps. Only `ps -ax -o <keyword>=` is used, one keyword per call; each
 # MOCK_PS_* variable is that column for every process, space-separated.
-# `ps -ax -J <jid> -o etimes=`, the host's view of one jail, is answered from
-# $MOCK_PS_JAILDIR/<jid>: the epoch each of its processes started, one per
-# line, so elapsed time grows as it really does and a case can restart that
-# jail mid-run. A jail with no file there has no processes.
+#
+# With -J <jid>, processes come from $MOCK_PS_JAILDIR/<jid>: the epoch each of
+# its processes started, one per line, so elapsed time grows as it really does
+# and a case can restart that jail mid-run. File 0 is the host's own processes.
+# A jail with no file there has no processes. Selection is FreeBSD's: -J alone
+# is that jail's processes only, but -a or -A selects every process -- the
+# host's and every jail's -- and -J then only adds to it (on a real host,
+# `ps -ax -J 1 -o jid=` lists jids 0, 1 and 2; `ps -J 1 -o jid=` only 1).
+# Answers `-o etimes=` and `-o jid=`.
 case "$*" in
   *"-J "*)
     jid=$(printf '%s\n' "$*" | sed 's/.*-J \([^ ]*\).*/\1/')
-    awk -v now="$(date +%s)" 'NF { print now - $1 }' "${MOCK_PS_JAILDIR:-/nonexistent}/$jid" 2>/dev/null
+    all=""
+    for a in "$@"; do
+      case "$a" in -*[aA]*) all=1 ;; esac
+    done
+    d=${MOCK_PS_JAILDIR:-/nonexistent}
+    if [ -n "$all" ]; then files=$(ls "$d" 2>/dev/null | sort -n); else files=$jid; fi
+    case "$*" in *jid=*) col=jid ;; *) col=etimes ;; esac
+    for f in $files; do
+      [ -r "$d/$f" ] || continue
+      awk -v now="$(date +%s)" -v j="$f" -v c="$col" \
+        'NF { print (c == "jid" ? j : now - $1) }' "$d/$f"
+    done
     exit 0 ;;
 esac
 case "$*" in

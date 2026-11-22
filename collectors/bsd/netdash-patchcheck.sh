@@ -104,11 +104,13 @@ jails_wanted() {
 }
 # jid name -> "jid:start" while that jid is that jail, nothing otherwise. The
 # start is empty for a jail with no processes yet. Read from the host's ps,
-# never from anything inside the jail.
+# never from anything inside the jail. -J alone selects only that jail's
+# processes; with -a or -A, ps(1) adds them to every process on the host and in
+# every other jail, so neither is given.
 jail_gen() {
   jls -h jid name 2>/dev/null | sed 1d \
     | awk -v j="$1" -v n="$2" '$1 == j && $2 == n { f = 1 } END { exit !f }' || return 0
-  printf '%s:%s\n' "$1" "$(ps -ax -J "$1" -o etimes= 2>/dev/null | awk -v now="$(date +%s)" '
+  printf '%s:%s\n' "$1" "$(ps -x -J "$1" -o etimes= 2>/dev/null | awk -v now="$(date +%s)" '
     $1+0 > m { m = $1+0 } END { if (m > 0) printf "%d", now - m }')"
 }
 # Two readings of one start differ by etimes' rounding, a second or two.
